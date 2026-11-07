@@ -1,8 +1,8 @@
 "use client";
 
-import { Container, Cpu, Database, EllipsisVertical, ExternalLink, Folder, FolderGit2, GitBranch, Globe, Lock, Plus, Search, Server, Wrench, type LucideIcon } from "lucide-react";
+import { Bell, ChevronsUpDown, Container, Cpu, Database, EllipsisVertical, ExternalLink, Folder, FolderGit2, GitBranch, Globe, Lock, Plus, Search, Server, TriangleAlert, Wrench, X, type LucideIcon } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useCluster } from "@/components/cluster";
 import { Drawer } from "@/components/drawer";
 import { GithubConnect, GithubMark, RepoPicker, useGithub, type Repo } from "@/components/github";
@@ -12,7 +12,7 @@ import { Button, Card, cx } from "@/components/ui";
 import { api } from "@/lib/client";
 import { timeAgo } from "@/lib/format";
 import { projectType, TYPE_LABEL, TYPE_ORDER, type ProjectType } from "@/lib/project-type";
-import type { CommitInfo, JobStartResult, ProjectManifest, ProjectState, VmStatus } from "@/lib/types";
+import type { CommitInfo, JobStartResult, JobState, ProjectManifest, ProjectState, VmStatus } from "@/lib/types";
 
 interface Instance {
   vm: string;
@@ -117,7 +117,6 @@ export default function ProjectsPage() {
     const t = q.trim().toLowerCase();
     return !t || p.name.includes(t) || (p.m.github?.repo ?? p.m.repo).toLowerCase().includes(t) || (p.m.framework ?? "").toLowerCase().includes(t);
   });
-  const groups = filter === "all" && !q.trim() ? TYPE_ORDER.map((t) => [t, shown.filter((p) => p.type === t)] as const).filter(([, l]) => l.length) : null;
 
   const onlineNames = vms.filter((v) => status[v.name]?.ok).map((v) => v.name);
   const newProject = (extra?: Partial<FormState>, importRepo?: Repo) => setForm({ state: { ...blank(onlineNames.slice(0, 1)), ...extra }, importRepo });
@@ -155,57 +154,46 @@ export default function ProjectsPage() {
 
       {error && <pre className="rounded-lg border border-[var(--critical)]/40 p-3 text-sm whitespace-pre-wrap text-[var(--critical-text)]">{error}</pre>}
 
-      {projects.length > 0 && (
-        <div className="flex items-center gap-3">
-          <label className="flex h-10 flex-1 items-center gap-2 rounded-lg border border-line-strong bg-panel/80 px-3 focus-within:border-accent/60">
-            <Search className="size-4 text-muted" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search projects, repos, frameworks…" className="w-full bg-transparent text-sm text-white outline-none placeholder:text-muted" />
-          </label>
-          <div className="flex h-10 items-center gap-0.5 rounded-lg border border-line-strong bg-panel/80 p-1">
-            {(["all", ...TYPE_ORDER.filter((t) => counts[t])] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => setFilter(t)}
-                className={cx("h-full rounded-md px-3 text-sm transition-colors", filter === t ? "bg-chip text-white" : "text-muted hover:text-white")}
-              >
-                {t === "all" ? "All" : TYPE_LABEL[t].many}
-                <span className="ml-1.5 text-xs text-muted">{t === "all" ? projects.length : counts[t]}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+      <div className="grid grid-cols-[minmax(0,340px)_minmax(0,1fr)] items-start gap-8">
+        <aside className="space-y-8">
+          <Usage vms={vms.map((v) => v.name)} status={status} />
+          <Alerts vms={vms.map((v) => v.name)} status={status} />
+          <RecentDeploys vms={vms.map((v) => v.name)} status={status} onOpen={openJob} />
+        </aside>
 
-      {projects.length === 0 && vms.some((v) => checking[v.name] || !status[v.name]) ? (
-        <div className="grid grid-cols-2 gap-4 xl:grid-cols-3">
-          {[0, 1, 2].map((i) => (
-            <Card key={i} className="h-[184px] animate-pulse p-5">
-              <div className="flex gap-3">
-                <span className="size-10 rounded-xl bg-chip" />
-                <span className="mt-1 h-4 w-32 rounded bg-chip" />
-              </div>
-            </Card>
-          ))}
-        </div>
-      ) : projects.length === 0 ? (
-        <Welcome connected={gh.status?.connected} onImport={(r) => newProject({}, r)} onConnect={() => setConnect(true)} onTemplate={(v) => newProject(v)} />
-      ) : groups ? (
-        groups.map(([t, list]) => (
-          <section key={t}>
-            <h2 className="mb-3 flex items-baseline gap-2 text-[15px] font-semibold tracking-tight text-white">
-              {TYPE_LABEL[t].many}
-              <span className="text-sm font-normal text-muted">
-                {list.length} · {TYPE_LABEL[t].hint}
-              </span>
-            </h2>
-            <Grid list={list} status={status} onAct={actAll} onEdit={(p) => setForm({ state: formFromManifest(p.m, p.instances.map((i) => i.vm)) })} />
-          </section>
-        ))
-      ) : shown.length ? (
-        <Grid list={shown} status={status} onAct={actAll} onEdit={(p) => setForm({ state: formFromManifest(p.m, p.instances.map((i) => i.vm)) })} />
-      ) : (
-        <p className="py-10 text-center text-sm text-muted">No projects match.</p>
-      )}
+        <section className="min-w-0">
+          <div className="mb-3 flex h-9 items-center gap-2">
+            <h2 className="text-[15px] font-semibold text-white">Projects</h2>
+            {projects.length > 0 && <span className="text-sm text-muted">{projects.length}</span>}
+            <span className="flex-1" />
+            {projects.length > 0 && (
+              <>
+                <SearchToggle value={q} onChange={setQ} />
+                <TypeFilter value={filter} onChange={setFilter} counts={counts} total={projects.length} />
+              </>
+            )}
+          </div>
+
+          {projects.length === 0 && vms.some((v) => checking[v.name] || !status[v.name]) ? (
+            <div className="grid grid-cols-2 gap-4">
+              {[0, 1, 2, 3].map((i) => (
+                <Card key={i} className="h-[184px] animate-pulse p-5">
+                  <div className="flex gap-3">
+                    <span className="size-10 rounded-xl bg-chip" />
+                    <span className="mt-1 h-4 w-32 rounded bg-chip" />
+                  </div>
+                </Card>
+              ))}
+            </div>
+          ) : projects.length === 0 ? (
+            <Welcome connected={gh.status?.connected} onImport={(r) => newProject({}, r)} onConnect={() => setConnect(true)} onTemplate={(v) => newProject(v)} />
+          ) : shown.length ? (
+            <Grid list={shown} status={status} onAct={actAll} onEdit={(p) => setForm({ state: formFromManifest(p.m, p.instances.map((i) => i.vm)) })} />
+          ) : (
+            <p className="py-16 text-center text-sm text-muted">No projects match.</p>
+          )}
+        </section>
+      </div>
 
       {form && (
         <ProjectForm
@@ -238,7 +226,7 @@ function latest(p: Project): number {
 
 function Grid({ list, status, onAct, onEdit }: { list: Project[]; status: Record<string, VmStatus | undefined>; onAct: (p: Project, a: "deploy" | "restart" | "stop" | "start" | "remove") => Promise<void>; onEdit: (p: Project) => void }) {
   return (
-    <div className="grid grid-cols-2 gap-4 xl:grid-cols-3">
+    <div className="grid grid-cols-2 gap-4">
       {list.map((p) => (
         <ProjectCard key={p.name} p={p} online={p.instances.every((i) => status[i.vm]?.ok)} onAct={(a) => onAct(p, a)} onEdit={() => onEdit(p)} />
       ))}
@@ -367,7 +355,7 @@ function Menu({ p, addr, onAct, onEdit }: { p: Project; addr?: string; onAct: (a
 
 function Welcome({ connected, onImport, onConnect, onTemplate }: { connected?: boolean; onImport: (r: Repo) => void; onConnect: () => void; onTemplate: (v: Partial<FormState>) => void }) {
   return (
-    <div className="grid grid-cols-2 gap-6">
+    <div className="grid gap-4">
       <Card className="p-6">
         <h2 className="mb-1 flex items-center gap-2 text-lg font-semibold text-white">
           <GithubMark className="size-5" /> Import Git repository
@@ -384,8 +372,8 @@ function Welcome({ connected, onImport, onConnect, onTemplate }: { connected?: b
       <Card className="p-6">
         <h2 className="mb-1 text-lg font-semibold text-white">Start from a template</h2>
         <p className="mb-4 text-sm text-muted">Databases, models and containers with no repo needed.</p>
-        <div className="grid grid-cols-2 gap-2">
-          {PRESETS.slice(0, 10).map((t) => (
+        <div className="grid grid-cols-3 gap-2">
+          {PRESETS.slice(0, 9).map((t) => (
             <button key={t.label} onClick={() => onTemplate(t.values)} className="rounded-xl border border-line-strong px-3 py-2 text-left hover:border-accent/60 hover:bg-white/[0.03]">
               <span className="block text-sm font-medium text-white">{t.label}</span>
               <span className="block text-[11px] text-muted">{t.hint}</span>
@@ -394,5 +382,221 @@ function Welcome({ connected, onImport, onConnect, onTemplate }: { connected?: b
         </div>
       </Card>
     </div>
+  );
+}
+
+function SearchToggle({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLInputElement>(null);
+  const shown = open || Boolean(value);
+  return shown ? (
+    <label className="flex h-9 w-64 items-center gap-2 rounded-lg border border-line-strong bg-panel/80 px-2.5 focus-within:border-accent/60">
+      <Search className="size-4 shrink-0 text-muted" />
+      <input
+        ref={ref}
+        autoFocus
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={() => !value && setOpen(false)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            onChange("");
+            setOpen(false);
+          }
+        }}
+        placeholder="Find a project"
+        className="w-full bg-transparent text-sm text-white outline-none placeholder:text-muted"
+      />
+      {value && (
+        <button onClick={() => onChange("")} className="text-muted hover:text-white" aria-label="Clear">
+          <X className="size-3.5" />
+        </button>
+      )}
+    </label>
+  ) : (
+    <button onClick={() => setOpen(true)} className="grid size-9 place-items-center rounded-lg border border-line-strong text-muted hover:border-white/20 hover:text-white" aria-label="Search projects" title="Search">
+      <Search className="size-4" />
+    </button>
+  );
+}
+
+function TypeFilter({ value, onChange, counts, total }: { value: ProjectType | "all"; onChange: (v: ProjectType | "all") => void; counts: Partial<Record<ProjectType, number>>; total: number }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+  const opts: (ProjectType | "all")[] = ["all", ...TYPE_ORDER.filter((t) => counts[t])];
+  return (
+    <div ref={ref} className="relative">
+      <button onClick={() => setOpen((o) => !o)} className="flex h-9 items-center gap-1.5 rounded-lg border border-line-strong px-3 text-sm text-ink hover:border-white/20">
+        {value === "all" ? "All types" : TYPE_LABEL[value].many}
+        <ChevronsUpDown className="size-3.5 text-muted" />
+      </button>
+      {open && (
+        <div className="absolute top-10 right-0 z-20 w-52 rounded-xl border border-line-strong bg-panel p-1 shadow-2xl shadow-black/50">
+          {opts.map((t) => {
+            const Icon = t === "all" ? FolderGit2 : ICON[t];
+            return (
+              <button
+                key={t}
+                onClick={() => {
+                  onChange(t);
+                  setOpen(false);
+                }}
+                className={cx("flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm hover:bg-white/[0.06]", value === t ? "text-white" : "text-ink")}
+              >
+                <Icon className="size-3.5 text-muted" />
+                <span className="flex-1">{t === "all" ? "All types" : TYPE_LABEL[t].many}</span>
+                <span className="text-xs text-muted">{t === "all" ? total : counts[t]}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** warn: "high" when a full ring is bad (CPU, disk), "low" when an empty one is (machines online). */
+function Ring({ value, warn }: { value: number; warn: "high" | "low" }) {
+  const v = Math.max(0, Math.min(100, value));
+  const c = 2 * Math.PI * 7;
+  return (
+    <svg viewBox="0 0 18 18" className="size-[18px] shrink-0 -rotate-90">
+      <circle cx="9" cy="9" r="7" fill="none" stroke="var(--track)" strokeWidth="2.2" />
+      <circle cx="9" cy="9" r="7" fill="none" stroke={(warn === "high" ? v >= 90 : v < 100) ? "var(--critical)" : "var(--accent)"} strokeWidth="2.2" strokeLinecap="round" strokeDasharray={`${(v / 100) * c} ${c}`} />
+    </svg>
+  );
+}
+
+function SideTitle({ children, right }: { children: ReactNode; right?: ReactNode }) {
+  return (
+    <div className="mb-3 flex h-9 items-center justify-between">
+      <h2 className="text-[15px] font-semibold text-white">{children}</h2>
+      {right}
+    </div>
+  );
+}
+
+type StatusMap = Record<string, VmStatus | undefined>;
+
+function Usage({ vms, status }: { vms: string[]; status: StatusMap }) {
+  const live = vms.map((v) => status[v]?.agent).filter((a): a is NonNullable<VmStatus["agent"]> => Boolean(a));
+  const online = vms.filter((v) => status[v]?.ok).length;
+  const sum = (f: (a: (typeof live)[number]) => number) => live.reduce((n, a) => n + f(a), 0);
+  const cpu = live.length ? sum((a) => a.cpuPct) / live.length : 0;
+  const memT = sum((a) => a.memTotalKb);
+  const memU = memT - sum((a) => a.memAvailKb);
+  const diskT = sum((a) => a.diskTotalKb);
+  const diskU = sum((a) => a.diskUsedKb);
+  const inst = live.flatMap((a) => a.projects);
+  const running = inst.filter((p) => p.active === "active").length;
+  const gb = (kb: number) => `${(kb / 1048576).toFixed(kb > 10 * 1048576 ? 0 : 1)} GB`;
+  const rows: [string, number, string, "high" | "low"][] = [
+    ["Machines online", vms.length ? (online / vms.length) * 100 : 0, `${online} / ${vms.length}`, "low"],
+    ["CPU", cpu, `${Math.round(cpu)}% avg · ${sum((a) => a.cores)} cores`, "high"],
+    ["Memory", memT ? (memU / memT) * 100 : 0, `${gb(memU)} / ${gb(memT)}`, "high"],
+    ["Disk", diskT ? (diskU / diskT) * 100 : 0, `${gb(diskU)} / ${gb(diskT)}`, "high"],
+    ["Services running", inst.length ? (running / inst.length) * 100 : 100, `${running} / ${inst.length}`, "low"],
+  ];
+  return (
+    <section>
+      <SideTitle>Usage</SideTitle>
+      <Card className="p-2">
+        <p className="px-3 pt-2 pb-1 text-sm text-ink">Right now</p>
+        {rows.map(([label, v, text, warn]) => (
+          <div key={label} className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-white/[0.03]">
+            <Ring value={live.length ? v : 0} warn={live.length ? warn : "high"} />
+            <span className="flex-1 text-ink">{label}</span>
+            <span className="font-mono text-xs text-muted">{live.length ? text : "…"}</span>
+          </div>
+        ))}
+      </Card>
+    </section>
+  );
+}
+
+function Alerts({ vms, status }: { vms: string[]; status: StatusMap }) {
+  const list: { key: string; text: string; href?: string }[] = [];
+  for (const v of vms) {
+    const s = status[v];
+    if (s && !s.ok) list.push({ key: `${v}-down`, text: `${v} is unreachable (paused or cooling down)` });
+    const a = s?.agent;
+    if (!a) continue;
+    for (const p of a.projects) if (p.active === "failed") list.push({ key: `${v}-${p.manifest.name}`, text: `${p.manifest.name} crashed on ${v}`, href: `/projects/${p.manifest.name}` });
+    if (a.diskTotalKb && a.diskUsedKb / a.diskTotalKb > 0.85) list.push({ key: `${v}-disk`, text: `${v} disk is ${Math.round((a.diskUsedKb / a.diskTotalKb) * 100)}% full` });
+    if (a.memTotalKb && 1 - a.memAvailKb / a.memTotalKb > 0.9) list.push({ key: `${v}-mem`, text: `${v} memory is almost full` });
+    // a deploy whose latest run failed
+    const latest = new Map<string, JobState>();
+    for (const j of [...a.jobs].sort((x, y) => x.meta.startedAt - y.meta.startedAt)) if (j.meta.kind === "deploy" && j.meta.project) latest.set(j.meta.project, j);
+    for (const [name, j] of latest) if (j.state === "done" && j.exitCode !== 0) list.push({ key: `${v}-${name}-deploy`, text: `Last deploy of ${name} on ${v} failed`, href: `/projects/${name}` });
+  }
+  return (
+    <section>
+      <SideTitle>Alerts</SideTitle>
+      <Card className="p-2">
+        {list.length === 0 ? (
+          <div className="flex flex-col items-center gap-3 px-6 py-7 text-center">
+            <span className="grid size-10 place-items-center rounded-xl border border-line-strong text-muted">
+              <Bell className="size-4" />
+            </span>
+            <p className="text-sm text-muted">Nothing needs attention. Crashes, failed deploys and full disks show up here and by email.</p>
+          </div>
+        ) : (
+          list.slice(0, 8).map((x) =>
+            x.href ? (
+              <Link key={x.key} href={x.href} className="flex items-start gap-2.5 rounded-lg px-3 py-2 text-sm text-ink hover:bg-white/[0.04]">
+                <TriangleAlert className="mt-0.5 size-4 shrink-0 text-[var(--critical-text)]" /> {x.text}
+              </Link>
+            ) : (
+              <p key={x.key} className="flex items-start gap-2.5 px-3 py-2 text-sm text-ink">
+                <TriangleAlert className="mt-0.5 size-4 shrink-0 text-[var(--critical-text)]" /> {x.text}
+              </p>
+            ),
+          )
+        )}
+      </Card>
+    </section>
+  );
+}
+
+function RecentDeploys({ vms, status, onOpen }: { vms: string[]; status: StatusMap; onOpen: (j: { vm: string; id: string; title: string }) => void }) {
+  const jobs = vms
+    .flatMap((v) => (status[v]?.agent?.jobs ?? []).filter((j) => j.meta.kind === "deploy").map((j) => ({ vm: v, j })))
+    .sort((a, b) => b.j.meta.startedAt - a.j.meta.startedAt)
+    .slice(0, 6);
+  return (
+    <section>
+      <SideTitle>Recent deploys</SideTitle>
+      <Card className="divide-y divide-line overflow-hidden">
+        {jobs.length === 0 ? (
+          <p className="px-5 py-6 text-sm text-muted">Deploys show up here as they run.</p>
+        ) : (
+          jobs.map(({ vm, j }) => {
+            const tone: Tone = j.state === "running" ? "busy" : j.state === "done" && j.exitCode === 0 ? "ok" : "bad";
+            const trigger = j.meta.label.includes(" · ") ? j.meta.label.split(" · ").slice(1).join(" · ") : "manual deploy";
+            return (
+              <button key={`${vm}-${j.id}`} onClick={() => onOpen({ vm, id: j.id, title: j.meta.label })} className="block w-full px-4 py-3 text-left hover:bg-white/[0.03]">
+                <div className="flex items-center gap-2">
+                  <span className={cx("size-2 shrink-0 rounded-full", TONE_DOT[tone])} />
+                  <span className="truncate text-sm font-medium text-white">{j.meta.project}</span>
+                  <span className="truncate text-xs text-muted">{trigger}</span>
+                </div>
+                <div className="mt-1.5 flex items-center gap-2 pl-4 text-xs text-muted">
+                  <span className="rounded bg-chip px-1.5 py-px font-mono text-[11px] text-ink">{vm}</span>
+                  <span>{j.state === "running" ? "building…" : j.exitCode === 0 ? "ready" : "failed"}</span>
+                  <span>·</span>
+                  <span>{timeAgo(j.meta.startedAt * 1000)}</span>
+                </div>
+              </button>
+            );
+          })
+        )}
+      </Card>
+    </section>
   );
 }
