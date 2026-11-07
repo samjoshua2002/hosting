@@ -47,3 +47,4 @@ tokens.txt
 
 # Vercel import file (contains secrets)
 vercel.env
+servers.txt

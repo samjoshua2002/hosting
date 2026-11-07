@@ -2,7 +2,19 @@
 
 The InstaBox sandboxes sleep after 30 minutes idle and stop after their max runtime, each has ~8 GB RAM and ~20 GB disk, and they only expose HTTPS. That is fine for builds, tests and small apps, but databases and anything that must stay up need one server that never sleeps. This guide sets one up with **Coolify** (free, open-source "own Vercel/Heroku") and connects it to this dashboard.
 
-## 1. Create the server (you)
+## Fastest: one script
+
+After signing up at https://www.oracle.com/cloud/free/ (identity + card check, can't be automated):
+
+```bash
+bash scripts/oracle-free-vm.sh
+```
+
+It installs the OCI CLI, logs you in through the browser once, creates the network and firewall rules, launches the
+4-core / 24 GB / 200 GB ARM server (retrying politely while Oracle is "out of capacity"), runs the bootstrap below and
+adds the server to `servers.txt` / `.env.local` as `cloud`. The manual steps below do the same by hand.
+
+## 1. Create the server (by hand)
 
 Any Ubuntu 22.04/24.04 VPS works (amd64 or arm64, 2+ CPU, 4+ GB RAM). The free option:
 
