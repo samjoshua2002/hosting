@@ -79,10 +79,18 @@ export interface AgentStatus {
   projects: ProjectState[];
   jobs: JobState[];
   ports: PublishedPort[];
+  /** crontab entries; name is empty for entries added by hand */
+  cron: CronEntry[];
   /** SSH tunnels from this machine to a database machine */
   tunnels: { to: string; active: string; ports?: number[] }[];
   /** Samples newer than the `since` the caller asked for. */
   history: Sample[];
+}
+
+export interface CronEntry {
+  name: string;
+  schedule: string;
+  command: string;
 }
 
 /** [unix seconds, cpu %, memUsedKb, diskUsedKb, load1, netRxBytes, netTxBytes] */

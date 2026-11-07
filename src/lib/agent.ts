@@ -45,6 +45,7 @@ function parseStatus(text: string): AgentStatus | null {
       ports: (raw.ports?.ports ?? []).map((p) => ({ port: p.port, name: p.name, url: p.url, access: p.access })),
       history: Array.isArray(raw.history) ? raw.history : [],
       tunnels: Array.isArray(raw.tunnels) ? raw.tunnels : [],
+      cron: Array.isArray(raw.cron) ? raw.cron : [],
     };
   } catch {
     return null;
@@ -207,6 +208,25 @@ export async function startDeploy(conn: Client, name: string): Promise<string> {
     { label: `deploy ${name}`, kind: "deploy", project: name, startedAt: Math.floor(Date.now() / 1000) },
     `exec ${HOSTCTL} deploy ${name}\n`,
   );
+}
+
+/** Scheduled tasks via the agent's cron support. add needs schedule + command. */
+export async function cronAction(
+  vm: VmConfig,
+  action: "add" | "remove" | "run" | "logs",
+  name: string,
+  schedule?: string,
+  command?: string,
+): Promise<string> {
+  if (!PROJECT_NAME_RE.test(name)) throw new Error("task name: lowercase letters, digits and dashes");
+  return withVm(vm, async (conn) => {
+    await ensureAgent(conn);
+    const args = action === "add" ? `${name} ${shq(schedule ?? "")}` : name;
+    const res = await run(conn, `${HOSTCTL} cron ${action} ${args}`, { stdin: action === "add" ? `${command ?? ""}\n` : undefined, timeoutMs: action === "run" ? 120_000 : 60_000 });
+    const text = (res.stdout + (res.stderr ? `\n${res.stderr}` : "")).trim();
+    if (res.code !== 0) throw new Error(text || `cron ${action} failed`);
+    return text;
+  });
 }
 
 export type ProjectAction = "start" | "stop" | "restart" | "logs" | "remove" | "env";

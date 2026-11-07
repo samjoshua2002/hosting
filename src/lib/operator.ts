@@ -2,7 +2,7 @@
 // It runs commands, starts and watches background jobs, deploys and manages projects, and connects machines
 // to the database machine. Only destructive actions pause for the user's approval; then it carries on.
 import { chat, type ChatMessage, type ToolCall, type ToolDef } from "./ai";
-import { ensureAgent, fillGenerated, jobLog, newJobId, probe, projectAction, saveProject, startDeploy, startJob, PROJECT_NAME_RE, ENV_KEY_RE } from "./agent";
+import { cronAction, ensureAgent, fillGenerated, jobLog, newJobId, probe, projectAction, saveProject, startDeploy, startJob, PROJECT_NAME_RE, ENV_KEY_RE } from "./agent";
 import { getVm, getVms, type VmConfig } from "./config";
 import { isDestructive } from "./safety";
 import { mapLimit, run, withVm } from "./ssh";
@@ -38,6 +38,7 @@ How projects work (prefer deploy_project for anything that should keep running)
   redis: "docker rm -f redis-$PORT >/dev/null 2>&1; exec docker run --name redis-$PORT -p 127.0.0.1:$PORT:6379 -v $HOME/data/redis:/data redis:7 redis-server --appendonly yes --requirepass \\"$REDIS_PASSWORD\\"", port 6379
   Use install "mkdir -p ~/data/<engine>" and build "docker pull <image>" so slow downloads happen during the deploy job.
 - A dedicated database machine plus link_databases lets every other machine reach the databases at 127.0.0.1:<port>.
+- Recurring work (cron jobs: heartbeats, backups, cleanups, reports) uses schedule_task, never hand-edited crontabs: it installs cron if needed, logs every run, and shows up in the dashboard. Run it once right away with run_now to prove it works. Remember that a paused machine skips runs until it wakes.
 
 How you work
 - Investigate before changing things (fleet_status, run_command with read-only commands). Then act.
@@ -96,6 +97,24 @@ const TOOLS: ToolDef[] = [
     "start, stop, restart, read logs (last 200 lines), or remove (deletes code and service) a project on one machine.",
     { vm: { type: "string" }, name: { type: "string" }, action: { type: "string", enum: ["start", "stop", "restart", "logs", "remove"] } },
     ["vm", "name", "action"],
+  ),
+  fn(
+    "schedule_task",
+    "Create or replace a named recurring task (cron) on machines. schedule is 5 cron fields, e.g. '*/20 * * * *' (every 20 min), '0 3 * * *' (03:00 daily), or @hourly/@daily. Output is logged per task.",
+    {
+      name: { type: "string", description: "lowercase letters, digits, dashes" },
+      vms: { type: "array", items: { type: "string" } },
+      schedule: { type: "string" },
+      command: { type: "string", description: "bash to run; may be multi-line" },
+      run_now: { type: "boolean", description: "also run it once immediately and return the output" },
+    },
+    ["name", "vms", "schedule", "command"],
+  ),
+  fn(
+    "manage_task",
+    "For a scheduled task on machines: remove it, run it now, or read its recent log output.",
+    { name: { type: "string" }, vms: { type: "array", items: { type: "string" } }, action: { type: "string", enum: ["remove", "run", "logs"] } },
+    ["name", "vms", "action"],
   ),
   fn(
     "ask_user",
@@ -157,6 +176,10 @@ export function describe(call: ToolCall): { label: string; needsApproval: boolea
         needsApproval: a.action === "remove",
         detail: a.action === "remove" ? `Deletes ${str(a.name)} (code, service and link) from ${str(a.vm)}` : "",
       };
+    case "schedule_task":
+      return { label: `Scheduled ${str(a.name)} (${str(a.schedule)}) on ${on(a.vms)}`, needsApproval: isDestructive(str(a.command)), detail: str(a.command) };
+    case "manage_task":
+      return { label: `${str(a.action)} task ${str(a.name)} on ${on(a.vms)}`, needsApproval: false, detail: "" };
     case "ask_user":
       return { label: `Asked: ${clip(str(a.question), 100)}`, needsApproval: false, detail: "" };
     case "read_attachment":
@@ -197,6 +220,7 @@ async function execute(call: ToolCall, ctx: { sessionId?: string }): Promise<{ o
                 projects: g.projects.map((p) => ({ name: p.manifest.name, state: p.active, port: p.manifest.port, category: p.manifest.category ?? "app", url: p.url ?? null })),
                 jobsRunning: g.jobs.filter((j) => j.state === "running").map((j) => ({ id: j.id, label: j.meta.label })),
                 tunnels: g.tunnels,
+                scheduledTasks: g.cron,
               };
             }),
           ),
@@ -294,6 +318,33 @@ async function execute(call: ToolCall, ctx: { sessionId?: string }): Promise<{ o
         if (!["start", "stop", "restart", "logs", "remove"].includes(action)) return { ok: false, output: "invalid action" };
         const out = await projectAction(vm, name, action as "start" | "stop" | "restart" | "logs" | "remove");
         return { ok: true, output: clip(out, 5000) };
+      }
+      case "schedule_task": {
+        const vms = vmsFrom(a.vms);
+        const name = str(a.name);
+        const res = await mapLimit(vms, 8, async (vm) => {
+          try {
+            let out = await cronAction(vm, "add", name, str(a.schedule), str(a.command));
+            if (a.run_now) out += `\n${await cronAction(vm, "run", name)}`;
+            return { ok: true, line: `[${vm.name}] ${out}` };
+          } catch (e) {
+            return { ok: false, line: `[${vm.name}] ${(e as Error).message}` };
+          }
+        });
+        return { ok: res.every((r) => r.ok), output: clip(res.map((r) => r.line).join("\n\n"), 5000) };
+      }
+      case "manage_task": {
+        const vms = vmsFrom(a.vms);
+        const action = str(a.action) as "remove" | "run" | "logs";
+        if (!["remove", "run", "logs"].includes(action)) return { ok: false, output: "action must be remove, run or logs" };
+        const res = await mapLimit(vms, 8, async (vm) => {
+          try {
+            return { ok: true, line: `[${vm.name}] ${await cronAction(vm, action, str(a.name))}` };
+          } catch (e) {
+            return { ok: false, line: `[${vm.name}] ${(e as Error).message}` };
+          }
+        });
+        return { ok: res.every((r) => r.ok), output: clip(res.map((r) => r.line).join("\n\n"), 5000) };
       }
       case "read_attachment": {
         if (!ctx.sessionId) return { ok: false, output: "no session: attachments are unavailable" };

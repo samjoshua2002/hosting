@@ -98,6 +98,80 @@ list_tunnels() {
   done
 }
 
+# ---------- scheduled tasks (cron) ----------
+# Named tasks are two crontab lines: "# hosting:<name>" then the entry, which runs ~/.hosting/cron/<name>.sh
+# and appends to <name>.log. Entries added by hand (no marker) are listed too, with an empty name.
+CRON_DIR="$H/cron"
+
+cron_ensure() {
+  command -v crontab >/dev/null 2>&1 && return 0
+  sudo -n apt-get update -qq >/dev/null 2>&1
+  sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cron >/dev/null 2>&1
+  sudo -n systemctl enable --now cron >/dev/null 2>&1
+  command -v crontab >/dev/null 2>&1
+}
+
+list_cron() {
+  command -v crontab >/dev/null 2>&1 || return 0
+  crontab -l 2>/dev/null | awk -v d="$CRON_DIR" '
+    function esc(x) { gsub(/\\/, "\\\\", x); gsub(/"/, "\\\"", x); gsub(/\t/, " ", x); return x }
+    /^# hosting:/ { name = substr($0, 11); next }
+    /^[[:space:]]*(#|$)/ { next }
+    /^[A-Za-z_][A-Za-z0-9_]*=/ { next }
+    {
+      line = $0
+      if ($1 ~ /^@/) { sched = $1; sub(/^[[:space:]]*[^[:space:]]+[[:space:]]+/, "", line) }
+      else { sched = $1 " " $2 " " $3 " " $4 " " $5; for (i = 0; i < 5; i++) sub(/^[[:space:]]*[^[:space:]]+[[:space:]]+/, "", line) }
+      if (name != "") {
+        # named task: show the command the user scheduled, not the wrapper
+        f = d "/" name ".cmd"; body = ""
+        while ((getline l < f) > 0) body = body (body == "" ? "" : "; ") l
+        close(f)
+        if (body != "") line = body
+      }
+      printf "%s{\"name\":\"%s\",\"schedule\":\"%s\",\"command\":\"%s\"}", (n++ ? "," : ""), esc(name), esc(sched), esc(substr(line, 1, 400))
+      name = ""
+    }'
+}
+
+cron_without() { crontab -l 2>/dev/null | awk -v m="# hosting:$1" '$0 == m { skip = 1; next } skip { skip = 0; next } { print }'; }
+
+cmd_cron() {
+  local act=$1 n=$2 sched=$3 tmp body
+  case "$act" in
+    list) printf '['; list_cron; printf ']\n'; return ;;
+  esac
+  valid_name "$n" || die "invalid task name (lowercase letters, digits, dashes)"
+  case "$act" in
+    add)
+      cron_ensure || die "cron is not available and could not be installed"
+      [[ "$sched" =~ ^(@(reboot|hourly|daily|weekly|monthly|yearly|annually|midnight)|[0-9*/,-]+[[:space:]]+[0-9*/,-]+[[:space:]]+[0-9*/,?LW-]+[[:space:]]+[0-9A-Za-z*/,-]+[[:space:]]+[0-9A-Za-z*/,?L#-]+)$ ]] || die "schedule must be 5 cron fields (e.g. */20 * * * *) or @hourly/@daily"
+      mkdir -p "$CRON_DIR"
+      body=$(cat)
+      [ -n "$body" ] || die "empty command"
+      printf '%s\n' "$body" > "$CRON_DIR/$n.cmd"
+      { echo '#!/usr/bin/env bash'; echo 'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"'; echo 'cd "$HOME" || exit 1'; echo 'echo "---- $(date -u +%Y-%m-%dT%H:%M:%SZ) ----"'; printf '%s\n' "$body"; } > "$CRON_DIR/$n.sh"
+      chmod 700 "$CRON_DIR/$n.sh"
+      tmp=$(mktemp)
+      { cron_without "$n"; echo "# hosting:$n"; echo "$sched /bin/bash $CRON_DIR/$n.sh >> $CRON_DIR/$n.log 2>&1"; } > "$tmp"
+      crontab "$tmp" && rm -f "$tmp" && echo "scheduled $n: $sched"
+      ;;
+    remove)
+      tmp=$(mktemp)
+      cron_without "$n" > "$tmp"
+      crontab "$tmp" && rm -f "$tmp" "$CRON_DIR/$n.sh" "$CRON_DIR/$n.cmd" && echo "removed $n"
+      ;;
+    run)
+      [ -f "$CRON_DIR/$n.sh" ] || die "no task $n"
+      bash "$CRON_DIR/$n.sh" >> "$CRON_DIR/$n.log" 2>&1
+      echo "exit $?"
+      tail -n 20 "$CRON_DIR/$n.log"
+      ;;
+    logs) if [ -f "$CRON_DIR/$n.log" ]; then tail -n 200 "$CRON_DIR/$n.log"; else echo "(no runs yet)"; fi ;;
+    *) die "unknown cron action: $act" ;;
+  esac
+}
+
 list_ports() {
   local out=""
   if command -v instabox-port >/dev/null 2>&1; then
@@ -155,6 +229,8 @@ cmd_status() {
   list_projects
   printf '],"jobs":['
   list_jobs
+  printf '],"cron":['
+  list_cron
   printf '],"tunnels":['
   list_tunnels
   printf '],"ports":'
@@ -375,6 +451,7 @@ case "$1" in
   job-kill) shift; cmd_job_kill "$@" ;;
   deploy) shift; cmd_deploy "$@" ;;
   project) shift; cmd_project "$@" ;;
+  cron) shift; cmd_cron "$@" ;;
   *)
     echo "usage: hostctl {version|status|job-start|job-log|job-kill|deploy|project}" >&2
     exit 2

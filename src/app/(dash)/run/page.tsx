@@ -4,6 +4,7 @@ import { Clock, Loader2, ScrollText, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useCluster } from "@/components/cluster";
 import { PageHero } from "@/components/page-hero";
+import { ScheduledTasks } from "@/components/scheduled-tasks";
 import { Badge, Button, Card, SectionTitle, StatusDot, cx } from "@/components/ui";
 import { useSearchParam, useStored } from "@/lib/client";
 import { timeAgo, vmState } from "@/lib/format";
@@ -287,6 +288,8 @@ export default function RunPage() {
           </button>
         ))}
       </div>
+
+      <ScheduledTasks />
 
       <section>
         <SectionTitle
