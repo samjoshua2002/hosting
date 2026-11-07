@@ -216,6 +216,7 @@ write_unit() {
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:\$PATH"
 cd "$HOME/apps/$n" || exit 1
 . "$P/$n.conf"
+[ -s "$P/$n.start-cmd" ] && START=\$(cat "$P/$n.start-cmd")
 set -a
 [ -f "$P/$n.env" ] && . "$P/$n.env"
 set +a
@@ -272,6 +273,13 @@ cmd_deploy() {
   if [ -n "$BUILD" ]; then
     echo "==> $BUILD"
     bash -c "$BUILD" || die "build step failed"
+  fi
+  # Next.js static export (output: 'export') can't run "next start": serve the exported ./out folder instead
+  rm -f "$P/$n.start-cmd"
+  if printf '%s' "$START" | grep -q "next start\|npm run start\|npm start" && [ -d out ] &&
+    grep -qsE "output[\"']?[[:space:]]*:[[:space:]]*[\"']export[\"']" next.config.* 2>/dev/null; then
+    echo "==> static export detected (output: 'export'): serving ./out"
+    printf '%s' 'exec npx --yes serve -s out -l "$PORT"' > "$P/$n.start-cmd"
   fi
   if [ -n "$START" ]; then
     write_unit "$n"
