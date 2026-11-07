@@ -17,10 +17,10 @@ export async function requireAuth(req: NextRequest): Promise<void> {
   if (!(await verifySession(req.cookies))) throw new HttpError(401, "unauthorized");
 }
 
-export async function readJson<T>(req: NextRequest): Promise<T> {
+export async function readJson<T>(req: NextRequest, maxBytes = 200_000): Promise<T> {
   if (!req.headers.get("content-type")?.includes("application/json")) throw new HttpError(415, "expected JSON");
   const text = await req.text();
-  if (text.length > 200_000) throw new HttpError(413, "request too large");
+  if (text.length > maxBytes) throw new HttpError(413, "request too large");
   try {
     return JSON.parse(text) as T;
   } catch {

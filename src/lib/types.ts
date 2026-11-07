@@ -22,6 +22,8 @@ export interface ProjectManifest {
   publish: boolean;
   /** public: anyone with the URL; private: the URL carries a secret token */
   access?: "public" | "private";
+  /** what the dashboard groups it under; databases get their own page */
+  category?: "app" | "database" | "tool";
   envKeys: string[];
   createdAt: string;
   updatedAt: string;
@@ -77,6 +79,8 @@ export interface AgentStatus {
   projects: ProjectState[];
   jobs: JobState[];
   ports: PublishedPort[];
+  /** SSH tunnels from this machine to a database machine */
+  tunnels: { to: string; active: string; ports?: number[] }[];
   /** Samples newer than the `since` the caller asked for. */
   history: Sample[];
 }

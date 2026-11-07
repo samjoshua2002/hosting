@@ -10,6 +10,11 @@ const DESTRUCTIVE = [
   /\bdocker\s+(system|volume)\s+prune\b.*-a/,
   /\bgit\s+push\s+.*--force\b/,
   /\bsystemctl\s+(stop|disable)\s+ssh/,
+  /\bapt(-get)?\s+(-\S+\s+)*(remove|purge|autoremove)\b/,
+  /\b(DROP\s+(DATABASE|TABLE|SCHEMA)|TRUNCATE\s+TABLE)\b/i,
+  /\bdropdb\b|\bdb\.dropDatabase\(|\bFLUSHALL\b/i,
+  /\b(userdel|wipefs|shred)\b/,
+  /\bdocker\s+volume\s+rm\b/,
 ];
 
 export function isDestructive(command: string): boolean {

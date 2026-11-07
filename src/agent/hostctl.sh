@@ -83,6 +83,21 @@ list_jobs() {
   done
 }
 
+# Tunnels to a database machine (hosting-tunnel-<vm>.service, written by the dashboard)
+list_tunnels() {
+  local first=1 f n
+  for f in "$UNIT_DIR"/hosting-tunnel-*.service; do
+    [ -e "$f" ] || continue
+    n=$(basename "$f" .service)
+    n=${n#hosting-tunnel-}
+    valid_name "$n" || continue
+    [ $first -eq 1 ] || printf ','
+    first=0
+    printf '{"to":"%s","active":%s,"ports":[%s]}' "$n" "$(json_str "$(systemctl --user is-active "hosting-tunnel-$n.service" 2>/dev/null)")" \
+      "$(grep -o '127\.0\.0\.1:[0-9]*:127' "$f" | cut -d: -f2 | paste -sd, -)"
+  done
+}
+
 list_ports() {
   local out=""
   if command -v instabox-port >/dev/null 2>&1; then
@@ -140,6 +155,8 @@ cmd_status() {
   list_projects
   printf '],"jobs":['
   list_jobs
+  printf '],"tunnels":['
+  list_tunnels
   printf '],"ports":'
   list_ports
   printf ',"history":'
@@ -329,6 +346,10 @@ cmd_project() {
       ;;
     logs)
       if [ -f "$P/$n.log" ]; then tail -n "$lines" "$P/$n.log"; else echo "(no logs yet)"; fi
+      ;;
+    env)
+      [ -f "$P/$n.env" ] && cat "$P/$n.env"
+      true
       ;;
     remove)
       systemctl --user disable --now "hosting-$n.service" >/dev/null 2>&1

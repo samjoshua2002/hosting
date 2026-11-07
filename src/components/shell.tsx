@@ -1,6 +1,6 @@
 "use client";
 
-import { FolderGit2, LayoutDashboard, LogOut, MessagesSquare, RefreshCw, Server, ShieldCheck, SquareTerminal, Workflow } from "lucide-react";
+import { Database, FolderGit2, LayoutDashboard, LogOut, MessagesSquare, RefreshCw, Server, ShieldCheck, SquareTerminal, Workflow } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
@@ -13,6 +13,7 @@ const NAV = [
   { href: "/pipeline", label: "Pipeline", icon: Workflow },
   { href: "/run", label: "Run", icon: SquareTerminal },
   { href: "/projects", label: "Projects", icon: FolderGit2 },
+  { href: "/databases", label: "Databases", icon: Database },
   { href: "/assistant", label: "Assistant", icon: MessagesSquare },
   { href: "/machines", label: "Machines", icon: Server },
   { href: "/security", label: "Security", icon: ShieldCheck },

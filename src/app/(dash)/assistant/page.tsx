@@ -1,93 +1,168 @@
 "use client";
 
-import { CheckCircle2, Loader2, MessagesSquare, Play, SendHorizonal, ShieldAlert, Wrench, XCircle } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Check, ChevronRight, Loader2, MessagesSquare, Play, RotateCcw, SendHorizonal, ShieldAlert, Square, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useCluster } from "@/components/cluster";
-import { Badge, Button, Card, Output, cx } from "@/components/ui";
-import { api } from "@/lib/client";
+import { Markdown, inline } from "@/components/markdown";
 import { UnsplashLayer, useTheme } from "@/components/theme";
-import { isDestructive } from "@/lib/safety";
-import type { ExecResult } from "@/lib/types";
+import { Button, Card, cx } from "@/components/ui";
+import type { ChatMessage } from "@/lib/ai";
 
-interface Proposal {
-  id: string;
-  title: string;
-  why: string;
-  command: string;
-  targets: string[];
-  risk: "low" | "medium" | "high";
-  background: boolean;
-}
-interface Step {
-  tool: string;
-  label: string;
-  ok: boolean;
-}
-interface Turn {
-  role: "user" | "assistant";
-  content: string;
-  steps?: Step[];
-  proposals?: Proposal[];
-  model?: string;
-  error?: boolean;
-}
+type Item =
+  | { kind: "user"; text: string }
+  | { kind: "text"; text: string }
+  | { kind: "step"; id: string; label: string; running: boolean; ok?: boolean; output?: string }
+  | { kind: "approval"; id: string; label: string; detail: string; decision?: boolean };
+
+type Event =
+  | { type: "text"; content: string }
+  | { type: "tool"; id: string; label: string }
+  | { type: "tool_result"; id: string; ok: boolean; output: string }
+  | { type: "approval"; id: string; label: string; detail: string }
+  | { type: "done"; transcript: ChatMessage[]; waiting: boolean; paused: boolean };
+
+const STORE = "hosting.operator";
 
 const STARTERS = [
-  "Give me a health report of the whole fleet",
-  "Which machine has the most room for a new Next.js app?",
-  "Audit the security of every VM",
-  "Find what is using the most disk and how to free it",
+  "Make box5 the database machine: run PostgreSQL, MySQL, MongoDB and Redis there with strong passwords, and connect every other machine to them",
+  "Check every machine and fix anything that looks wrong",
+  "Deploy https://github.com/vercel/next.js/tree/canary/examples/hello-world as a project on box2 with a public link",
+  "Free up disk space on all machines and tell me how much you saved",
 ];
 
-export default function AgentPage() {
-  const { exec, startJobs, openJob } = useCluster();
-  const [turns, setTurns] = useState<Turn[]>([]);
+export default function AssistantPage() {
+  const { refresh } = useCluster();
+  const { photo } = useTheme();
+  const [items, setItems] = useState<Item[]>([]);
+  const [transcript, setTranscript] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [configured, setConfigured] = useState(true);
-  const { photo } = useTheme();
-  const [runs, setRuns] = useState<Record<string, { state: "running" | "done"; results: ExecResult[] }>>({});
+  const abort = useRef<AbortController | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
 
+  // restore the conversation after a refresh (deferred: storage is only readable after mount)
   useEffect(() => {
-    api<{ configured: boolean }>("/api/ai/models")
-      .then((d) => setConfigured(d.configured))
+    queueMicrotask(() => {
+      try {
+        const saved = JSON.parse(sessionStorage.getItem(STORE) ?? "null");
+        if (saved?.items) {
+          setItems((saved.items as Item[]).map((i) => (i.kind === "step" ? { ...i, running: false } : i)));
+          setTranscript(saved.transcript ?? []);
+        }
+      } catch {
+        /* nothing saved */
+      }
+    });
+    fetch("/api/ai/models", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setConfigured(Boolean(d.configured)))
       .catch(() => setConfigured(false));
   }, []);
 
-  useEffect(() => bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" }), [turns, busy]);
-
-  const send = async (text: string) => {
-    const content = text.trim();
-    if (!content || busy) return;
-    const next: Turn[] = [...turns, { role: "user", content }];
-    setTurns(next);
-    setInput("");
-    setBusy(true);
+  useEffect(() => {
     try {
-      const res = await api<{ reply: string; steps: Step[]; proposals: Proposal[]; model: string }>("/api/ai/chat", {
-        messages: next.filter((t) => !t.error).map((t) => ({ role: t.role, content: t.content })),
+      sessionStorage.setItem(STORE, JSON.stringify({ items, transcript }));
+    } catch {
+      /* storage full or unavailable */
+    }
+  }, [items, transcript]);
+
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [items, busy]);
+
+  const pending = items.filter((i): i is Extract<Item, { kind: "approval" }> => i.kind === "approval" && i.decision === undefined);
+
+  const send = async (body: { message?: string; approvals?: Record<string, boolean> }) => {
+    setBusy(true);
+    setPaused(false);
+    const ctrl = new AbortController();
+    abort.current = ctrl;
+    try {
+      const res = await fetch("/api/ai/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript, ...body }),
+        signal: ctrl.signal,
       });
-      setTurns((t) => [...t, { role: "assistant", content: res.reply, steps: res.steps, proposals: res.proposals, model: res.model }]);
+      if (res.status === 401) {
+        window.location.replace("/login");
+        return;
+      }
+      if (!res.ok || !res.body) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error ?? `Request failed (${res.status})`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (value) buf += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (line) handle(JSON.parse(line) as Event);
+        }
+        if (done) break;
+      }
     } catch (e) {
-      setTurns((t) => [...t, { role: "assistant", content: (e as Error).message, error: true }]);
+      if ((e as Error).name !== "AbortError") setItems((x) => [...x, { kind: "text", text: `⚠️ ${(e as Error).message}` }]);
+      else setItems((x) => [...x, { kind: "text", text: "Stopped." }]);
     } finally {
       setBusy(false);
+      abort.current = null;
+      setItems((x) => x.map((i) => (i.kind === "step" && i.running ? { ...i, running: false } : i)));
+      void refresh();
     }
   };
 
-  const approve = async (p: Proposal) => {
-    if (isDestructive(p.command) && !confirm(`This command can destroy data:\n\n${p.command}\n\nRun it on ${p.targets.join(", ")}?`)) return;
-    if (p.background) {
-      const jobs = await startJobs(p.targets, p.command, p.title);
-      const first = jobs.find((j) => j.id);
-      if (first?.id) openJob({ vm: first.vm, id: first.id, title: p.title });
-      setRuns((r) => ({ ...r, [p.id]: { state: "done", results: [] } }));
-      return;
+  const handle = (e: Event) => {
+    if (e.type === "text") setItems((x) => [...x, { kind: "text", text: e.content }]);
+    else if (e.type === "tool") setItems((x) => [...x, { kind: "step", id: e.id, label: e.label, running: true }]);
+    else if (e.type === "tool_result")
+      setItems((x) => {
+        const has = x.some((i) => i.kind === "step" && i.id === e.id);
+        return has
+          ? x.map((i) => (i.kind === "step" && i.id === e.id ? { ...i, running: false, ok: e.ok, output: e.output } : i))
+          : [...x, { kind: "step", id: e.id, label: e.output === "declined" ? "Declined" : "Action", running: false, ok: e.ok, output: e.output }];
+      });
+    else if (e.type === "approval") setItems((x) => [...x, { kind: "approval", id: e.id, label: e.label, detail: e.detail }]);
+    else if (e.type === "done") {
+      setTranscript(e.transcript);
+      setPaused(e.paused);
     }
-    setRuns((r) => ({ ...r, [p.id]: { state: "running", results: [] } }));
-    const results = await exec(p.targets, p.command);
-    setRuns((r) => ({ ...r, [p.id]: { state: "done", results } }));
+  };
+
+  const submit = () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    setInput("");
+    // answering while an approval is open counts as declining it
+    setItems((x) => [...x.map((i) => (i.kind === "approval" && i.decision === undefined ? { ...i, decision: false } : i)), { kind: "user", text }]);
+    void send({ message: text });
+  };
+
+  const decide = (id: string, ok: boolean) => {
+    const next = items.map((i) => (i.kind === "approval" && i.id === id ? { ...i, decision: ok } : i));
+    setItems(next);
+    const open = next.filter((i) => i.kind === "approval" && i.decision === undefined);
+    if (!open.length) {
+      const approvals = Object.fromEntries(
+        next.filter((i): i is Extract<Item, { kind: "approval" }> => i.kind === "approval" && pending.some((p) => p.id === i.id)).map((i) => [i.id, Boolean(i.decision)]),
+      );
+      void send({ approvals });
+    }
+  };
+
+  const reset = () => {
+    if (busy) return;
+    setItems([]);
+    setTranscript([]);
+    setPaused(false);
   };
 
   return (
@@ -97,26 +172,33 @@ export default function AgentPage() {
           <span className="grid size-12 place-items-center rounded-2xl bg-white/10 ring-1 ring-white/20 backdrop-blur">
             <MessagesSquare className="size-6 text-white" />
           </span>
-          <div>
+          <div className="flex-1">
             <h1 className="text-2xl font-extrabold tracking-tight text-white">Assistant</h1>
-            <p className="text-sm text-ink/75">Ask about your servers. It checks them read-only; anything that changes a machine waits for your OK.</p>
+            <p className="text-sm text-ink/75">Tell it what you want done. It runs the commands, deploys, checks the result and keeps going until the job is done.</p>
           </div>
+          {items.length > 0 && (
+            <button onClick={reset} disabled={busy} className="flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-xs text-ink hover:bg-white/10 disabled:opacity-40">
+              <RotateCcw className="size-3.5" /> New conversation
+            </button>
+          )}
         </div>
       </UnsplashLayer>
 
-      <div className="scroll-thin mx-auto min-h-0 w-full max-w-4xl flex-1 space-y-5 overflow-y-auto py-5">
-        {!configured && (
-          <Card className="p-5 text-sm text-ink">Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY to enable the assistant.</Card>
-        )}
-        {turns.length === 0 && configured && (
-          <div className="pt-6 text-center">
-            <p className="text-lg font-semibold text-white">What should I look into?</p>
-            <div className="mx-auto mt-5 grid max-w-2xl gap-2 sm:grid-cols-2">
+      <div className="scroll-thin mx-auto min-h-0 w-full max-w-4xl flex-1 space-y-3 overflow-y-auto py-5">
+        {!configured && <Card className="p-5 text-sm text-ink">Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY to enable the assistant.</Card>}
+
+        {items.length === 0 && configured && (
+          <div className="pt-6">
+            <p className="text-center text-lg font-semibold text-white">What should I do?</p>
+            <div className="mt-5 grid grid-cols-2 gap-2">
               {STARTERS.map((s) => (
                 <button
                   key={s}
-                  onClick={() => send(s)}
-                  className="rounded-xl border border-white/[0.08] bg-[var(--panel)] px-4 py-3 text-left text-sm text-zinc-200 hover:border-[var(--accent)]/60 hover:bg-[var(--panel-2)]"
+                  onClick={() => {
+                    setItems([{ kind: "user", text: s }]);
+                    void send({ message: s });
+                  }}
+                  className="rounded-xl border border-white/[0.08] bg-panel px-4 py-3 text-left text-sm text-zinc-200 hover:border-accent/60 hover:bg-panel-2"
                 >
                   {s}
                 </button>
@@ -125,62 +207,58 @@ export default function AgentPage() {
           </div>
         )}
 
-        {turns.map((t, i) =>
-          t.role === "user" ? (
-            <div key={i} className="flex justify-end">
-              <div className="max-w-[85%] rounded-2xl rounded-br-md bg-white px-4 py-2.5 text-sm text-[#0b0e1c]">{t.content}</div>
-            </div>
-          ) : (
-            <div key={i} className="space-y-3">
-              {t.steps && t.steps.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {t.steps.map((s, j) => (
-                    <span key={j} className={cx("flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px]", s.ok ? "border-white/10 text-muted" : "border-rose-900/60 text-rose-300")}>
-                      <Wrench className="size-3" /> {s.label}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <Card className={cx("p-5 text-sm leading-relaxed", t.error && "border-rose-900/60 text-rose-300")}>
-                <Markdown text={t.content} />
+        {items.map((it, i) => {
+          if (it.kind === "user")
+            return (
+              <div key={i} className="flex justify-end pt-2">
+                <div className="max-w-[85%] rounded-2xl rounded-br-md bg-white px-4 py-2.5 text-sm text-[#0b0e1c]">{it.text}</div>
+              </div>
+            );
+          if (it.kind === "text")
+            return (
+              <Card key={i} className="p-5 text-sm leading-relaxed">
+                <Markdown text={it.text} />
               </Card>
-              {t.proposals?.map((p) => {
-                const run = runs[p.id];
-                return (
-                  <Card key={p.id} className="border-[var(--accent)]/30 p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="flex items-center gap-2 text-sm font-semibold text-white">
-                          {p.title}
-                          <Badge tone={p.risk === "high" ? "red" : p.risk === "medium" ? "amber" : "green"}>{p.risk} risk</Badge>
-                        </p>
-                        <p className="mt-1 text-xs text-muted">{p.why}</p>
-                      </div>
-                      <Button size="sm" variant={run ? "default" : "primary"} onClick={() => approve(p)} loading={run?.state === "running"}>
-                        {p.risk === "high" ? <ShieldAlert className="size-3.5" /> : <Play className="size-3.5" />}
-                        {run ? "Run again" : `Approve & run on ${p.targets.join(", ")}`}
-                      </Button>
-                    </div>
-                    <pre className="mt-3 overflow-x-auto rounded-lg bg-black/40 p-3 font-mono text-[12px] text-ink">{p.command}</pre>
-                    {run?.results.map((r) => (
-                      <div key={r.vm} className="mt-3">
-                        <p className="mb-1 flex items-center gap-1.5 text-xs text-muted">
-                          {r.code === 0 ? <CheckCircle2 className="size-3.5 text-[var(--good-text)]" /> : <XCircle className="size-3.5 text-rose-400" />}
-                          <span className="font-mono">{r.vm}</span> · {r.code === null ? r.error : `exit ${r.code}`}
-                        </p>
-                        <Output text={r.stdout} className="max-h-48" />
-                        <Output text={r.stderr} tone="err" className="mt-1 max-h-32" />
-                      </div>
-                    ))}
-                  </Card>
-                );
-              })}
-            </div>
-          ),
-        )}
+            );
+          if (it.kind === "step") return <Step key={it.id + i} step={it} />;
+          return (
+            <Card key={it.id} className={cx("p-4", it.decision === undefined ? "border-[var(--warning)]/50" : "opacity-70")}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="flex items-center gap-2 text-sm font-semibold text-white">
+                    <ShieldAlert className="size-4 shrink-0 text-[var(--warning)]" />
+                    Needs your OK: <span className="font-normal">{inline(it.label)}</span>
+                  </p>
+                  {it.detail && <pre className="mt-2 overflow-x-auto rounded-lg bg-black/40 p-3 font-mono text-[12px] text-ink">{it.detail}</pre>}
+                </div>
+                {it.decision === undefined ? (
+                  <div className="flex shrink-0 gap-2">
+                    <Button size="sm" variant="ghost" onClick={() => decide(it.id, false)} disabled={busy}>
+                      <X className="size-3.5" /> Decline
+                    </Button>
+                    <Button size="sm" variant="primary" onClick={() => decide(it.id, true)} disabled={busy}>
+                      <Check className="size-3.5" /> Approve
+                    </Button>
+                  </div>
+                ) : (
+                  <span className="shrink-0 text-xs text-muted">{it.decision ? "approved" : "declined"}</span>
+                )}
+              </div>
+            </Card>
+          );
+        })}
+
         {busy && (
-          <div className="flex items-center gap-2 text-sm text-muted">
-            <Loader2 className="size-4 animate-spin" /> Checking your machines… (this can take a minute)
+          <div className="flex items-center gap-2 py-1 text-sm text-muted">
+            <Loader2 className="size-4 animate-spin" /> Working…
+          </div>
+        )}
+        {paused && !busy && (
+          <div className="flex items-center gap-3 py-1 text-sm text-muted">
+            Still going: it paused to stay within the time limit.
+            <Button size="sm" variant="primary" onClick={() => void send({ message: "Continue." })}>
+              <Play className="size-3.5" /> Continue
+            </Button>
           </div>
         )}
         <div ref={bottom} />
@@ -189,9 +267,9 @@ export default function AgentPage() {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          void send(input);
+          submit();
         }}
-        className="mx-auto mb-6 flex w-full max-w-4xl items-end gap-2 rounded-2xl border border-white/[0.08] bg-[var(--panel)] p-2"
+        className="mx-auto mb-6 flex w-full max-w-4xl items-end gap-2 rounded-2xl border border-white/[0.08] bg-panel p-2"
       >
         <textarea
           value={input}
@@ -199,71 +277,47 @@ export default function AgentPage() {
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              void send(input);
+              submit();
             }
           }}
           rows={1}
-          placeholder="e.g. Why is box2 slow?  (Enter to send)"
-          className="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none"
+          placeholder={pending.length ? "Approve or decline above, or type to change course…" : "Tell it what to do… (Enter to send)"}
+          className="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-3 py-2 text-sm text-white placeholder:text-muted focus:outline-none"
         />
-        <Button type="submit" variant="primary" disabled={!input.trim() || busy || !configured}>
-          <SendHorizonal className="size-4" />
-        </Button>
+        {busy ? (
+          <Button type="button" variant="danger" onClick={() => abort.current?.abort()}>
+            <Square className="size-3.5" /> Stop
+          </Button>
+        ) : (
+          <Button type="submit" variant="primary" disabled={!input.trim() || !configured}>
+            <SendHorizonal className="size-4" />
+          </Button>
+        )}
       </form>
     </div>
   );
 }
 
-/** Tiny, safe markdown: headings, bullets, numbered lists, **bold**, `code`, code blocks. No HTML injection. */
-function Markdown({ text }: { text: string }) {
-  const blocks: ReactNode[] = [];
-  const lines = text.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.startsWith("```")) {
-      const code: string[] = [];
-      for (i++; i < lines.length && !lines[i].startsWith("```"); i++) code.push(lines[i]);
-      blocks.push(
-        <pre key={i} className="my-2 overflow-x-auto rounded-lg bg-black/40 p-3 font-mono text-[12px] text-ink">
-          {code.join("\n")}
-        </pre>,
-      );
-    } else if (/^#{1,4}\s/.test(line)) {
-      blocks.push(
-        <p key={i} className="mt-3 mb-1 font-semibold text-white">
-          {inline(line.replace(/^#+\s/, ""))}
-        </p>,
-      );
-    } else if (/^\s*([-*]|\d+\.)\s/.test(line)) {
-      blocks.push(
-        <div key={i} className="flex gap-2 pl-1 text-zinc-200" style={{ paddingLeft: `${(line.match(/^\s*/)?.[0].length ?? 0) * 6 + 4}px` }}>
-          <span className="text-[var(--accent-soft)]">{/^\s*\d+\./.test(line) ? line.trim().split(" ")[0] : "•"}</span>
-          <span>{inline(line.replace(/^\s*([-*]|\d+\.)\s/, ""))}</span>
-        </div>,
-      );
-    } else if (line.trim()) {
-      blocks.push(
-        <p key={i} className="my-1 text-zinc-200">
-          {inline(line)}
-        </p>,
-      );
-    } else blocks.push(<div key={i} className="h-2" />);
-  }
-  return <div>{blocks}</div>;
-}
-
-function inline(s: string): ReactNode[] {
-  return s.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).map((part, i) =>
-    part.startsWith("`") && part.endsWith("`") ? (
-      <code key={i} className="rounded bg-black/40 px-1 py-0.5 font-mono text-[12px] text-ink">
-        {part.slice(1, -1)}
-      </code>
-    ) : part.startsWith("**") && part.endsWith("**") ? (
-      <b key={i} className="font-semibold text-white">
-        {part.slice(2, -2)}
-      </b>
-    ) : (
-      part
-    ),
+function Step({ step }: { step: Extract<Item, { kind: "step" }> }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-white/[0.06] bg-black/20">
+      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[13px]" disabled={!step.output}>
+        {step.running ? (
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-accent" />
+        ) : step.ok ? (
+          <Check className="size-3.5 shrink-0 text-accent" />
+        ) : (
+          <X className="size-3.5 shrink-0 text-[var(--critical-text)]" />
+        )}
+        <span className="min-w-0 flex-1 truncate text-ink/90">{inline(step.label)}</span>
+        {step.output && <ChevronRight className={cx("size-3.5 shrink-0 text-muted transition-transform", open && "rotate-90")} />}
+      </button>
+      {open && step.output && (
+        <pre className="scroll-thin max-h-72 overflow-auto border-t border-white/[0.06] px-3.5 py-2.5 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-zinc-300">
+          {step.output}
+        </pre>
+      )}
+    </div>
   );
 }

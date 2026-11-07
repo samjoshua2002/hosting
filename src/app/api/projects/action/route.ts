@@ -6,7 +6,7 @@ import { audit } from "@/lib/security";
 
 export const maxDuration = 60;
 
-const ACTIONS = new Set(["deploy", "start", "stop", "restart", "logs", "remove"]);
+const ACTIONS = new Set(["deploy", "start", "stop", "restart", "logs", "remove", "env"]);
 
 /** POST /api/projects/action { vm, name, action } */
 export const POST = handle(async (req: NextRequest) => {
@@ -19,6 +19,20 @@ export const POST = handle(async (req: NextRequest) => {
   if (!ACTIONS.has(action)) throw new HttpError(400, "invalid action");
 
   if (action !== "logs") audit(req, `project.${action}`, { vm: vm.name, name });
+
+  if (action === "env") {
+    // KEY='value' lines (written by saveProject with shell quoting) → plain pairs for the UI
+    const text = await projectAction(vm, name, "env");
+    const env: { key: string; value: string }[] = [];
+    for (const line of text.split("\n")) {
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
+      if (!m) continue;
+      let v = m[2];
+      if (v.startsWith("'") && v.endsWith("'")) v = v.slice(1, -1).replace(/'\\''/g, "'");
+      env.push({ key: m[1], value: v });
+    }
+    return Response.json({ env });
+  }
 
   if (action === "deploy") {
     const id = await withVm(vm, async (conn) => {

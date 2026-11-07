@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { ENV_KEY_RE, PROJECT_NAME_RE, saveProject, startDeploy, type ProjectInput } from "@/lib/agent";
+import { ENV_KEY_RE, PROJECT_NAME_RE, fillGenerated, saveProject, startDeploy, type ProjectInput } from "@/lib/agent";
 import { handle, HttpError, readJson, requireAuth, vmsOrThrow } from "@/lib/api";
 import { mapLimit, withVm } from "@/lib/ssh";
 import type { JobStartResult } from "@/lib/types";
@@ -18,6 +18,7 @@ interface Body {
   port?: unknown;
   publish?: unknown;
   access?: unknown;
+  category?: unknown;
   /** "KEY=value" lines; omit or null to keep the env already on the VM. */
   env?: unknown;
   createdAt?: unknown;
@@ -68,7 +69,8 @@ export const POST = handle(async (req: NextRequest) => {
     port,
     publish: Boolean(b.publish) && port !== null,
     access: b.access === "private" ? "private" : "public",
-    env: typeof b.env === "string" ? parseEnv(b.env) : null,
+    category: b.category === "database" || b.category === "tool" ? b.category : "app",
+    env: typeof b.env === "string" ? fillGenerated(parseEnv(b.env)) : null,
   };
   const createdAt = typeof b.createdAt === "string" ? b.createdAt : undefined;
   audit(req, "project.save", { name, repo, targets: vms.map((v) => v.name) });

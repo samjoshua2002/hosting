@@ -10,7 +10,7 @@ import { PhotoCredit, UnsplashLayer, shuffleTheme, useTheme } from "@/components
 import { Card, Empty, Meter, StatusDot, cx } from "@/components/ui";
 import { METRICS, RANGES, buildBuckets, fmtClock, totals, type Metric, type RangeId } from "@/lib/analytics";
 import { useStored } from "@/lib/client";
-import { fmtDuration, fmtKb, pct, timeAgo, vmMetrics, vmState } from "@/lib/format";
+import { fmtDuration, fmtKb, timeAgo, vmMetrics, vmState } from "@/lib/format";
 import { findProblems } from "@/lib/health";
 
 const NOUN: Record<Metric, string> = { cpu: "CPU", memory: "Memory", storage: "Storage" };

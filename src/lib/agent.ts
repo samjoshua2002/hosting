@@ -44,6 +44,7 @@ function parseStatus(text: string): AgentStatus | null {
       ...raw,
       ports: (raw.ports?.ports ?? []).map((p) => ({ port: p.port, name: p.name, url: p.url, access: p.access })),
       history: Array.isArray(raw.history) ? raw.history : [],
+      tunnels: Array.isArray(raw.tunnels) ? raw.tunnels : [],
     };
   } catch {
     return null;
@@ -123,8 +124,23 @@ export interface ProjectInput {
   port: number | null;
   publish: boolean;
   access: "public" | "private";
+  category: "app" | "database" | "tool";
   /** null keeps the env file already on the VM. */
   env: Record<string, string> | null;
+}
+
+/** Env values written as "generate" become 32 random characters, created here and never shown to the model. */
+export function fillGenerated(env: Record<string, string> | null): Record<string, string> | null {
+  if (!env) return env;
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v.trim().toLowerCase() === "generate") {
+      const bytes = crypto.getRandomValues(new Uint8Array(32));
+      out[k] = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+    } else out[k] = v;
+  }
+  return out;
 }
 
 function b64(s: string): string {
@@ -144,6 +160,7 @@ export async function saveProject(conn: Client, p: ProjectInput, createdAt?: str
     port: p.port,
     publish: p.publish,
     access: p.access,
+    category: p.category,
     envKeys: p.env ? Object.keys(p.env) : [],
     createdAt: createdAt ?? now,
     updatedAt: now,
@@ -192,7 +209,7 @@ export async function startDeploy(conn: Client, name: string): Promise<string> {
   );
 }
 
-export type ProjectAction = "start" | "stop" | "restart" | "logs" | "remove";
+export type ProjectAction = "start" | "stop" | "restart" | "logs" | "remove" | "env";
 
 export async function projectAction(vm: VmConfig, name: string, action: ProjectAction): Promise<string> {
   return withVm(vm, async (conn) => {
