@@ -218,7 +218,7 @@ export default function ProjectsPage() {
   const onlineNames = vms.filter((v) => status[v.name]?.ok).map((v) => v.name);
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-8 py-6">
+    <div className="mx-auto w-full max-w-7xl space-y-6 px-10 py-8">
       <PageHero
         eyebrow="Apps, APIs, databases, models"
         title="Projects"

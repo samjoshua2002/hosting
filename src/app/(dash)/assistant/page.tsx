@@ -91,8 +91,8 @@ export default function AgentPage() {
   };
 
   return (
-    <div className="mx-auto flex h-[calc(100dvh-49px)] max-w-4xl flex-col px-8">
-      <UnsplashLayer photo={photo} className="mt-6 shrink-0 rounded-3xl ring-1 ring-white/10">
+    <div className="mx-auto flex h-[calc(100dvh-49px)] w-full max-w-7xl flex-col px-10 pt-8">
+      <UnsplashLayer photo={photo} className="shrink-0 rounded-3xl ring-1 ring-white/10">
         <div className="flex items-center gap-4 px-6 py-6">
           <span className="grid size-12 place-items-center rounded-2xl bg-white/10 ring-1 ring-white/20 backdrop-blur">
             <MessagesSquare className="size-6 text-white" />
@@ -104,7 +104,7 @@ export default function AgentPage() {
         </div>
       </UnsplashLayer>
 
-      <div className="scroll-thin min-h-0 flex-1 space-y-5 overflow-y-auto py-5">
+      <div className="scroll-thin mx-auto min-h-0 w-full max-w-4xl flex-1 space-y-5 overflow-y-auto py-5">
         {!configured && (
           <Card className="p-5 text-sm text-ink">Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY to enable the assistant.</Card>
         )}
@@ -191,7 +191,7 @@ export default function AgentPage() {
           e.preventDefault();
           void send(input);
         }}
-        className="mb-4 flex items-end gap-2 rounded-2xl border border-white/[0.08] bg-[var(--panel)] p-2"
+        className="mx-auto mb-6 flex w-full max-w-4xl items-end gap-2 rounded-2xl border border-white/[0.08] bg-[var(--panel)] p-2"
       >
         <textarea
           value={input}

@@ -49,7 +49,7 @@ export default function OverviewPage() {
   return (
     <div className="relative isolate">
       <UnsplashLayer photo={photo} className="page-cover" />
-      <div className="mx-auto max-w-6xl space-y-5 px-8 pt-12 pb-12">
+      <div className="mx-auto w-full max-w-7xl space-y-6 px-10 py-8">
         <header className="flex items-center gap-6">
           <UnsplashLayer photo={photo} className="grid size-32 shrink-0 place-items-center rounded-3xl shadow-2xl ring-1 ring-white/10">
             <Layers className="size-14 text-white drop-shadow-lg" strokeWidth={1.75} />
@@ -124,7 +124,11 @@ export default function OverviewPage() {
               <Stat label="Machines" value={`${t.online}/${t.total}`} sub="online" />
               <Stat label="CPU" value={`${t.cpuAvg.toFixed(t.cpuAvg < 10 ? 1 : 0)}%`} sub={`of ${t.cores} vCPU`} />
               <Stat label="Memory" value={fmtKb(t.memUsed)} sub={`of ${fmtKb(t.memTotal)} · ${pct(t.memUsed, t.memTotal)}%`} />
-              <Stat label="Storage" value={fmtKb(t.diskUsed)} sub={`of ${fmtKb(t.diskTotal)} · ${fmtKb(Math.max(0, t.diskTotal - t.diskUsed))} free`} />
+              <Stat
+                label="Storage"
+                value={fmtKb(t.diskUsed)}
+                sub={`of ${fmtKb(t.diskTotal)} on ${t.disks} separate disk${t.disks === 1 ? "" : "s"} · max ${fmtKb(t.diskFreeMax)} free on one`}
+              />
               <Stat label="Projects" value={`${t.projectsLive}/${t.projects}`} sub={t.jobsRunning ? `${t.jobsRunning} job${t.jobsRunning > 1 ? "s" : ""} running` : "running"} />
             </Card>
 
@@ -264,7 +268,7 @@ function Stat({ label, value, sub }: { label: string; value: string; sub: string
     <div className="px-6 py-5">
       <p className="text-xs text-muted">{label}</p>
       <p className="mt-1 text-[28px] font-bold tracking-tight text-white">{value}</p>
-      <p className="mt-0.5 truncate text-xs text-muted">{sub}</p>
+      <p className="mt-0.5 text-xs leading-snug text-muted">{sub}</p>
     </div>
   );
 }

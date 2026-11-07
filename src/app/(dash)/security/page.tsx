@@ -77,7 +77,7 @@ export default function SecurityPage() {
   const score = checks.filter((c) => c.ok).length;
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 px-8 py-6">
+    <div className="mx-auto w-full max-w-7xl space-y-6 px-10 py-8">
       <PageHero eyebrow="Access & alerts" title="Security" icon={<ShieldCheck className="size-6" />} desc="Sign-in methods, email alerts and a hardening checklist for this dashboard." />
       {error && <p className="rounded-lg bg-rose-950/40 p-3 text-sm text-rose-300">{error}</p>}
 

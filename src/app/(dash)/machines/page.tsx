@@ -10,7 +10,7 @@ export default function VmsPage() {
   const { vms, status, checking, refresh, configErrors, agentVersion, hostKeyPinned } = useCluster();
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-8 py-6">
+    <div className="mx-auto w-full max-w-7xl space-y-6 px-10 py-8">
       <PageHero
         eyebrow="Fleet"
         title="Machines"

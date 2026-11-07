@@ -7,7 +7,7 @@ import { UnsplashLayer, useTheme } from "./theme";
 export function PageHero({ eyebrow, title, desc, actions, icon }: { eyebrow?: string; title: string; desc?: ReactNode; actions?: ReactNode; icon?: ReactNode }) {
   const { photo } = useTheme();
   return (
-    <UnsplashLayer photo={photo} className="mb-6 rounded-3xl ring-1 ring-white/10">
+    <UnsplashLayer photo={photo} className="rounded-3xl ring-1 ring-white/10">
       <div className="flex min-h-[168px] items-end justify-between gap-6 px-8 pt-10 pb-7">
         <div className="flex items-end gap-5">
           {icon && <span className="grid size-14 place-items-center rounded-2xl bg-white/10 text-white ring-1 ring-white/20 backdrop-blur">{icon}</span>}
