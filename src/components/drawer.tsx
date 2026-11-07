@@ -2,6 +2,7 @@
 
 import { X } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 export function Drawer({
   title,
@@ -22,7 +23,10 @@ export function Drawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  return (
+  // Portaled to <body>: pages sit in an isolated stacking context (for the cover image), and the
+  // drawer must cover the sticky top bar and sidebar too.
+  if (typeof document === "undefined") return null;
+  return createPortal(
     <div className="fixed inset-0 z-50 flex justify-end">
       <button aria-label="Close" className="absolute inset-0 bg-black/50 backdrop-blur-[1px]" onClick={onClose} />
       <aside className="relative flex h-full w-full max-w-3xl flex-col border-l border-[var(--line)] bg-[var(--panel)] shadow-2xl">
@@ -40,6 +44,7 @@ export function Drawer({
         </header>
         <div className="scroll-thin min-h-0 flex-1 overflow-auto p-5">{children}</div>
       </aside>
-    </div>
+    </div>,
+    document.body,
   );
 }

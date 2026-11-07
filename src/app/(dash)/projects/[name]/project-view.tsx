@@ -6,9 +6,11 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCluster } from "@/components/cluster";
 import { PageHero } from "@/components/page-hero";
-import { ProjectForm, urlFor, type FormState } from "@/components/project-form";
+import { ProjectForm, formFromManifest, urlFor, type FormState } from "@/components/project-form";
 import { Badge, Button, Card, Empty, StatusDot, cx, inputCls, serviceTone } from "@/components/ui";
+import { GithubMark } from "@/components/github";
 import { api } from "@/lib/client";
+import { projectType, TYPE_LABEL } from "@/lib/project-type";
 import { fmtDuration, timeAgo, vmState } from "@/lib/format";
 import type { JobStartResult, ProjectState } from "@/lib/types";
 
@@ -60,26 +62,7 @@ export function ProjectView() {
     }
   };
 
-  const editForm = (): FormState | null =>
-    m
-      ? {
-          name,
-          repo: m.repo,
-          branch: m.branch,
-          install: m.install,
-          build: m.build,
-          start: m.start,
-          port: m.port ? String(m.port) : "",
-          publish: m.publish,
-          access: m.access ?? "public",
-          category: m.category ?? "app",
-          env: "",
-          envKeys: m.envKeys,
-          targets: instances.map((i) => i.vm),
-          createdAt: m.createdAt,
-          editing: true,
-        }
-      : null;
+  const editForm = (): FormState | null => (m ? formFromManifest(m, instances.map((i) => i.vm)) : null);
 
   if (!m)
     return (
@@ -109,10 +92,16 @@ export function ProjectView() {
         <ArrowLeft className="size-4" /> Projects
       </Link>
       <PageHero
-        eyebrow={m.category === "database" ? "Database" : m.category === "tool" ? "Tool" : "Project"}
+        eyebrow={`${TYPE_LABEL[projectType(m)].one}${m.framework ? ` · ${m.framework}` : ""}`}
         title={name}
-        icon={<FolderGit2 className="size-6" />}
-        desc={m.repo ? `${m.repo.replace(/^https:\/\/[^@]*@/, "https://")} @ ${m.branch}` : m.start}
+        icon={m.github ? <GithubMark className="size-6" /> : <FolderGit2 className="size-6" />}
+        desc={
+          m.github
+            ? `${m.github.repo} @ ${m.branch}${m.github.autoDeploy ? " · redeploys on every push" : ""}`
+            : m.repo
+              ? `${m.repo.replace(/^https:\/\/[^@]*@/, "https://")} @ ${m.branch}`
+              : m.start
+        }
         actions={
           <>
             <Button variant="primary" onClick={() => act("deploy")} loading={busy === "deploy"} title="Pull the latest code, rebuild and restart">
@@ -146,6 +135,11 @@ export function ProjectView() {
             <span className="w-16 font-mono text-white">{i.vm}</span>
             <Badge tone={serviceTone(i.state.active)}>{i.state.active}</Badge>
             <span className="text-muted">deployed {timeAgo(i.state.deployedAt ? i.state.deployedAt * 1000 : null)}</span>
+            {i.state.commit && (
+              <span className="min-w-0 truncate text-muted" title={`${i.state.commit.sha} by ${i.state.commit.author}`}>
+                <span className="font-mono text-ink">{i.state.commit.sha.slice(0, 7)}</span> {i.state.commit.message}
+              </span>
+            )}
             {m.port && <span className="text-muted">port {m.port}</span>}
             <span className="flex-1" />
             {i.url ? (
@@ -196,7 +190,8 @@ export function ProjectView() {
                 ["Start", m.start || "—"],
                 ["Port", m.port ? String(m.port) : "—"],
                 ["Link", m.publish ? (m.access === "private" ? "private (token)" : "public") : "none"],
-                ["Category", m.category ?? "app"],
+                ["Type", `${TYPE_LABEL[projectType(m)].one}${m.framework ? ` (${m.framework})` : ""}`],
+                ["GitHub", m.github ? `${m.github.repo}${m.github.private ? " (private)" : ""} · auto-deploy ${m.github.autoDeploy ? "on" : "off"}` : "not linked"],
                 ["Machines", instances.map((i) => i.vm).join(", ")],
                 ["Created", new Date(m.createdAt).toLocaleString()],
               ] as [string, string][]
@@ -217,8 +212,9 @@ export function ProjectView() {
         <ProjectForm
           initial={editing}
           onClose={() => setEditing(null)}
-          onDeployed={(jobs: JobStartResult[]) => {
+          onDeployed={(jobs: JobStartResult[], warning?: string) => {
             setEditing(null);
+            setError(warning ?? null);
             const first = jobs.find((j) => j.id);
             if (first?.id) openJob({ vm: first.vm, id: first.id, title: `deploy ${name}` });
             void refresh();

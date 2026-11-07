@@ -2,8 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { verifySession } from "@/lib/auth";
 
 // Reachable without a session: the login page and the endpoints that perform login.
-// /api/cron/* authenticates with CRON_SECRET inside the handler.
-const PUBLIC = new Set(["/login", "/api/auth/login", "/api/auth/passkey/options", "/api/auth/passkey/verify", "/api/auth/methods", "/api/banner"]);
+// /api/cron/* authenticates with CRON_SECRET inside the handler; /api/github/webhook checks GitHub's HMAC signature.
+const PUBLIC = new Set(["/login", "/api/auth/login", "/api/auth/passkey/options", "/api/auth/passkey/verify", "/api/auth/methods", "/api/banner", "/api/github/webhook"]);
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;

@@ -2,7 +2,8 @@ import type { NextRequest } from "next/server";
 import { ENV_KEY_RE, PROJECT_NAME_RE, fillGenerated, saveProject, startDeploy, type ProjectInput } from "@/lib/agent";
 import { handle, HttpError, readJson, requireAuth, vmsOrThrow } from "@/lib/api";
 import { mapLimit, withVm } from "@/lib/ssh";
-import type { JobStartResult } from "@/lib/types";
+import { ensureWebhook, getRepo, REPO_RE, webhookUrl } from "@/lib/github";
+import type { GithubLink, JobStartResult } from "@/lib/types";
 import { audit } from "@/lib/security";
 
 export const maxDuration = 60;
@@ -22,6 +23,10 @@ interface Body {
   /** "KEY=value" lines; omit or null to keep the env already on the VM. */
   env?: unknown;
   createdAt?: unknown;
+  kind?: unknown;
+  framework?: unknown;
+  /** { repo: "owner/name", autoDeploy } links a GitHub repo; null unlinks; omit to keep. */
+  github?: unknown;
 }
 
 const str = (v: unknown, max = 4000) => (typeof v === "string" ? v.trim().slice(0, max) : "");
@@ -49,7 +54,19 @@ export const POST = handle(async (req: NextRequest) => {
 
   const name = str(b.name, 40).toLowerCase();
   if (!PROJECT_NAME_RE.test(name)) throw new HttpError(400, "Name must be lowercase letters, digits and dashes");
-  const repo = str(b.repo, 500);
+  // GitHub link: the repo's privacy comes from GitHub, not the browser
+  let github: GithubLink | null | undefined;
+  if (b.github === null) github = null;
+  else if (b.github && typeof b.github === "object") {
+    const g = b.github as { repo?: unknown; autoDeploy?: unknown };
+    const full = str(g.repo, 140);
+    if (!REPO_RE.test(full)) throw new HttpError(400, "github.repo must look like owner/name");
+    const info = await getRepo(full).catch((e: Error) => {
+      throw new HttpError(400, e.message);
+    });
+    github = { repo: info.fullName, private: info.private, autoDeploy: g.autoDeploy !== false };
+  }
+  const repo = str(b.repo, 500) || (github ? `https://github.com/${github.repo}.git` : "");
   if (repo && !/^(https:\/\/|git@|ssh:\/\/)\S+$/.test(repo)) throw new HttpError(400, "Repo must be an https:// or git@ URL");
   const branch = str(b.branch, 100) || "main";
   if (!/^[A-Za-z0-9._/-]+$/.test(branch)) throw new HttpError(400, "Invalid branch name");
@@ -70,10 +87,22 @@ export const POST = handle(async (req: NextRequest) => {
     publish: Boolean(b.publish) && port !== null,
     access: b.access === "private" ? "private" : "public",
     category: b.category === "database" || b.category === "tool" ? b.category : "app",
+    kind: b.kind === "website" || b.kind === "service" || b.kind === "worker" ? b.kind : undefined,
+    framework: typeof b.framework === "string" ? str(b.framework, 40) || undefined : undefined,
+    github,
     env: typeof b.env === "string" ? fillGenerated(parseEnv(b.env)) : null,
   };
   const createdAt = typeof b.createdAt === "string" ? b.createdAt : undefined;
-  audit(req, "project.save", { name, repo, targets: vms.map((v) => v.name) });
+  audit(req, "project.save", { name, repo, github: github?.repo, targets: vms.map((v) => v.name) });
+
+  let warning: string | undefined;
+  if (github?.autoDeploy) {
+    try {
+      await ensureWebhook(github.repo, webhookUrl(req.nextUrl.origin));
+    } catch (e) {
+      warning = `Deploying, but auto-deploy isn't set up: ${(e as Error).message}`;
+    }
+  }
 
   const jobs = await mapLimit(vms, 16, async (vm): Promise<JobStartResult> => {
     try {
@@ -86,5 +115,5 @@ export const POST = handle(async (req: NextRequest) => {
       return { vm: vm.name, error: e instanceof Error ? e.message : String(e) };
     }
   });
-  return Response.json({ jobs });
+  return Response.json({ jobs, warning });
 });

@@ -24,13 +24,36 @@ export interface ProjectManifest {
   access?: "public" | "private";
   /** what the dashboard groups it under; databases get their own page */
   category?: "app" | "database" | "tool";
+  /** for apps: website (pages people visit), service (API), worker (no port) */
+  kind?: "website" | "service" | "worker";
+  /** detected or chosen framework, for display: "Next.js", "FastAPI"… */
+  framework?: string;
+  /** set when imported from GitHub; autoDeploy redeploys on every push to the branch */
+  github?: GithubLink | null;
   envKeys: string[];
   createdAt: string;
   updatedAt: string;
 }
 
+export interface GithubLink {
+  /** owner/name */
+  repo: string;
+  private: boolean;
+  autoDeploy: boolean;
+}
+
+export interface CommitInfo {
+  sha: string;
+  message: string;
+  author: string;
+  /** unix seconds */
+  time: number | null;
+}
+
 export interface ProjectState {
   manifest: ProjectManifest;
+  /** the commit that is deployed (git projects) */
+  commit?: CommitInfo | null;
   /** systemd state: active | inactive | failed | activating | unknown */
   active: string;
   deployedAt: number | null;

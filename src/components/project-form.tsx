@@ -1,11 +1,15 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { GitBranch, Lock, X } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "@/lib/client";
 import { vmState } from "@/lib/format";
-import type { JobStartResult, ProjectManifest, PublishedPort } from "@/lib/types";
+import { repoFromUrl } from "@/lib/github-shared";
+import { projectType, typeFields, TYPE_LABEL, TYPE_ORDER, type ProjectType } from "@/lib/project-type";
+import type { GithubLink, JobStartResult, ProjectManifest, PublishedPort } from "@/lib/types";
 import { useCluster } from "./cluster";
 import { Drawer } from "./drawer";
+import { GithubConnect, GithubMark, RepoPicker, useGithub, type Repo } from "./github";
 import { Button, Field, StatusDot, cx, inputCls } from "./ui";
 
 export interface FormState {
@@ -18,7 +22,9 @@ export interface FormState {
   port: string;
   publish: boolean;
   access: "public" | "private";
-  category: "app" | "database" | "tool";
+  type: ProjectType;
+  framework: string;
+  github: GithubLink | null;
   env: string;
   targets: string[];
   createdAt?: string;
@@ -30,22 +36,22 @@ export const PRESETS: { label: string; hint: string; values: Partial<FormState> 
   {
     label: "Next.js app",
     hint: "Website or full-stack app",
-    values: { category: "app", install: "npm ci || npm install", build: "npm run build", start: "npm run start -- -p $PORT", port: "3000", publish: true, access: "public", env: "" },
+    values: { type: "website", install: "npm ci || npm install", build: "npm run build", start: "npm run start -- -p $PORT", port: "3000", publish: true, access: "public", env: "" },
   },
   {
     label: "Node API",
     hint: "Express, Fastify, Nest…",
-    values: { category: "app", install: "npm ci || npm install", build: "", start: "npm start", port: "3000", publish: true, access: "public", env: "" },
+    values: { type: "service", install: "npm ci || npm install", build: "", start: "npm start", port: "3000", publish: true, access: "public", env: "" },
   },
   {
     label: "Static site / web game",
     hint: "Vite, React, HTML5 games",
-    values: { category: "app", install: "npm ci || npm install", build: "npm run build", start: "npx --yes serve -s dist -l $PORT", port: "8080", publish: true, access: "public", env: "" },
+    values: { type: "website", install: "npm ci || npm install", build: "npm run build", start: "npx --yes serve -s dist -l $PORT", port: "8080", publish: true, access: "public", env: "" },
   },
   {
     label: "Python API",
     hint: "FastAPI / Flask",
-    values: { category: "app",
+    values: { type: "service",
       install: "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt",
       build: "",
       start: ".venv/bin/uvicorn main:app --host 0.0.0.0 --port $PORT",
@@ -58,12 +64,12 @@ export const PRESETS: { label: string; hint: string; values: Partial<FormState> 
   {
     label: "AI agent / worker",
     hint: "Background Python process, no web port",
-    values: { category: "app", install: "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt", build: "", start: ".venv/bin/python main.py", port: "", publish: false, access: "private", env: "" },
+    values: { type: "worker", install: "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt", build: "", start: ".venv/bin/python main.py", port: "", publish: false, access: "private", env: "" },
   },
   {
     label: "Local AI model (Ollama)",
     hint: "Runs a model on the machine; private link",
-    values: { category: "app",
+    values: { type: "service",
       repo: "",
       install: "command -v ollama >/dev/null || (curl -fsSL https://ollama.com/install.sh | sh && sudo systemctl disable --now ollama 2>/dev/null || true)",
       build: "OLLAMA_HOST=127.0.0.1:11500 ollama serve >/dev/null 2>&1 & pid=$!; sleep 5; OLLAMA_HOST=127.0.0.1:11500 ollama pull \"${MODEL:-llama3.2:3b}\"; kill $pid",
@@ -77,7 +83,7 @@ export const PRESETS: { label: string; hint: string; values: Partial<FormState> 
   {
     label: "PostgreSQL",
     hint: "Docker, data kept in ~/data, never public",
-    values: { category: "database",
+    values: { type: "database",
       repo: "",
       install: "mkdir -p ~/data/postgres",
       build: "docker pull postgres:17",
@@ -91,7 +97,7 @@ export const PRESETS: { label: string; hint: string; values: Partial<FormState> 
   {
     label: "Redis",
     hint: "Docker, persistent, never public",
-    values: { category: "database",
+    values: { type: "database",
       repo: "",
       install: "mkdir -p ~/data/redis",
       build: "docker pull redis:7",
@@ -105,7 +111,7 @@ export const PRESETS: { label: string; hint: string; values: Partial<FormState> 
   {
     label: "MongoDB",
     hint: "Docker, data kept in ~/data, never public",
-    values: { category: "database",
+    values: { type: "database",
       repo: "",
       install: "mkdir -p ~/data/mongo",
       build: "docker pull mongo:8",
@@ -120,7 +126,7 @@ export const PRESETS: { label: string; hint: string; values: Partial<FormState> 
   {
     label: "MySQL",
     hint: "Docker, data kept in ~/data, never public",
-    values: { category: "database",
+    values: { type: "database",
       repo: "",
       install: "mkdir -p ~/data/mysql",
       build: "docker pull mysql:8.4",
@@ -134,7 +140,7 @@ export const PRESETS: { label: string; hint: string; values: Partial<FormState> 
   {
     label: "pgAdmin",
     hint: "Web UI for Postgres on the same machine; private link",
-    values: { category: "tool",
+    values: { type: "tool",
       repo: "",
       install: "mkdir -p ~/data/pgadmin && sudo chown -R 5050:5050 ~/data/pgadmin",
       build: "docker pull dpage/pgadmin4",
@@ -150,7 +156,7 @@ export const PRESETS: { label: string; hint: string; values: Partial<FormState> 
     label: "Adminer",
     hint: "Web UI for MySQL & Postgres on the same machine; private link",
     values: {
-      category: "tool",
+      type: "tool",
       repo: "",
       install: "",
       build: "docker pull adminer",
@@ -164,7 +170,7 @@ export const PRESETS: { label: string; hint: string; values: Partial<FormState> 
   {
     label: "Any Docker image",
     hint: "Edit the image and container port",
-    values: { category: "app",
+    values: { type: "website",
       repo: "",
       install: "",
       build: "docker pull nginx:alpine",
@@ -178,7 +184,7 @@ export const PRESETS: { label: string; hint: string; values: Partial<FormState> 
   {
     label: "Docker Compose",
     hint: "Repo with a compose file",
-    values: { category: "app", install: "", build: "docker compose build", start: "exec docker compose up", port: "8080", publish: true, access: "public", env: "" },
+    values: { type: "service", install: "", build: "docker compose build", start: "exec docker compose up", port: "8080", publish: true, access: "public", env: "" },
   },
 ];
 
@@ -192,11 +198,36 @@ export const blank = (targets: string[]): FormState => ({
   port: "3000",
   publish: true,
   access: "public",
-  category: "app",
+  type: "website",
+  framework: "",
+  github: null,
   env: "",
   targets,
   editing: false,
 });
+
+/** The edit form for an existing project. */
+export function formFromManifest(m: ProjectManifest, targets: string[]): FormState {
+  return {
+    name: m.name,
+    repo: m.repo,
+    branch: m.branch,
+    install: m.install,
+    build: m.build,
+    start: m.start,
+    port: m.port ? String(m.port) : "",
+    publish: m.publish,
+    access: m.access ?? "public",
+    type: projectType(m),
+    framework: m.framework ?? "",
+    github: m.github ?? null,
+    env: "",
+    envKeys: m.envKeys,
+    targets,
+    createdAt: m.createdAt,
+    editing: true,
+  };
+}
 
 export function urlFor(m: ProjectManifest, ports: PublishedPort[], saved?: string | null): string | null {
   if (saved) return saved;
@@ -204,27 +235,75 @@ export function urlFor(m: ProjectManifest, ports: PublishedPort[], saved?: strin
   return ports.find((p) => p.port === m.port)?.url ?? null;
 }
 
+interface Detect {
+  repo: Repo;
+  branch: string;
+  detected: { framework: string; kind: "website" | "service" | "worker"; install: string; build: string; start: string; port: string; publish: boolean };
+}
+
 export function ProjectForm({
   initial,
+  importRepo: importFirst,
   onClose,
   onDeployed,
 }: {
   initial: FormState;
+  /** a repo picked before the form opened: detect it right away */
+  importRepo?: Repo;
   onClose: () => void;
-  onDeployed: (jobs: JobStartResult[]) => void;
+  onDeployed: (jobs: JobStartResult[], warning?: string) => void;
 }) {
   const { vms, status, checking } = useCluster();
+  const gh = useGithub();
   const [f, setF] = useState<FormState>(initial);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [importing, setImporting] = useState<string | null>(null);
+  const [showConnect, setShowConnect] = useState(false);
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((p) => ({ ...p, [k]: v }));
+  const linkable = !f.github && repoFromUrl(f.repo);
+
+  const importRepo = async (r: Repo) => {
+    setImporting(r.fullName);
+    setError(null);
+    try {
+      const d = await api<Detect>(`/api/github/detect?repo=${encodeURIComponent(r.fullName)}`);
+      const x = d.detected;
+      setF((s) => ({
+        ...s,
+        name: s.name || r.fullName.split("/")[1].toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40),
+        repo: `https://github.com/${d.repo.fullName}.git`,
+        branch: d.branch,
+        github: { repo: d.repo.fullName, private: d.repo.private, autoDeploy: true },
+        framework: x.framework === "Unknown" ? "" : x.framework,
+        type: x.kind,
+        install: x.install,
+        build: x.build,
+        start: x.start,
+        port: x.port,
+        publish: x.publish,
+        access: "public",
+      }));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setImporting(null);
+    }
+  };
+
+  const started = useRef(false);
+  useEffect(() => {
+    if (!importFirst || started.current) return;
+    started.current = true;
+    queueMicrotask(() => void importRepo(importFirst));
+  }, [importFirst]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError(null);
     try {
-      const { jobs } = await api<{ jobs: JobStartResult[] }>("/api/projects", {
+      const { jobs, warning } = await api<{ jobs: JobStartResult[]; warning?: string }>("/api/projects", {
         targets: f.targets,
         name: f.name,
         repo: f.repo,
@@ -235,11 +314,13 @@ export function ProjectForm({
         port: f.port ? Number(f.port) : null,
         publish: f.publish,
         access: f.access,
-        category: f.category,
+        ...typeFields(f.type),
+        framework: f.framework,
+        github: f.github ? { repo: f.github.repo, autoDeploy: f.github.autoDeploy } : undefined,
         env: f.editing && !f.env.trim() ? null : f.env,
         createdAt: f.createdAt,
       });
-      onDeployed(jobs);
+      onDeployed(jobs, warning);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -247,18 +328,72 @@ export function ProjectForm({
     }
   };
 
+  const connected = gh.status?.connected;
+
   return (
-    <Drawer title={f.editing ? `Edit ${f.name}` : "New project"} subtitle="Saving deploys to every selected VM as a background job." onClose={onClose}>
-      <form onSubmit={submit} className="space-y-4">
-        {!f.editing && (
+    <Drawer title={f.editing ? `Edit ${f.name}` : "New project"} subtitle="Saving deploys to every selected machine as a background job." onClose={onClose}>
+      <form onSubmit={submit} className="space-y-5">
+        {f.github ? (
+          <div className="rounded-xl border border-line-strong p-3">
+            <div className="flex items-center gap-2">
+              <GithubMark className="text-white" />
+              <span className="truncate text-sm font-medium text-white">{f.github.repo}</span>
+              {f.github.private && <Lock className="size-3 text-muted" />}
+              <span className="flex items-center gap-1 font-mono text-xs text-muted">
+                <GitBranch className="size-3" /> {f.branch}
+              </span>
+              {f.framework && <span className="rounded bg-chip px-1.5 py-px text-[11px] text-ink">{f.framework}</span>}
+              {!f.editing && (
+                <button type="button" onClick={() => setF((s) => ({ ...s, github: null, repo: "", framework: "" }))} className="ml-auto text-muted hover:text-white" title="Choose another">
+                  <X className="size-4" />
+                </button>
+              )}
+            </div>
+            <label className="mt-3 flex items-center gap-2 text-sm text-ink">
+              <input type="checkbox" checked={f.github.autoDeploy} onChange={(e) => set("github", { ...f.github!, autoDeploy: e.target.checked })} className="accent-[var(--accent)]" />
+              Redeploy automatically when I push to <span className="font-mono">{f.branch}</span>
+            </label>
+          </div>
+        ) : !f.editing ? (
           <div>
-            <p className="mb-2 text-xs font-medium text-muted">Start from</p>
+            <p className="mb-2 flex items-center gap-2 text-xs font-medium text-muted">
+              <GithubMark /> Import Git repository
+            </p>
+            {gh.status === null ? (
+              <div className="h-24 animate-pulse rounded-xl border border-line-strong" />
+            ) : connected ? (
+              <RepoPicker onPick={importRepo} busyRepo={importing} />
+            ) : showConnect ? (
+              <div className="rounded-xl border border-line-strong p-4">
+                <GithubConnect />
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-line-strong p-4">
+                <p className="text-sm text-muted">Connect GitHub to pick a repo, detect its framework, and redeploy on every push.</p>
+                <Button type="button" size="sm" onClick={() => setShowConnect(true)}>
+                  <GithubMark /> Connect GitHub
+                </Button>
+              </div>
+            )}
+          </div>
+        ) : linkable && connected ? (
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-line-strong p-3">
+            <p className="text-sm text-muted">This repo is on GitHub. Redeploy it on every push?</p>
+            <Button type="button" size="sm" onClick={() => set("github", { repo: repoFromUrl(f.repo)!, private: false, autoDeploy: true })}>
+              <GithubMark /> Turn on auto-deploy
+            </Button>
+          </div>
+        ) : null}
+
+        {!f.editing && !f.github && (
+          <div>
+            <p className="mb-2 text-xs font-medium text-muted">Or start from a template</p>
             <div className="grid grid-cols-2 gap-2">
               {PRESETS.map((p) => (
                 <button
                   type="button"
                   key={p.label}
-                  onClick={() => setF((s) => ({ ...s, ...p.values }))}
+                  onClick={() => setF((s) => ({ ...s, framework: "", ...p.values }))}
                   className="rounded-xl border border-line-strong px-3 py-2 text-left hover:border-accent/60 hover:bg-white/[0.03]"
                 >
                   <span className="block text-sm font-medium text-white">{p.label}</span>
@@ -268,6 +403,7 @@ export function ProjectForm({
             </div>
           </div>
         )}
+
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Name" hint="lowercase, digits, dashes">
             <input
@@ -279,13 +415,31 @@ export function ProjectForm({
               placeholder="my-app"
             />
           </Field>
+          <Field label="Type" hint={TYPE_LABEL[f.type].hint}>
+            <select value={f.type} onChange={(e) => set("type", e.target.value as ProjectType)} className={inputCls}>
+              {TYPE_ORDER.map((t) => (
+                <option key={t} value={t}>
+                  {TYPE_LABEL[t].one}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        {!f.github && (
+          <div className="grid gap-4 sm:grid-cols-[1fr_160px]">
+            <Field label="Git repository (optional)" hint="Leave empty for Docker images and models.">
+              <input value={f.repo} onChange={(e) => set("repo", e.target.value.trim())} className={cx(inputCls, "font-mono")} placeholder="https://github.com/user/repo.git" />
+            </Field>
+            <Field label="Branch">
+              <input value={f.branch} onChange={(e) => set("branch", e.target.value)} className={inputCls} />
+            </Field>
+          </div>
+        )}
+        {f.github && (
           <Field label="Branch">
             <input value={f.branch} onChange={(e) => set("branch", e.target.value)} className={inputCls} />
           </Field>
-        </div>
-        <Field label="Git repository (optional)" hint="Leave empty for Docker images and models. Private repo: https://<token>@github.com/user/repo.git">
-          <input value={f.repo} onChange={(e) => set("repo", e.target.value.trim())} className={cx(inputCls, "font-mono")} placeholder="https://github.com/user/repo.git" />
-        </Field>
+        )}
         <Field label="Install command">
           <input value={f.install} onChange={(e) => set("install", e.target.value)} className={cx(inputCls, "font-mono")} />
         </Field>
@@ -349,13 +503,13 @@ export function ProjectForm({
             })}
           </div>
         </Field>
-        {error && <p className="text-sm text-rose-300">{error}</p>}
+        {error && <p className="text-sm text-[var(--critical-text)]">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
           <Button type="submit" variant="primary" loading={saving} disabled={!f.name || !f.targets.length}>
-            {f.editing ? "Save & redeploy" : "Deploy"} to {f.targets.length} VM{f.targets.length === 1 ? "" : "s"}
+            {f.editing ? "Save & redeploy" : "Deploy"} to {f.targets.length} machine{f.targets.length === 1 ? "" : "s"}
           </Button>
         </div>
       </form>

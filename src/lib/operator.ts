@@ -8,6 +8,8 @@ import { isDestructive } from "./safety";
 import { mapLimit, run, withVm } from "./ssh";
 import { linkTunnel, unlinkTunnel } from "./tunnels";
 import { asText, loadAttachment } from "./attachments";
+import { detectFramework, ensureWebhook, getRepo, githubAuth, listRepos, REPO_RE, repoFromUrl, webhookUrl } from "./github";
+import { projectType, typeFields, type ProjectType } from "./project-type";
 
 export type OperatorEvent =
   | { type: "text"; content: string }
@@ -31,12 +33,14 @@ The fleet
 How projects work (prefer deploy_project for anything that should keep running)
 - Each project is a systemd --user service hosting-<name> that restarts on crash; code in ~/apps/<name>; logs via project_action logs.
 - link: "public" gives an https URL, "private" a token URL, "none" no URL. $PORT is set for the start command.
-- Databases: deploy with category "database", Docker, bound to 127.0.0.1, data under ~/data/<engine>, strong random passwords in env. Conventions:
+- Databases: deploy with type "database", Docker, bound to 127.0.0.1, data under ~/data/<engine>, strong random passwords in env. Conventions:
   postgres: start "docker rm -f pg-$PORT >/dev/null 2>&1; exec docker run --name pg-$PORT -p 127.0.0.1:$PORT:5432 -e POSTGRES_PASSWORD -v $HOME/data/postgres:/var/lib/postgresql/data postgres:17", port 5432, env POSTGRES_PASSWORD
   mysql: "docker rm -f mysql-$PORT >/dev/null 2>&1; exec docker run --name mysql-$PORT -p 127.0.0.1:$PORT:3306 -e MYSQL_ROOT_PASSWORD -v $HOME/data/mysql:/var/lib/mysql mysql:8.4", port 3306
   mongodb: "docker rm -f mongo-$PORT >/dev/null 2>&1; exec docker run --name mongo-$PORT -p 127.0.0.1:$PORT:27017 -e MONGO_INITDB_ROOT_USERNAME=admin -e MONGO_INITDB_ROOT_PASSWORD -v $HOME/data/mongo:/data/db mongo:8", port 27017
   redis: "docker rm -f redis-$PORT >/dev/null 2>&1; exec docker run --name redis-$PORT -p 127.0.0.1:$PORT:6379 -v $HOME/data/redis:/data redis:7 redis-server --appendonly yes --requirepass \\"$REDIS_PASSWORD\\"", port 6379
   Use install "mkdir -p ~/data/<engine>" and build "docker pull <image>" so slow downloads happen during the deploy job.
+- type groups projects on the Projects page: "website" (pages people open), "service" (APIs, models), "worker" (no port), "database", "tool" (admin UIs).
+- GitHub: github_repos lists the user's repos; github_repos with repo "owner/name" returns a detected setup (framework, install, build, start, port). Deploy from GitHub with deploy_project github_repo "owner/name" (private repos work, the URL is filled in) and github_auto_deploy true so every push to the branch redeploys. If GitHub isn't connected, tell the user to connect it on the Projects page (button "Connect GitHub").
 - A dedicated database machine plus link_databases lets every other machine reach the databases at 127.0.0.1:<port>.
 - Recurring work (cron jobs: heartbeats, backups, cleanups, reports) uses schedule_task, never hand-edited crontabs: it installs cron if needed, logs every run, and shows up in the dashboard. Run it once right away with run_now to prove it works. Remember that a paused machine skips runs until it wakes.
 
@@ -87,7 +91,10 @@ const TOOLS: ToolDef[] = [
       start: { type: "string", description: "long-running command; $PORT is set" },
       port: { type: "number" },
       link: { type: "string", enum: ["public", "private", "none"] },
-      category: { type: "string", enum: ["app", "database", "tool"] },
+      type: { type: "string", enum: ["website", "service", "worker", "database", "tool"] },
+      framework: { type: "string", description: 'for display, e.g. "Next.js"' },
+      github_repo: { type: "string", description: "owner/name of a GitHub repo (instead of repo)" },
+      github_auto_deploy: { type: "boolean", description: "redeploy on every push to the branch (GitHub repos)" },
       env: { type: "object", additionalProperties: { type: "string" }, description: 'environment variables; omit to keep the current ones. Use "generate" for passwords.' },
     },
     ["name", "vms", "start"],
@@ -128,6 +135,11 @@ const TOOLS: ToolDef[] = [
     "Copy an attached file onto machines at a path in the user's home directory (e.g. apps/watch/.env.local). Creates folders.",
     { id: { type: "string" }, vms: { type: "array", items: { type: "string" } }, path: { type: "string" } },
     ["id", "vms", "path"],
+  ),
+  fn(
+    "github_repos",
+    "The connected GitHub account's repos (most recently pushed first, filtered by query), or with repo set: that repo's default branch, privacy and a detected setup to pass to deploy_project.",
+    { query: { type: "string" }, repo: { type: "string", description: "owner/name" }, branch: { type: "string" } },
   ),
   fn(
     "link_databases",
@@ -186,6 +198,8 @@ export function describe(call: ToolCall): { label: string; needsApproval: boolea
       return { label: `Read attachment ${str(a.id)}`, needsApproval: false, detail: "" };
     case "copy_attachment":
       return { label: `Copied attachment ${str(a.id)} to ~/${str(a.path)} on ${on(a.vms)}`, needsApproval: false, detail: "" };
+    case "github_repos":
+      return { label: a.repo ? `Inspected GitHub repo ${str(a.repo)}` : "Listed GitHub repos", needsApproval: false, detail: "" };
     case "link_databases":
       return { label: `${a.unlink ? "Disconnected" : "Connected"} ${on(a.vms)} ${a.unlink ? "from" : "to"} databases on ${str(a.db_vm)}`, needsApproval: false, detail: "" };
     default:
@@ -217,7 +231,15 @@ async function execute(call: ToolCall, ctx: { sessionId?: string }): Promise<{ o
                 memFreeMB: Math.round(g.memAvailKb / 1024),
                 diskFreeGB: +((g.diskTotalKb - g.diskUsedKb) / 1048576).toFixed(1),
                 uptimeMin: Math.round(g.uptimeSec / 60),
-                projects: g.projects.map((p) => ({ name: p.manifest.name, state: p.active, port: p.manifest.port, category: p.manifest.category ?? "app", url: p.url ?? null })),
+                projects: g.projects.map((p) => ({
+                  name: p.manifest.name,
+                  type: projectType(p.manifest),
+                  state: p.active,
+                  port: p.manifest.port,
+                  url: p.url ?? null,
+                  github: p.manifest.github ?? undefined,
+                  commit: p.commit ? `${p.commit.sha.slice(0, 7)} ${p.commit.message}` : undefined,
+                })),
                 jobsRunning: g.jobs.filter((j) => j.state === "running").map((j) => ({ id: j.id, label: j.meta.label })),
                 tunnels: g.tunnels,
                 scheduledTasks: g.cron,
@@ -284,9 +306,27 @@ async function execute(call: ToolCall, ctx: { sessionId?: string }): Promise<{ o
           }
         }
         const link = a.link === "private" || a.link === "public" ? a.link : "none";
+        const TYPES: ProjectType[] = ["website", "service", "worker", "database", "tool"];
+        const rawType = str(a.type) || str(a.category); // "category" from older sessions
+        const t = TYPES.find((x) => x === rawType);
+        // GitHub: explicit github_repo, or a github.com URL in repo
+        const ghName = str(a.github_repo) || repoFromUrl(str(a.repo)) || "";
+        let github: { repo: string; private: boolean; autoDeploy: boolean } | undefined;
+        let note = "";
+        if (ghName && (str(a.github_repo) || a.github_auto_deploy)) {
+          if (!REPO_RE.test(ghName)) return { ok: false, output: "github_repo must look like owner/name" };
+          if (!(await githubAuth())) return { ok: false, output: "GitHub is not connected. Ask the user to click Connect GitHub on the Projects page." };
+          const info = await getRepo(ghName);
+          github = { repo: info.fullName, private: info.private, autoDeploy: a.github_auto_deploy === true };
+          if (github.autoDeploy) {
+            const url = webhookUrl("");
+            if (!url.startsWith("https://")) note = "\nAuto-deploy not set up: APP_URL is not configured.";
+            else await ensureWebhook(github.repo, url).catch((e: Error) => (note = `\nAuto-deploy not set up: ${e.message}`));
+          }
+        }
         const input = {
           name,
-          repo: str(a.repo),
+          repo: str(a.repo) || (github ? `https://github.com/${github.repo}.git` : ""),
           branch: str(a.branch) || "main",
           install: str(a.install),
           build: str(a.build),
@@ -294,7 +334,9 @@ async function execute(call: ToolCall, ctx: { sessionId?: string }): Promise<{ o
           port,
           publish: link !== "none" && port !== null,
           access: (link === "private" ? "private" : "public") as "public" | "private",
-          category: (a.category === "database" || a.category === "tool" ? a.category : "app") as "app" | "database" | "tool",
+          ...(t ? typeFields(t) : { category: "app" as const }),
+          framework: str(a.framework) || undefined,
+          github,
           env: fillGenerated(env),
         };
         const jobs = await mapLimit(vms, 8, async (vm) => {
@@ -308,7 +350,20 @@ async function execute(call: ToolCall, ctx: { sessionId?: string }): Promise<{ o
             return { vm: vm.name, error: (e as Error).message };
           }
         });
-        return { ok: jobs.every((j) => "job" in j), output: `${JSON.stringify(jobs)}\nFollow each deploy with job_log (wait_sec 60) until done.` };
+        return { ok: jobs.every((j) => "job" in j), output: `${JSON.stringify(jobs)}${note}\nFollow each deploy with job_log (wait_sec 60) until done.` };
+      }
+      case "github_repos": {
+        if (!(await githubAuth())) return { ok: false, output: "GitHub is not connected. Ask the user to click Connect GitHub on the Projects page." };
+        const repo = str(a.repo);
+        if (repo) {
+          if (!REPO_RE.test(repo)) return { ok: false, output: "repo must look like owner/name" };
+          const info = await getRepo(repo);
+          const branch = str(a.branch) || info.defaultBranch;
+          return { ok: true, output: JSON.stringify({ ...info, branch, detected: await detectFramework(info.fullName, branch) }) };
+        }
+        const q = str(a.query).toLowerCase();
+        const list = (await listRepos()).filter((r) => !q || r.fullName.toLowerCase().includes(q) || (r.description ?? "").toLowerCase().includes(q));
+        return { ok: true, output: JSON.stringify(list.slice(0, 40).map((r) => ({ repo: r.fullName, private: r.private, branch: r.defaultBranch, language: r.language, pushedAt: r.pushedAt, description: r.description }))) };
       }
       case "project_action": {
         const vm = vmsFrom(a.vm)[0];

@@ -3,7 +3,8 @@ import type { Client } from "ssh2";
 import { AGENT_SCRIPT, AGENT_VERSION } from "./agent-script.generated";
 import type { VmConfig } from "./config";
 import { run, shq, withVm } from "./ssh";
-import type { AgentStatus, JobLog, JobMeta, ProjectManifest, PublishedPort, VmStatus } from "./types";
+import { githubToken } from "./github";
+import type { AgentStatus, GithubLink, JobLog, JobMeta, ProjectManifest, PublishedPort, VmStatus } from "./types";
 
 const HOSTCTL = '"$HOME/.hosting/bin/hostctl"';
 
@@ -126,6 +127,10 @@ export interface ProjectInput {
   publish: boolean;
   access: "public" | "private";
   category: "app" | "database" | "tool";
+  /** undefined keeps what the project already has (so re-saves from the Assistant don't drop them) */
+  kind?: "website" | "service" | "worker";
+  framework?: string;
+  github?: GithubLink | null;
   /** null keeps the env file already on the VM. */
   env: Record<string, string> | null;
 }
@@ -151,6 +156,7 @@ function b64(s: string): string {
 /** Write the project files on the VM: manifest (for the UI), conf (for the agent), env (secrets, mode 600). */
 export async function saveProject(conn: Client, p: ProjectInput, createdAt?: string): Promise<ProjectManifest> {
   const now = new Date().toISOString();
+  const prev = await readManifest(conn, p.name);
   const manifest: ProjectManifest = {
     name: p.name,
     repo: p.repo,
@@ -162,8 +168,11 @@ export async function saveProject(conn: Client, p: ProjectInput, createdAt?: str
     publish: p.publish,
     access: p.access,
     category: p.category,
+    kind: p.kind !== undefined ? p.kind : prev?.kind,
+    framework: p.framework !== undefined ? p.framework : prev?.framework,
+    github: p.github !== undefined ? p.github : (prev?.github ?? null),
     envKeys: p.env ? Object.keys(p.env) : [],
-    createdAt: createdAt ?? now,
+    createdAt: createdAt ?? prev?.createdAt ?? now,
     updatedAt: now,
   };
   const conf = [
@@ -200,12 +209,47 @@ export async function saveProject(conn: Client, p: ProjectInput, createdAt?: str
   return manifest;
 }
 
-export async function startDeploy(conn: Client, name: string): Promise<string> {
+async function readManifest(conn: Client, name: string): Promise<ProjectManifest | null> {
+  if (!PROJECT_NAME_RE.test(name)) return null;
+  const r = await run(conn, `cat "$HOME/.hosting/projects/${name}.json" 2>/dev/null || true`, { timeoutMs: 15_000 });
+  try {
+    return r.stdout.trim() ? (JSON.parse(r.stdout) as ProjectManifest) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Every project manifest on a machine (cheap: no status probe). */
+export async function listManifests(conn: Client): Promise<ProjectManifest[]> {
+  const r = await run(conn, 'for f in "$HOME"/.hosting/projects/*.json; do [ -e "$f" ] && { cat "$f"; echo; }; done', { timeoutMs: 15_000 });
+  return r.stdout
+    .split("\n")
+    .filter((l) => l.trim().startsWith("{"))
+    .flatMap((l) => {
+      try {
+        return [JSON.parse(l) as ProjectManifest];
+      } catch {
+        return [];
+      }
+    });
+}
+
+/**
+ * Start a deploy job. Private GitHub repos get the token in a 600 file that the agent reads and
+ * deletes before cloning, so it is on the machine only for the git step of this one deploy.
+ */
+export async function startDeploy(conn: Client, name: string, trigger?: string): Promise<string> {
+  const m = await readManifest(conn, name);
+  if (m?.github?.private) {
+    const token = await githubToken();
+    const res = await run(conn, `umask 077 && cat > "$HOME/.hosting/projects/${name}.gittoken"`, { stdin: token, timeoutMs: 15_000 });
+    if (res.code !== 0) throw new Error("could not hand the GitHub token to the machine");
+  }
   const id = newJobId(`deploy-${name}`.slice(0, 40));
   return startJob(
     conn,
     id,
-    { label: `deploy ${name}`, kind: "deploy", project: name, startedAt: Math.floor(Date.now() / 1000) },
+    { label: trigger ? `deploy ${name} · ${trigger}` : `deploy ${name}`, kind: "deploy", project: name, startedAt: Math.floor(Date.now() / 1000) },
     `exec ${HOSTCTL} deploy ${name}\n`,
   );
 }

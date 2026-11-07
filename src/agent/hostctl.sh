@@ -50,7 +50,7 @@ job_state() {
 }
 
 list_projects() {
-  local first=1 f n active dep url
+  local first=1 f n active dep url commit c_sha c_msg c_author c_time
   for f in "$P"/*.json; do
     [ -e "$f" ] || continue
     n=$(basename "$f" .json)
@@ -65,7 +65,13 @@ list_projects() {
     cat "$f"
     url=null
     [ -s "$P/$n.url" ] && url=$(json_str "$(head -c 400 "$P/$n.url")")
-    printf ',"active":%s,"deployedAt":%s,"url":%s}' "$(json_str "$active")" "$dep" "$url"
+    commit=null
+    if [ -s "$P/$n.commit" ]; then
+      IFS=$'\x1f' read -r c_sha c_msg c_author c_time < "$P/$n.commit"
+      [[ "$c_time" =~ ^[0-9]+$ ]] || c_time=null
+      commit=$(printf '{"sha":%s,"message":%s,"author":%s,"time":%s}' "$(json_str "$c_sha")" "$(json_str "${c_msg:0:200}")" "$(json_str "$c_author")" "$c_time")
+    fi
+    printf ',"active":%s,"deployedAt":%s,"url":%s,"commit":%s}' "$(json_str "$active")" "$dep" "$url" "$commit"
   done
 }
 
@@ -341,6 +347,14 @@ cmd_deploy() {
   [ -f "$P/$n.conf" ] || die "project $n is not configured on this VM"
   . "$P/$n.conf"
   dir="$HOME/apps/$n"
+  # Private GitHub repos: the dashboard drops a token here for this one deploy. Read it, delete it,
+  # and hand it to git through the environment so it never lands in .git/config or the process list.
+  if [ -s "$P/$n.gittoken" ]; then
+    export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+    GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$(head -c 400 "$P/$n.gittoken")" | base64 -w0)"
+    export GIT_CONFIG_VALUE_0
+  fi
+  rm -f "$P/$n.gittoken"
   echo "==> deploying $n on $(hostname) at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if [ -n "$REPO" ]; then
     if [ -d "$dir/.git" ]; then
@@ -351,7 +365,11 @@ cmd_deploy() {
       rm -rf "$dir"
       git clone --depth 1 --branch "$BRANCH" "$REPO" "$dir" || die "git clone failed"
     fi
+    unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+    git -C "$dir" log -1 --format='%H%x1f%s%x1f%an%x1f%ct' > "$P/$n.commit" 2>/dev/null || rm -f "$P/$n.commit"
+    echo "    at $(git -C "$dir" log -1 --format='%h %s' 2>/dev/null)"
   else
+    rm -f "$P/$n.commit"
     mkdir -p "$dir"
   fi
   cd "$dir" || die "cannot enter $dir"
