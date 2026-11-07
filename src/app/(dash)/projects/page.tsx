@@ -110,6 +110,50 @@ const PRESETS: { label: string; hint: string; values: Partial<FormState> }[] = [
     },
   },
   {
+    label: "MongoDB",
+    hint: "Docker, data kept in ~/data, never public",
+    values: {
+      repo: "",
+      install: "mkdir -p ~/data/mongo",
+      build: "docker pull mongo:8",
+      start:
+        "docker rm -f mongo-$PORT >/dev/null 2>&1; exec docker run --name mongo-$PORT -p 127.0.0.1:$PORT:27017 -e MONGO_INITDB_ROOT_USERNAME=admin -e MONGO_INITDB_ROOT_PASSWORD -v $HOME/data/mongo:/data/db mongo:8",
+      port: "27017",
+      publish: false,
+      access: "private",
+      env: "MONGO_INITDB_ROOT_PASSWORD=change-me",
+    },
+  },
+  {
+    label: "MySQL",
+    hint: "Docker, data kept in ~/data, never public",
+    values: {
+      repo: "",
+      install: "mkdir -p ~/data/mysql",
+      build: "docker pull mysql:8.4",
+      start: "docker rm -f mysql-$PORT >/dev/null 2>&1; exec docker run --name mysql-$PORT -p 127.0.0.1:$PORT:3306 -e MYSQL_ROOT_PASSWORD -v $HOME/data/mysql:/var/lib/mysql mysql:8.4",
+      port: "3306",
+      publish: false,
+      access: "private",
+      env: "MYSQL_ROOT_PASSWORD=change-me",
+    },
+  },
+  {
+    label: "pgAdmin",
+    hint: "Web UI for Postgres on the same machine; private link",
+    values: {
+      repo: "",
+      install: "mkdir -p ~/data/pgadmin && sudo chown -R 5050:5050 ~/data/pgadmin",
+      build: "docker pull dpage/pgadmin4",
+      start:
+        "docker rm -f pgadmin-$PORT >/dev/null 2>&1; exec docker run --name pgadmin-$PORT --network host -e PGADMIN_LISTEN_PORT=$PORT -e PGADMIN_DEFAULT_EMAIL -e PGADMIN_DEFAULT_PASSWORD -v $HOME/data/pgadmin:/var/lib/pgadmin dpage/pgadmin4",
+      port: "5050",
+      publish: true,
+      access: "private",
+      env: "PGADMIN_DEFAULT_EMAIL=admin@hosting.dev\nPGADMIN_DEFAULT_PASSWORD=change-me",
+    },
+  },
+  {
     label: "Any Docker image",
     hint: "Edit the image and container port",
     values: {

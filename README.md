@@ -79,3 +79,5 @@ Passkeys (WebAuthn), password login with lockout, signed `HttpOnly` / `Secure` /
 ## Limits worth knowing (InstaBox free plan)
 
 Each free machine pauses after 30 minutes idle and stops after its max runtime (2 h by default; check the machine's Settings), followed by a cooldown that grows when it happens repeatedly. Anything that must stay up around the clock (production sites, databases, model endpoints) belongs on an always-on server: a paid InstaBox plan or any VPS. Add it to `VMS` as `name=user@host:22` and it shows up here like the rest.
+
+**Step-by-step:** [docs/always-on-server.md](docs/always-on-server.md) sets up a free Oracle Cloud VM with Coolify (one-click Postgres, MySQL, MongoDB, Redis, backups, HTTPS) using `scripts/bootstrap-server.sh`, then adds it to this dashboard.
