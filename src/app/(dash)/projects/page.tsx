@@ -11,6 +11,7 @@ import { PRESETS, ProjectForm, blank, formFromManifest, urlFor, type FormState }
 import { Button, Card, cx } from "@/components/ui";
 import { api } from "@/lib/client";
 import { timeAgo } from "@/lib/format";
+import { rankMachines } from "@/lib/placement";
 import { projectType, TYPE_LABEL, TYPE_ORDER, type ProjectType } from "@/lib/project-type";
 import type { CommitInfo, JobStartResult, JobState, ProjectManifest, ProjectState, VmStatus } from "@/lib/types";
 
@@ -118,8 +119,11 @@ export default function ProjectsPage() {
     return !t || p.name.includes(t) || (p.m.github?.repo ?? p.m.repo).toLowerCase().includes(t) || (p.m.framework ?? "").toLowerCase().includes(t);
   });
 
-  const onlineNames = vms.filter((v) => status[v.name]?.ok).map((v) => v.name);
-  const newProject = (extra?: Partial<FormState>, importRepo?: Repo) => setForm({ state: { ...blank(onlineNames.slice(0, 1)), ...extra }, importRepo });
+  // new projects start on the best machine for their type; the form can change it
+  const newProject = (extra?: Partial<FormState>, importRepo?: Repo) => {
+    const best = rankMachines(vms.map((v) => v.name), status, extra?.type ?? "website", "box5");
+    setForm({ state: { ...blank(best.slice(0, 1)), ...extra }, importRepo });
+  };
 
   const actAll = async (p: Project, action: "deploy" | "restart" | "stop" | "start" | "remove") => {
     if (action === "remove" && !confirm(`Remove ${p.name} from ${p.instances.map((i) => i.vm).join(", ")}? This stops it and deletes its files there.`)) return;

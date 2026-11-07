@@ -68,3 +68,20 @@ export async function storeList(dir: string): Promise<{ name: string; size: numb
       });
   });
 }
+
+/**
+ * Write a file and, in the same SSH session, look for (and consume) a flag file. Used by running
+ * Assistant sessions: save progress and learn whether the user pressed Stop, in one round trip.
+ * clearFlag removes a stale flag without reporting it (at the start of a run).
+ */
+export async function storePutAndTakeFlag(path: string, data: string, flag: string, clearFlag = false): Promise<boolean> {
+  const p = check(path);
+  const f = check(flag);
+  const b64 = Buffer.from(data, "utf8").toString("base64");
+  return withVm(storeVm(), async (c) => {
+    const take = clearFlag ? `rm -f ${f}` : `if [ -f ${f} ]; then rm -f ${f}; echo __FLAG__; fi`;
+    const r = await run(c, `umask 077; mkdir -p "$(dirname ${p})" && base64 -d > ${p}.tmp && mv -f ${p}.tmp ${p} && ${take}`, { stdin: b64, timeoutMs: 40_000 });
+    if (r.code !== 0) throw new Error(r.stderr.trim() || "store write failed");
+    return r.stdout.includes("__FLAG__");
+  });
+}

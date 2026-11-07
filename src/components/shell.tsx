@@ -1,6 +1,7 @@
 "use client";
 
 import { Database, FolderGit2, LayoutDashboard, LogOut, MessagesSquare, RefreshCw, Server, ShieldCheck, SquareTerminal, Workflow } from "lucide-react";
+import { useAssistantBusy } from "./assistant-store";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Suspense, type ReactNode } from "react";
@@ -88,6 +89,7 @@ function NavWithPath() {
 }
 
 function Nav({ path }: { path: string | null }) {
+  const working = useAssistantBusy();
   return (
       <>
         {NAV.map(({ href, label, icon: Icon }) => {
@@ -103,6 +105,7 @@ function Nav({ path }: { path: string | null }) {
             >
               <Icon className="size-4" />
               {label}
+              {href === "/assistant" && working && <span className="ml-auto size-2 animate-pulse rounded-full bg-accent" title="The Assistant is working" />}
             </Link>
           );
         })}

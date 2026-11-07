@@ -2,6 +2,8 @@
 // storage machine), repo listing, framework detection, and push webhooks for auto-deploy.
 // The token never goes to the browser; machines only get it for the length of one private-repo deploy.
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { unifiedDiff } from "./diff";
+import { hasScope } from "./github-scopes";
 import { storeDelete, storeGetJson, storePut } from "./store";
 
 import { REPO_RE } from "./github-shared";
@@ -125,8 +127,8 @@ export async function disconnectGithub(): Promise<void> {
 export function missingScopes(scopes: string[]): string[] {
   if (!scopes.length) return [];
   const miss: string[] = [];
-  if (!scopes.includes("repo") && !scopes.includes("public_repo")) miss.push("repo");
-  if (!scopes.includes("admin:repo_hook") && !scopes.includes("write:repo_hook") && !scopes.includes("repo")) miss.push("admin:repo_hook");
+  if (!hasScope(scopes, "repo") && !hasScope(scopes, "public_repo")) miss.push("repo");
+  if (!hasScope(scopes, "write:repo_hook")) miss.push("admin:repo_hook");
   return miss;
 }
 
@@ -282,4 +284,152 @@ export async function ensureWebhook(repo: string, url: string): Promise<void> {
     ? await call(token, `/repos/${repo}/hooks/${mine.id}`, { method: "PATCH", body: JSON.stringify({ active: true, events: ["push"], config }) })
     : await call(token, `/repos/${repo}/hooks`, { method: "POST", body: JSON.stringify({ name: "web", active: true, events: ["push"], config }) });
   if (!r.ok) throw new Error(`GitHub webhook ${mine ? "update" : "create"} failed (${r.status})`);
+}
+
+// ---- working on code (the Assistant's workspace tools) ----
+
+export async function listBranches(repo: string): Promise<{ name: string; protected: boolean }[]> {
+  if (!REPO_RE.test(repo)) throw new Error("repo must look like owner/name");
+  const r = await call(await githubToken(), `/repos/${repo}/branches?per_page=100`);
+  if (!r.ok) throw new Error(`GitHub branches failed (${r.status})`);
+  return ((await r.json()) as { name: string; protected: boolean }[]).map((b) => ({ name: b.name, protected: b.protected }));
+}
+
+async function refSha(token: string, repo: string, branch: string): Promise<string | null> {
+  const r = await call(token, `/repos/${repo}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`);
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`GitHub ref ${branch} failed (${r.status})`);
+  return ((await r.json()) as { object: { sha: string } }).object.sha;
+}
+
+const SKIP = /(^|\/)(node_modules|\.git|\.next|dist|build|out|\.venv|venv|__pycache__|vendor|coverage)\//;
+
+/** File paths in the repo (skips dependency and build folders). */
+export async function repoTree(repo: string, ref: string, prefix = ""): Promise<{ paths: string[]; truncated: boolean }> {
+  if (!REPO_RE.test(repo)) throw new Error("repo must look like owner/name");
+  const r = await call(await githubToken(), `/repos/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
+  if (!r.ok) throw new Error(`GitHub tree failed (${r.status})`);
+  const t = (await r.json()) as { tree: { path: string; type: string }[]; truncated: boolean };
+  const p = prefix.replace(/^\/+/, "");
+  const paths = t.tree.filter((x) => x.type === "blob" && !SKIP.test(x.path) && (!p || x.path.startsWith(p))).map((x) => x.path);
+  return { paths: paths.slice(0, 800), truncated: t.truncated || paths.length > 800 };
+}
+
+export async function readRepoFile(repo: string, ref: string, path: string): Promise<string | null> {
+  if (!REPO_RE.test(repo)) throw new Error("repo must look like owner/name");
+  return file(await githubToken(), repo, path.replace(/^\/+/, "").split("/").map(encodeURIComponent).join("/"), ref);
+}
+
+export interface FileChange {
+  path: string;
+  /** full new content */
+  content?: string;
+  /** or exact find/replace edits on the current content (each find must match exactly once) */
+  edits?: { find: string; replace: string }[];
+  delete?: boolean;
+}
+
+export interface Plan {
+  repo: string;
+  branch: string;
+  /** branch doesn't exist yet: it is created from base */
+  createFrom: string | null;
+  files: { path: string; before: string | null; after: string | null }[];
+}
+
+/** Work out the new file contents (without writing anything). */
+export async function planChanges(repo: string, branch: string, base: string | undefined, changes: FileChange[]): Promise<Plan> {
+  if (!REPO_RE.test(repo)) throw new Error("repo must look like owner/name");
+  if (!/^[A-Za-z0-9._/-]{1,100}$/.test(branch) || branch.includes("..")) throw new Error("bad branch name");
+  if (!changes.length) throw new Error("no file changes");
+  if (changes.length > 40) throw new Error("too many files in one commit (max 40)");
+  const token = await githubToken();
+  const exists = await refSha(token, repo, branch);
+  let createFrom: string | null = null;
+  if (!exists) {
+    createFrom = base || (await getRepo(repo)).defaultBranch;
+    if (!(await refSha(token, repo, createFrom))) throw new Error(`base branch ${createFrom} not found`);
+  }
+  const readRef = exists ? branch : createFrom!;
+  const files: Plan["files"] = [];
+  for (const c of changes) {
+    const path = String(c.path ?? "").replace(/^\/+/, "");
+    if (!path || path.includes("..") || path.startsWith(".git/")) throw new Error(`bad path ${path}`);
+    const before = await file(token, repo, path.split("/").map(encodeURIComponent).join("/"), readRef);
+    let after: string | null;
+    if (c.delete) after = null;
+    else if (typeof c.content === "string") after = c.content;
+    else if (Array.isArray(c.edits) && c.edits.length) {
+      if (before === null) throw new Error(`${path} doesn't exist; give its full content instead of edits`);
+      after = before;
+      for (const e of c.edits) {
+        const n = after.split(e.find).length - 1;
+        if (!e.find || n === 0) throw new Error(`${path}: text to replace not found: ${String(e.find).slice(0, 80)}`);
+        if (n > 1) throw new Error(`${path}: text to replace appears ${n} times; include more surrounding lines`);
+        after = after.replace(e.find, () => e.replace);
+      }
+    } else throw new Error(`${path}: give content, edits or delete`);
+    files.push({ path, before, after });
+  }
+  return { repo, branch, createFrom, files };
+}
+
+export function planDiff(p: Plan): string {
+  const head = p.createFrom ? `New branch ${p.branch} from ${p.createFrom}` : `Branch ${p.branch}`;
+  return [head, ...p.files.map((f) => unifiedDiff(f.path, f.before, f.after))].join("\n\n");
+}
+
+/** One commit with all the changes (Git Data API); creates the branch if needed. */
+export async function commitPlan(p: Plan, message: string): Promise<{ sha: string; url: string; branch: string; created: boolean }> {
+  const token = await githubToken();
+  const head = (await refSha(token, p.repo, p.branch)) ?? (await refSha(token, p.repo, p.createFrom ?? ""));
+  if (!head) throw new Error("branch to commit on is gone");
+  const commit = (await (await call(token, `/repos/${p.repo}/git/commits/${head}`)).json()) as { tree: { sha: string } };
+  // keep the executable bit of files that have it
+  const treeRes = await call(token, `/repos/${p.repo}/git/trees/${commit.tree.sha}?recursive=1`);
+  const modes = new Map<string, string>();
+  if (treeRes.ok) for (const x of ((await treeRes.json()) as { tree: { path: string; mode: string }[] }).tree) modes.set(x.path, x.mode);
+  const tree = p.files.map((f) =>
+    f.after === null ? { path: f.path, mode: modes.get(f.path) ?? "100644", type: "blob", sha: null } : { path: f.path, mode: modes.get(f.path) ?? "100644", type: "blob", content: f.after },
+  );
+  const t = await call(token, `/repos/${p.repo}/git/trees`, { method: "POST", body: JSON.stringify({ base_tree: commit.tree.sha, tree }) });
+  if (!t.ok) throw new Error(`GitHub tree write failed (${t.status}): ${(await t.text()).slice(0, 200)}`);
+  const c = await call(token, `/repos/${p.repo}/git/commits`, {
+    method: "POST",
+    body: JSON.stringify({ message: message.slice(0, 2000), tree: ((await t.json()) as { sha: string }).sha, parents: [head] }),
+  });
+  if (!c.ok) throw new Error(`GitHub commit failed (${c.status})`);
+  const sha = ((await c.json()) as { sha: string }).sha;
+  const created = Boolean(p.createFrom) && !(await refSha(token, p.repo, p.branch));
+  const ref = created
+    ? await call(token, `/repos/${p.repo}/git/refs`, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${p.branch}`, sha }) })
+    : await call(token, `/repos/${p.repo}/git/refs/heads/${p.branch}`, { method: "PATCH", body: JSON.stringify({ sha, force: false }) });
+  if (!ref.ok) {
+    const why = (await ref.text()).slice(0, 200);
+    throw new Error(ref.status === 404 || ref.status === 403 ? `GitHub refused the push (${ref.status}); workflow files need the workflow scope. ${why}` : `GitHub branch update failed (${ref.status}): ${why}`);
+  }
+  return { sha, url: `https://github.com/${p.repo}/commit/${sha}`, branch: p.branch, created };
+}
+
+export async function openPullRequest(repo: string, head: string, base: string, title: string, body: string): Promise<{ number: number; url: string }> {
+  const r = await call(await githubToken(), `/repos/${repo}/pulls`, { method: "POST", body: JSON.stringify({ head, base, title: title.slice(0, 250), body: body.slice(0, 20000) }) });
+  if (!r.ok) throw new Error(`GitHub pull request failed (${r.status}): ${(await r.text()).slice(0, 300)}`);
+  const pr = (await r.json()) as { number: number; html_url: string };
+  return { number: pr.number, url: pr.html_url };
+}
+
+/** Writes that always need the user's OK, whatever the review mode. */
+export function sensitiveGithubCall(method: string, path: string): boolean {
+  if (method === "DELETE") return true;
+  if (method === "GET") return false;
+  return /^\/(user\/(keys|gpg_keys|ssh_signing_keys|emails)|orgs\/[^/]+\/(members|memberships|teams|hooks|actions\/secrets)|repos\/[^/]+\/[^/]+\/(collaborators|keys|actions\/secrets|dependabot\/secrets|environments|transfer|branches\/[^/]+\/protection))/.test(path) ||
+    /^\/repos\/[^/]+\/[^/]+\/?$/.test(path); // PATCH on the repo itself: rename, visibility, archive
+}
+
+/** Any GitHub REST call the token allows. Output is trimmed JSON. */
+export async function githubApi(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }> {
+  if (!/^\/[A-Za-z0-9._~\-/%?=&,:+@]*$/.test(path) || path.includes("..")) throw new Error("path must be a GitHub API path like /repos/owner/name/issues");
+  const r = await call(await githubToken(), path, { method, body: body === undefined || method === "GET" ? undefined : JSON.stringify(body) });
+  const text = await r.text();
+  return { status: r.status, text: text.slice(0, 12000) };
 }

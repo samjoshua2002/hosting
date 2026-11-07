@@ -1,65 +1,25 @@
 "use client";
 
-import {
-  ArrowUpRight,
-  Check,
-  ChevronRight,
-  FileText,
-  Link2,
-  Loader2,
-  MessageSquarePlus,
-  Paperclip,
-  Search,
-  SendHorizonal,
-  Server,
-  ShieldAlert,
-  Sparkles,
-  Square,
-  Trash2,
-  X,
-} from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowUpRight, Check, ChevronRight, FileText, Link2, Loader2, MessageSquarePlus, Paperclip, Search, Server, ShieldAlert, Sparkles, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { addFiles, currentDoc, hydrate, newSession, openSession, removeSession, send, setReview, setTitle, stop, updateItems, useAssistant } from "@/components/assistant-store";
+import { CopyButton, DiffView, TerminalBlock } from "@/components/chat-blocks";
 import { useCluster } from "@/components/cluster";
+import { Composer, contextFor, entitiesFrom } from "@/components/composer";
+import { FlowDiagram } from "@/components/flow-diagram";
 import { Markdown, inline } from "@/components/markdown";
 import { UnsplashLayer, useTheme } from "@/components/theme";
 import { Button, cx } from "@/components/ui";
-import type { ChatMessage } from "@/lib/ai";
+import type { Att, Item } from "@/lib/assistant-items";
 import { api } from "@/lib/client";
 import { timeAgo } from "@/lib/format";
 
-interface Att {
-  id: string;
-  name: string;
-  size: number;
-  type: string;
-}
-type Item =
-  | { kind: "user"; text: string; files?: Att[] }
-  | { kind: "text"; text: string }
-  | { kind: "step"; id: string; label: string; running: boolean; ok?: boolean; output?: string }
-  | { kind: "approval"; id: string; label: string; detail: string; decision?: boolean }
-  | { kind: "question"; id: string; question: string; options: string[]; answer?: string };
-type Ev =
-  | { type: "text"; content: string }
-  | { type: "tool"; id: string; label: string }
-  | { type: "tool_result"; id: string; ok: boolean; output: string }
-  | { type: "approval"; id: string; label: string; detail: string }
-  | { type: "question"; id: string; question: string; options: string[] }
-  | { type: "done"; transcript: ChatMessage[]; waiting: boolean; paused: boolean };
-interface Meta {
-  id: string;
-  title: string;
-  updatedAt: number;
-}
-
-const CACHE = "hosting.operator.current";
 const STARTERS = [
   "Check every machine and fix anything that looks wrong",
-  "Show me what's running on each machine and how much room is left",
-  "Deploy my repo github.com/<you>/<repo> to box2 with a public link",
-  "Back up all databases on box5 into ~/backups with today's date",
+  "Explain the pipeline of my projects with a diagram",
+  "List the tables in my databases with row counts",
+  "Show my GitHub repos that aren't deployed yet",
 ];
-const newId = () => `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const fmtSize = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
 const URL_RE = /https?:\/\/[^\s)<>"'`\]]+/g;
 
@@ -79,193 +39,70 @@ function splitSuggestions(text: string): { body: string; suggestions: string[] }
 }
 
 export default function AssistantPage() {
-  const { vms, refresh } = useCluster();
+  const { vms, status, refresh } = useCluster();
   const { photo } = useTheme();
-  const [sessions, setSessions] = useState<Meta[] | null>(null);
-  const [storeError, setStoreError] = useState<string | null>(null);
+  const st = useAssistant();
+  const doc = currentDoc(st);
+  const sid = st.current;
+  const { items, files, title } = doc;
+  const busy = doc.busy || doc.remote;
   const [query, setQuery] = useState("");
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [title, setTitle] = useState("New session");
-  const [items, setItems] = useState<Item[]>([]);
-  const [transcript, setTranscript] = useState<ChatMessage[]>([]);
-  const [files, setFiles] = useState<Att[]>([]);
   const [staged, setStaged] = useState<Att[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [paused, setPaused] = useState(false);
   const [configured, setConfigured] = useState(true);
-  const abort = useRef<AbortController | null>(null);
+  const [note, setNote] = useState<string | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
-  const state = useRef({ sessionId, title, items, transcript, files });
-  useEffect(() => {
-    state.current = { sessionId, title, items, transcript, files };
-  }, [sessionId, title, items, transcript, files]);
-
-  const loadSessions = useCallback(async () => {
-    try {
-      const r = await api<{ sessions: Meta[] }>("/api/sessions");
-      setSessions(r.sessions);
-      setStoreError(null);
-    } catch (e) {
-      setSessions([]);
-      setStoreError(`History lives on box5: ${(e as Error).message}`);
-    }
-  }, []);
 
   useEffect(() => {
-    queueMicrotask(() => {
-      try {
-        const c = JSON.parse(sessionStorage.getItem(CACHE) ?? "null");
-        if (c?.items) {
-          setSessionId(c.sessionId);
-          setTitle(c.title);
-          setItems((c.items as Item[]).map((i) => (i.kind === "step" ? { ...i, running: false } : i)));
-          setTranscript(c.transcript ?? []);
-          setFiles(c.files ?? []);
-        }
-      } catch {
-        /* nothing cached */
-      }
-      void loadSessions();
-    });
+    hydrate();
     fetch("/api/ai/models", { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => setConfigured(Boolean(d.configured)))
       .catch(() => setConfigured(false));
-  }, [loadSessions]);
-
-  useEffect(() => {
-    try {
-      sessionStorage.setItem(CACHE, JSON.stringify({ sessionId, title, items, transcript, files }));
-    } catch {
-      /* full */
-    }
-  }, [sessionId, title, items, transcript, files]);
+  }, []);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [items, busy]);
+  }, [items.length, busy]);
 
-  const persist = useCallback(async () => {
-    const s = state.current;
-    if (!s.sessionId || !s.items.length) return;
-    try {
-      await api("/api/sessions", { id: s.sessionId, title: s.title, items: s.items, transcript: s.transcript, attachments: s.files });
-      void loadSessions();
-    } catch (e) {
-      setStoreError(`Couldn't save to box5: ${(e as Error).message}`);
-    }
-  }, [loadSessions]);
+  // when a run finishes, refresh machine status (it probably changed something)
+  const [wasBusy, setWasBusy] = useState(false);
+  if (wasBusy !== busy) {
+    setWasBusy(busy);
+    if (!busy) void refresh();
+  }
 
-  const handle = (e: Ev) => {
-    if (e.type === "text") setItems((x) => [...x, { kind: "text", text: e.content }]);
-    else if (e.type === "tool") setItems((x) => [...x, { kind: "step", id: e.id, label: e.label, running: true }]);
-    else if (e.type === "tool_result")
-      setItems((x) =>
-        x.some((i) => i.kind === "step" && i.id === e.id) ? x.map((i) => (i.kind === "step" && i.id === e.id ? { ...i, running: false, ok: e.ok, output: e.output } : i)) : x,
-      );
-    else if (e.type === "approval") setItems((x) => [...x, { kind: "approval", id: e.id, label: e.label, detail: e.detail }]);
-    else if (e.type === "question") setItems((x) => [...x, { kind: "question", id: e.id, question: e.question, options: e.options }]);
-    else if (e.type === "done") {
-      setTranscript(e.transcript);
-      state.current = { ...state.current, transcript: e.transcript };
-      setPaused(e.paused);
-    }
-  };
+  const entities = useMemo(() => entitiesFrom(vms, status), [vms, status]);
+  const mentionNames = useMemo(() => new Set(entities.map((e) => e.name)), [entities]);
 
-  const send = async (body: { message?: string; approvals?: Record<string, boolean>; answers?: Record<string, string> }, sid: string) => {
-    setBusy(true);
-    setPaused(false);
-    const ctrl = new AbortController();
-    abort.current = ctrl;
-    try {
-      const res = await fetch("/api/ai/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: state.current.transcript, session: sid, ...body }),
-        signal: ctrl.signal,
-      });
-      if (res.status === 401) {
-        window.location.replace("/login");
-        return;
-      }
-      if (!res.ok || !res.body) throw new Error((await res.json().catch(() => ({}))).error ?? `Request failed (${res.status})`);
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = "";
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (value) buf += dec.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (line) handle(JSON.parse(line) as Ev);
-        }
-        if (done) break;
-      }
-    } catch (e) {
-      setItems((x) => [...x, { kind: "text", text: (e as Error).name === "AbortError" ? "Stopped." : `⚠️ ${(e as Error).message}` }]);
-    } finally {
-      setBusy(false);
-      abort.current = null;
-      setItems((x) => x.map((i) => (i.kind === "step" && i.running ? { ...i, running: false } : i)));
-      setTimeout(() => void persist(), 50);
-      void refresh();
-    }
-  };
-
-  const ensureSession = () => {
-    if (sessionId) return sessionId;
-    const id = newId();
-    setSessionId(id);
-    state.current = { ...state.current, sessionId: id };
-    return id;
-  };
-
-  const submit = (text = input) => {
-    const msg = text.trim();
-    if ((!msg && !staged.length) || busy) return;
-    const sid = ensureSession();
-    if (!items.length) {
-      const t = (msg || staged[0]?.name || "New session").slice(0, 70);
-      setTitle(t);
-      state.current = { ...state.current, title: t };
-    }
-    const withFiles = staged.length ? `${msg}\n\n${staged.map((f) => `[Attached: ${f.name} (id ${f.id}, ${fmtSize(f.size)})]`).join("\n")}` : msg;
-    setItems((x) => [
-      ...x.map((i) =>
-        i.kind === "approval" && i.decision === undefined ? { ...i, decision: false } : i.kind === "question" && i.answer === undefined ? { ...i, answer: msg } : i,
-      ),
-      { kind: "user", text: msg, files: staged.length ? staged : undefined },
+  const submit = (text: string) => {
+    if ((!text && !staged.length) || busy) return;
+    if (!items.length) setTitle(sid, (text || staged[0]?.name || "New session").slice(0, 70));
+    const withFiles = staged.length ? `${text}\n\n${staged.map((f) => `[Attached: ${f.name} (id ${f.id}, ${fmtSize(f.size)})]`).join("\n")}` : text;
+    updateItems(sid, (x) => [
+      ...x.map((i) => (i.kind === "approval" && i.decision === undefined ? { ...i, decision: false } : i.kind === "question" && i.answer === undefined ? { ...i, answer: text } : i)),
+      { kind: "user", text, files: staged.length ? staged : undefined },
     ]);
-    setInput("");
     setStaged([]);
-    void send({ message: withFiles }, sid);
+    void send(sid, { message: withFiles + contextFor(text, vms, status), display: text, staged });
   };
 
   const decide = (id: string, ok: boolean) => {
-    const next = items.map((i) => (i.kind === "approval" && i.id === id ? { ...i, decision: ok } : i));
-    setItems(next);
-    if (!next.some((i) => i.kind === "approval" && i.decision === undefined) && sessionId) {
-      const approvals = Object.fromEntries(
-        next.filter((i): i is Extract<Item, { kind: "approval" }> => i.kind === "approval" && i.decision !== undefined).map((i) => [i.id, Boolean(i.decision)]),
-      );
-      void send({ approvals }, sessionId);
+    updateItems(sid, (x) => x.map((i) => (i.kind === "approval" && i.id === id ? { ...i, decision: ok } : i)));
+    const next = currentDoc().items;
+    if (!next.some((i) => i.kind === "approval" && i.decision === undefined)) {
+      const approvals = Object.fromEntries(next.filter((i): i is Extract<Item, { kind: "approval" }> => i.kind === "approval" && i.decision !== undefined).map((i) => [i.id, Boolean(i.decision)]));
+      void send(sid, { approvals });
     }
   };
 
   const answer = (id: string, text: string) => {
-    if (!sessionId) return;
-    setItems((x) => x.map((i) => (i.kind === "question" && i.id === id ? { ...i, answer: text } : i)));
-    void send({ answers: { [id]: text } }, sessionId);
+    updateItems(sid, (x) => x.map((i) => (i.kind === "question" && i.id === id ? { ...i, answer: text } : i)));
+    void send(sid, { answers: { [id]: text } });
   };
 
   const upload = async (list: FileList | null) => {
     if (!list?.length) return;
-    const sid = ensureSession();
     setUploading(true);
     try {
       for (const f of Array.from(list)) {
@@ -276,76 +113,37 @@ export default function AssistantPage() {
           r.onerror = () => fail(r.error);
           r.readAsDataURL(f);
         });
-        const att = await api<Att>("/api/attachments", { session: sid, name: f.name, type: f.type, data });
+        const att = await api<Att>("/api/attachments", { session: sid, name: f.name || "pasted", type: f.type, data });
         setStaged((s) => [...s, att]);
-        setFiles((s) => [...s, att]);
+        addFiles(sid, [att]);
       }
     } catch (e) {
-      setStoreError((e as Error).message);
+      setNote((e as Error).message);
     } finally {
       setUploading(false);
-      if (fileInput.current) fileInput.current.value = "";
     }
   };
 
-  const openSession = async (id: string) => {
-    if (busy || id === sessionId) return;
-    try {
-      const s = await api<{ id: string; title: string; items: Item[]; transcript: ChatMessage[]; attachments: Att[] }>(`/api/sessions?id=${id}`);
-      setSessionId(s.id);
-      setTitle(s.title);
-      setItems(s.items.map((i) => (i.kind === "step" ? { ...i, running: false } : i)));
-      setTranscript(s.transcript);
-      setFiles(s.attachments ?? []);
-      setStaged([]);
-      setPaused(false);
-    } catch (e) {
-      setStoreError((e as Error).message);
-    }
-  };
-
-  const newSession = () => {
-    if (busy) return;
-    setSessionId(null);
-    setTitle("New session");
-    setItems([]);
-    setTranscript([]);
-    setFiles([]);
-    setStaged([]);
-    setPaused(false);
-  };
-
-  const removeSession = async (id: string) => {
-    if (!confirm("Delete this session and its attachments?")) return;
-    await api(`/api/sessions?id=${id}`, undefined, { method: "DELETE" }).catch(() => {});
-    if (id === sessionId) newSession();
-    void loadSessions();
-  };
-
-  // ---- what the right panel shows ----
-  const links = useMemo(() => {
-    const set = new Set<string>();
-    for (const i of items) {
-      const t = i.kind === "text" ? i.text : i.kind === "step" ? (i.output ?? "") : "";
-      for (const m of t.matchAll(URL_RE)) set.add(m[0].replace(/[.,;:!?]+$/, ""));
-    }
-    return [...set].filter((u) => !/\.git$/.test(u)).slice(-12);
-  }, [items]);
+  // ---- right panel ----
+  const linkSet = new Set<string>();
+  for (const i of items) {
+    const t = i.kind === "text" ? i.text : i.kind === "step" ? (i.output ?? "") : "";
+    for (const m of t.matchAll(URL_RE)) linkSet.add(m[0].replace(/[.,;:!?]+$/, ""));
+  }
+  const links = [...linkSet].filter((u) => !/\.git$/.test(u) && !/api\.github\.com/.test(u)).slice(-12);
   const lastText = [...items].reverse().find((i): i is Extract<Item, { kind: "text" }> => i.kind === "text");
   const suggestions = !busy && lastText ? splitSuggestions(lastText.text).suggestions : [];
-  const machines = useMemo(() => {
-    const names = new Set<string>();
-    for (const i of items) if (i.kind === "step") for (const v of vms) if (new RegExp(`\\b${v.name}\\b`).test(i.label)) names.add(v.name);
-    return [...names];
-  }, [items, vms]);
+  const machineSet = new Set<string>();
+  for (const i of items) if (i.kind === "step") for (const v of vms) if (new RegExp(`\\b${v.name}\\b`).test(i.label + (i.shell?.vms.join(" ") ?? ""))) machineSet.add(v.name);
+  const machines = [...machineSet];
   const stepCount = items.filter((i) => i.kind === "step").length;
-  const shown = (sessions ?? []).filter((s) => s.title.toLowerCase().includes(query.toLowerCase()));
+  const shown = (st.list ?? []).filter((s) => s.title.toLowerCase().includes(query.toLowerCase()));
 
-  // consecutive steps collapse into one "Ran N steps" block
+  // consecutive non-command steps collapse into "Ran N steps"; commands show as terminals
   const blocks: ({ kind: "steps"; steps: Extract<Item, { kind: "step" }>[]; key: string } | { kind: "one"; item: Item; key: string })[] = [];
   items.forEach((it, idx) => {
     const last = blocks[blocks.length - 1];
-    if (it.kind === "step") {
+    if (it.kind === "step" && !it.shell) {
       if (last?.kind === "steps") last.steps.push(it);
       else blocks.push({ kind: "steps", steps: [it], key: `g${idx}` });
     } else blocks.push({ kind: "one", item: it, key: `i${idx}` });
@@ -358,7 +156,7 @@ export default function AssistantPage() {
       {/* sessions */}
       <aside className="flex w-64 shrink-0 flex-col border-r border-white/[0.06]">
         <div className="space-y-2 p-3">
-          <button onClick={newSession} disabled={busy} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-white hover:bg-white/5 disabled:opacity-40">
+          <button onClick={newSession} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-white hover:bg-white/5">
             <MessageSquarePlus className="size-4" /> New session
           </button>
           <label className="flex items-center gap-2 rounded-lg border border-white/[0.06] px-3 py-1.5 text-sm text-muted">
@@ -368,24 +166,34 @@ export default function AssistantPage() {
         </div>
         <p className="px-5 pt-2 pb-1 text-[11px] font-medium tracking-wide text-muted uppercase">Recents</p>
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-          {sessions === null ? (
+          {st.list === null ? (
             <p className="flex items-center gap-2 px-3 py-2 text-xs text-muted">
               <Loader2 className="size-3 animate-spin" /> Loading history from box5…
             </p>
           ) : shown.length === 0 ? (
             <p className="px-3 py-2 text-xs text-muted">{query ? "No matches." : "Sessions you start show up here."}</p>
           ) : (
-            shown.map((s) => (
-              <div key={s.id} className={cx("group flex items-center rounded-lg", s.id === sessionId ? "bg-white/[0.07]" : "hover:bg-white/[0.04]")}>
-                <button onClick={() => openSession(s.id)} className="min-w-0 flex-1 px-3 py-2 text-left">
-                  <p className="truncate text-sm text-white">{s.title}</p>
-                  <p className="text-[11px] text-muted">{timeAgo(s.updatedAt)}</p>
-                </button>
-                <button onClick={() => removeSession(s.id)} className="mr-2 hidden p-1 text-muted hover:text-[var(--critical-text)] group-hover:block" aria-label="Delete session">
-                  <Trash2 className="size-3.5" />
-                </button>
-              </div>
-            ))
+            shown.map((s) => {
+              const live = st.docs[s.id]?.busy || st.docs[s.id]?.remote || s.running;
+              return (
+                <div key={s.id} className={cx("group flex items-center rounded-lg", s.id === sid ? "bg-white/[0.07]" : "hover:bg-white/[0.04]")}>
+                  <button onClick={() => void openSession(s.id)} className="min-w-0 flex-1 px-3 py-2 text-left">
+                    <p className="flex items-center gap-1.5 truncate text-sm text-white">
+                      {live && <Loader2 className="size-3 shrink-0 animate-spin text-accent" />}
+                      <span className="truncate">{s.title}</span>
+                    </p>
+                    <p className="text-[11px] text-muted">{live ? "working in the background" : timeAgo(s.updatedAt)}</p>
+                  </button>
+                  <button
+                    onClick={() => confirm("Delete this session and its attachments?") && void removeSession(s.id)}
+                    className="mr-2 hidden p-1 text-muted hover:text-[var(--critical-text)] group-hover:block"
+                    aria-label="Delete session"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
+              );
+            })
           )}
         </div>
       </aside>
@@ -398,7 +206,9 @@ export default function AssistantPage() {
             {items.length === 0 && configured && (
               <div className="pt-16">
                 <p className="text-center text-2xl font-bold text-white">What should I do?</p>
-                <p className="mt-2 text-center text-sm text-muted">It runs commands, deploys, checks the result and keeps going. Attach files with the clip.</p>
+                <p className="mt-2 text-center text-sm text-muted">
+                  Type <kbd className="rounded bg-white/10 px-1 font-mono">/</kbd> for commands or <kbd className="rounded bg-white/10 px-1 font-mono">@</kbd> to tag a project, database or machine. It keeps working if you leave this page.
+                </p>
                 <div className="mt-8 grid grid-cols-2 gap-2">
                   {STARTERS.map((s) => (
                     <button key={s} onClick={() => submit(s)} className="rounded-xl border border-white/[0.08] bg-panel px-4 py-3 text-left text-sm text-zinc-200 hover:border-accent/60">
@@ -413,19 +223,19 @@ export default function AssistantPage() {
               b.kind === "steps" ? (
                 <StepGroup key={b.key} steps={b.steps} />
               ) : (
-                <Bubble key={b.key} item={b.item} busy={busy} onDecide={decide} onAnswer={answer} sessionId={sessionId} />
+                <Bubble key={b.key} item={b.item} busy={busy} onDecide={decide} onAnswer={answer} sessionId={sid} mentions={mentionNames} />
               ),
             )}
 
             {busy && (
               <p className="flex items-center gap-2 text-sm text-muted">
-                <Loader2 className="size-4 animate-spin" /> Working…
+                <Loader2 className="size-4 animate-spin" /> {doc.remote ? "Working in the background…" : "Working…"}
               </p>
             )}
-            {paused && !busy && (
+            {doc.paused && !busy && (
               <div className="flex items-center gap-3 text-sm text-muted">
                 Paused to stay within the time limit.
-                <Button size="sm" variant="primary" onClick={() => sessionId && void send({ message: "Continue." }, sessionId)}>
+                <Button size="sm" variant="primary" onClick={() => void send(sid, { message: "Continue." })}>
                   Continue
                 </Button>
               </div>
@@ -444,59 +254,22 @@ export default function AssistantPage() {
         </div>
 
         <div className="mx-auto w-full max-w-3xl px-8 pb-6">
-          {staged.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-1.5">
-              {staged.map((f) => (
-                <span key={f.id} className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-panel px-2 py-1 text-xs text-ink">
-                  <FileText className="size-3.5" /> {f.name} <span className="text-muted">{fmtSize(f.size)}</span>
-                  <button onClick={() => setStaged((s) => s.filter((x) => x.id !== f.id))} className="text-muted hover:text-white" aria-label="Remove">
-                    <X className="size-3" />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              submit();
-            }}
-            className="flex items-end gap-2 rounded-2xl border border-white/[0.1] bg-panel p-2 shadow-xl"
-          >
-            <input ref={fileInput} type="file" multiple hidden onChange={(e) => void upload(e.target.files)} />
-            <button
-              type="button"
-              onClick={() => fileInput.current?.click()}
-              disabled={uploading}
-              className="grid size-10 shrink-0 place-items-center rounded-xl text-muted hover:bg-white/5 hover:text-white"
-              aria-label="Attach files"
-            >
-              {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
-            </button>
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  submit();
-                }
-              }}
-              rows={1}
-              placeholder={pendingQuestion ? "Type your own answer…" : pendingApproval ? "Approve or decline above, or type to change course…" : "Tell it what to do… (Enter to send)"}
-              className="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-2 py-2.5 text-sm text-white placeholder:text-muted focus:outline-none"
-            />
-            {busy ? (
-              <Button type="button" variant="danger" onClick={() => abort.current?.abort()}>
-                <Square className="size-3.5" /> Stop
-              </Button>
-            ) : (
-              <Button type="submit" variant="primary" disabled={(!input.trim() && !staged.length) || !configured}>
-                <SendHorizonal className="size-4" />
-              </Button>
-            )}
-          </form>
-          {storeError && <p className="mt-2 text-xs text-[var(--critical-text)]">{storeError}</p>}
+          <Composer
+            entities={entities}
+            busy={busy}
+            disabled={!configured}
+            uploading={uploading}
+            staged={staged}
+            review={st.review}
+            placeholder={pendingQuestion ? "Type your own answer…" : pendingApproval ? "Approve or decline above, or type to change course…" : "Tell it what to do…  / for commands, @ to tag"}
+            onSend={submit}
+            onStop={() => void stop(sid)}
+            onAttach={(f) => void upload(f)}
+            onUnstage={(id) => setStaged((s) => s.filter((x) => x.id !== id))}
+            onReview={setReview}
+            onNew={newSession}
+          />
+          {(note || st.error) && <p className="mt-2 text-xs text-[var(--critical-text)]">{note || st.error}</p>}
         </div>
       </main>
 
@@ -507,7 +280,7 @@ export default function AssistantPage() {
             <p className="text-[11px] font-bold tracking-[0.14em] text-ink/80 uppercase">Session</p>
             <p className="mt-1 line-clamp-2 text-base font-semibold text-white">{title}</p>
             <p className="mt-1 text-xs text-ink/70">
-              {stepCount} step{stepCount === 1 ? "" : "s"} · saved on box5
+              {stepCount} step{stepCount === 1 ? "" : "s"} · {st.review === "manual" ? "review each step" : "auto"} · saved on box5
             </p>
           </div>
         </UnsplashLayer>
@@ -517,32 +290,22 @@ export default function AssistantPage() {
             <p className="text-xs text-muted">URLs it creates or finds show up here.</p>
           ) : (
             links.map((u) => (
-              <a key={u} href={u} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 truncate rounded-md px-2 py-1 text-xs text-accent-soft hover:bg-white/5">
-                <ArrowUpRight className="size-3 shrink-0" /> <span className="truncate">{u.replace(/^https?:\/\//, "").replace(/\?.*$/, "")}</span>
-              </a>
+              <div key={u} className="group flex items-center gap-1 rounded-md hover:bg-white/5">
+                <a href={u} target="_blank" rel="noreferrer" className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-xs text-accent-soft">
+                  <ArrowUpRight className="size-3 shrink-0" /> <span className="truncate">{u.replace(/^https?:\/\//, "").replace(/\?.*$/, "")}</span>
+                </a>
+                <CopyButton text={u} />
+              </div>
             ))
           )}
         </Section>
 
-        <Section
-          title="Attachments"
-          icon={<Paperclip className="size-3.5" />}
-          action={
-            <button onClick={() => fileInput.current?.click()} className="text-xs text-accent-soft hover:text-white">
-              + Add
-            </button>
-          }
-        >
+        <Section title="Attachments" icon={<Paperclip className="size-3.5" />}>
           {files.length === 0 ? (
-            <p className="text-xs text-muted">Files you attach are stored on box5. The assistant can read them or place them on a machine.</p>
+            <p className="text-xs text-muted">Files you attach or paste are stored on box5. The assistant can read them or place them on a machine.</p>
           ) : (
             files.map((f) => (
-              <a
-                key={f.id}
-                href={sessionId ? `/api/attachments?session=${sessionId}&id=${f.id}` : undefined}
-                className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-ink hover:bg-white/5"
-                title="Download"
-              >
+              <a key={f.id} href={`/api/attachments?session=${sid}&id=${f.id}`} className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-ink hover:bg-white/5" title="Download">
                 <FileText className="size-3.5 shrink-0 text-muted" /> <span className="flex-1 truncate">{f.name}</span>
                 <span className="text-muted">{fmtSize(f.size)}</span>
               </a>
@@ -646,21 +409,25 @@ function Bubble({
   onDecide,
   onAnswer,
   sessionId,
+  mentions,
 }: {
   item: Item;
   busy: boolean;
   onDecide: (id: string, ok: boolean) => void;
   onAnswer: (id: string, text: string) => void;
-  sessionId: string | null;
+  sessionId: string;
+  mentions: Set<string>;
 }) {
   if (item.kind === "user")
     return (
       <div className="flex flex-col items-end gap-1.5 pt-3">
-        {item.text && <div className="max-w-[85%] rounded-2xl rounded-br-md bg-white px-4 py-2.5 text-sm whitespace-pre-wrap text-[#0b0e1c]">{item.text}</div>}
+        {item.text && (
+          <div className="max-w-[85%] rounded-2xl rounded-br-md bg-white/[0.08] px-4 py-2.5 text-sm whitespace-pre-wrap text-white ring-1 ring-white/10">{inline(item.text, mentions)}</div>
+        )}
         {item.files?.map((f) => (
           <a
             key={f.id}
-            href={sessionId ? `/api/attachments?session=${sessionId}&id=${f.id}` : undefined}
+            href={`/api/attachments?session=${sessionId}&id=${f.id}`}
             className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-panel px-2.5 py-1 text-xs text-ink"
           >
             <FileText className="size-3.5" /> {f.name} <span className="text-muted">{fmtSize(f.size)}</span>
@@ -676,6 +443,8 @@ function Bubble({
       </div>
     ) : null;
   }
+  if (item.kind === "step" && item.shell) return <TerminalBlock shell={item.shell} output={item.output} running={item.running} ok={item.ok} />;
+  if (item.kind === "diagram") return <FlowDiagram title={item.title} nodes={item.nodes} edges={item.edges} />;
   if (item.kind === "question")
     return (
       <div className="rounded-2xl border border-white/[0.1] bg-panel p-5">
@@ -707,14 +476,21 @@ function Bubble({
     return (
       <div className={cx("rounded-2xl border p-4", item.decision === undefined ? "border-[var(--warning)]/50 bg-panel" : "border-white/[0.06] opacity-70")}>
         <p className="flex items-center gap-2 text-sm font-semibold text-white">
-          <ShieldAlert className="size-4 shrink-0 text-[var(--warning)]" /> Needs your OK
+          <ShieldAlert className="size-4 shrink-0 text-[var(--warning)]" /> {item.diff ? "Review this change" : "Needs your OK"}
         </p>
         <p className="mt-1 text-sm text-ink/85">{inline(item.label)}</p>
-        {item.detail && <pre className="mt-2 overflow-x-auto rounded-lg bg-black/40 p-3 font-mono text-[12px] text-ink">{item.detail}</pre>}
+        {item.detail &&
+          (item.diff ? (
+            <div className="mt-3">
+              <DiffView text={item.detail} />
+            </div>
+          ) : (
+            <pre className="mt-2 overflow-x-auto rounded-lg bg-black/40 p-3 font-mono text-[12px] text-ink">{item.detail}</pre>
+          ))}
         {item.decision === undefined ? (
           <div className="mt-3 flex gap-2">
             <Button size="sm" variant="primary" onClick={() => onDecide(item.id, true)} disabled={busy}>
-              <Check className="size-3.5" /> Approve
+              <Check className="size-3.5" /> {item.diff ? "Commit" : "Approve"}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => onDecide(item.id, false)} disabled={busy}>
               <X className="size-3.5" /> Decline

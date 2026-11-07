@@ -4,6 +4,7 @@ import { Check, ExternalLink, Lock, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/client";
 import { timeAgo } from "@/lib/format";
+import { hasScope, RECOMMENDED, SCOPES, TOKEN_URL } from "@/lib/github-scopes";
 import { Button, Field, cx, inputCls } from "./ui";
 
 export function GithubMark({ className }: { className?: string }) {
@@ -51,7 +52,6 @@ export function useGithub(): { status: GithubStatus | null; reload: () => Promis
   return { status, reload, set };
 }
 
-const TOKEN_URL = "https://github.com/settings/tokens/new?description=Hosting%20dashboard&scopes=repo,admin:repo_hook";
 
 /** Connect or disconnect. Paste-a-token: no OAuth app to register, works the moment it's saved. */
 export function GithubConnect({ onDone }: { onDone?: (s: GithubStatus) => void }) {
@@ -104,6 +104,7 @@ export function GithubConnect({ onDone }: { onDone?: (s: GithubStatus) => void }
             </Button>
           )}
         </div>
+        <ScopeList granted={status.scopes ?? []} />
         {status.missing?.length ? (
           <p className="text-sm text-[var(--critical-text)]">
             This token is missing {status.missing.join(" and ")}. Import works, but auto-deploy webhooks can&apos;t be added.{" "}
@@ -125,10 +126,15 @@ export function GithubConnect({ onDone }: { onDone?: (s: GithubStatus) => void }
         <li className="flex gap-3">
           <span className="grid size-6 shrink-0 place-items-center rounded-full bg-chip text-xs font-semibold">1</span>
           <div>
-            <p>Create a token on GitHub. The link fills in the name and the two permissions it needs:</p>
-            <p className="mt-1 text-xs text-muted">
-              <code>repo</code> to read your repos (private too), <code>admin:repo_hook</code> to add the push webhook.
-            </p>
+            <p>Create a classic token on GitHub. The link ticks the scopes this dashboard and the Assistant use:</p>
+            <ul className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted">
+              {RECOMMENDED.map((r) => (
+                <li key={r}>
+                  <code className="text-ink">{r}</code> {SCOPES.find((x) => x.scope === r)?.use ?? SCOPES.find((x) => x.scope === r)?.what}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs text-muted">Add more (packages, projects, delete_repo…) if you want the Assistant to manage those too. It always asks before deleting or touching keys and secrets.</p>
             <a href={TOKEN_URL} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-line-strong px-3 py-1.5 text-sm text-white hover:border-accent/60">
               <GithubMark /> Create token on GitHub <ExternalLink className="size-3.5 text-muted" />
             </a>
@@ -239,6 +245,47 @@ export function RepoPicker({ onPick, busyRepo, limit = 6 }: { onPick: (r: Repo) 
             </li>
           ))}
         </ul>
+      )}
+    </div>
+  );
+}
+
+/** Granted scopes, the ones the dashboard uses first, each with what it unlocks. */
+function ScopeList({ granted }: { granted: string[] }) {
+  if (!granted.length)
+    return <p className="text-sm text-muted">Fine-grained token: permissions are set per repository on GitHub. If something is refused, the Assistant says which permission is missing.</p>;
+  const used = SCOPES.filter((s) => s.use && hasScope(granted, s.scope) && granted.includes(s.scope));
+  const other = granted.filter((g) => !used.some((u) => u.scope === g));
+  const missing = RECOMMENDED.filter((r) => !hasScope(granted, r));
+  return (
+    <div className="space-y-3">
+      <p className="text-xs font-medium text-muted">What the Assistant can do with this token</p>
+      <ul className="space-y-1.5">
+        {used.map((s) => (
+          <li key={s.scope} className="flex gap-2 text-sm">
+            <Check className="mt-0.5 size-3.5 shrink-0 text-accent-soft" />
+            <span>
+              <code className="text-white">{s.scope}</code> <span className="text-muted">{s.use}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+      {other.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {other.map((g) => (
+            <span key={g} title={SCOPES.find((x) => x.scope === g)?.what} className={cx("rounded border px-1.5 py-px font-mono text-[11px]", SCOPES.find((x) => x.scope === g)?.sensitive ? "border-[var(--critical)]/40 text-[var(--critical-text)]" : "border-line-strong text-ink")}>
+              {g}
+            </span>
+          ))}
+        </div>
+      )}
+      {missing.length > 0 && (
+        <p className="text-xs text-muted">
+          Not granted: {missing.map((m) => <code key={m} className="mr-1">{m}</code>)}
+          <a href={TOKEN_URL} target="_blank" rel="noreferrer" className="underline">
+            new token with these
+          </a>
+        </p>
       )}
     </div>
   );

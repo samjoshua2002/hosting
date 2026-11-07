@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "@/lib/client";
 import { vmState } from "@/lib/format";
 import { repoFromUrl } from "@/lib/github-shared";
+import { rankMachines } from "@/lib/placement";
 import { projectType, typeFields, TYPE_LABEL, TYPE_ORDER, type ProjectType } from "@/lib/project-type";
 import type { GithubLink, JobStartResult, ProjectManifest, PublishedPort } from "@/lib/types";
 import { useCluster } from "./cluster";
@@ -277,6 +278,7 @@ export function ProjectForm({
         github: { repo: d.repo.fullName, private: d.repo.private, autoDeploy: true },
         framework: x.framework === "Unknown" ? "" : x.framework,
         type: x.kind,
+        targets: rankMachines(vms.map((v) => v.name), status, x.kind, "box5").slice(0, 1),
         install: x.install,
         build: x.build,
         start: x.start,
@@ -393,7 +395,9 @@ export function ProjectForm({
                 <button
                   type="button"
                   key={p.label}
-                  onClick={() => setF((s) => ({ ...s, framework: "", ...p.values }))}
+                  onClick={() =>
+                    setF((s) => ({ ...s, framework: "", ...p.values, targets: rankMachines(vms.map((v) => v.name), status, p.values.type ?? s.type, "box5").slice(0, 1) }))
+                  }
                   className="rounded-xl border border-line-strong px-3 py-2 text-left hover:border-accent/60 hover:bg-white/[0.03]"
                 >
                   <span className="block text-sm font-medium text-white">{p.label}</span>
@@ -416,7 +420,14 @@ export function ProjectForm({
             />
           </Field>
           <Field label="Type" hint={TYPE_LABEL[f.type].hint}>
-            <select value={f.type} onChange={(e) => set("type", e.target.value as ProjectType)} className={inputCls}>
+            <select
+              value={f.type}
+              onChange={(e) => {
+                const t = e.target.value as ProjectType;
+                setF((p) => ({ ...p, type: t, targets: p.editing ? p.targets : rankMachines(vms.map((v) => v.name), status, t, "box5").slice(0, 1) }));
+              }}
+              className={inputCls}
+            >
               {TYPE_ORDER.map((t) => (
                 <option key={t} value={t}>
                   {TYPE_LABEL[t].one}
@@ -482,8 +493,17 @@ export function ProjectForm({
             placeholder={"DATABASE_URL=postgres://…\nNODE_ENV=production"}
           />
         </Field>
-        <Field label="Deploy to">
+        <Field label="Deploy to" hint={f.editing ? undefined : "Picked automatically: the online machine with the most room (databases stay with the other databases). Click to change."}>
           <div className="flex flex-wrap gap-1.5">
+            {!f.editing && (
+              <button
+                type="button"
+                onClick={() => set("targets", rankMachines(vms.map((v) => v.name), status, f.type, "box5").slice(0, 1))}
+                className="rounded-md border border-line-strong px-2.5 py-1 text-xs text-ink hover:border-accent/60"
+              >
+                Auto
+              </button>
+            )}
             {vms.map((v) => {
               const on = f.targets.includes(v.name);
               return (
