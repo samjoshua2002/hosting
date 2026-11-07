@@ -123,7 +123,11 @@ export default function OverviewPage() {
             <Card className="grid grid-cols-5 divide-x divide-white/[0.06]">
               <Stat label="Machines" value={`${t.online}/${t.total}`} sub="online" />
               <Stat label="CPU" value={`${t.cpuAvg.toFixed(t.cpuAvg < 10 ? 1 : 0)}%`} sub={`of ${t.cores} vCPU`} />
-              <Stat label="Memory" value={fmtKb(t.memUsed)} sub={`of ${fmtKb(t.memTotal)} · ${pct(t.memUsed, t.memTotal)}%`} />
+              <Stat
+                label="Memory"
+                value={fmtKb(t.memUsed)}
+                sub={`of ${fmtKb(t.memTotal)} on ${t.disks} separate machine${t.disks === 1 ? "" : "s"} · max ${fmtKb(t.memFreeMax)} free on one`}
+              />
               <Stat
                 label="Storage"
                 value={fmtKb(t.diskUsed)}

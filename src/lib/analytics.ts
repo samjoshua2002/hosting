@@ -154,6 +154,8 @@ export interface Totals {
   diskUsed: number;
   /** largest free space on any one machine: the biggest file or app you can actually place */
   diskFreeMax: number;
+  /** most free memory on any one machine: the biggest single program (model, game server) you can start */
+  memFreeMax: number;
   disks: number;
   cpuAvg: number;
   projects: number;
@@ -175,6 +177,7 @@ export function totals(vms: VmInfo[], status: Record<string, VmStatus | undefine
     diskTotal: agents.reduce((s, a) => s + a.diskTotalKb, 0),
     diskUsed: agents.reduce((s, a) => s + a.diskUsedKb, 0),
     diskFreeMax: Math.max(0, ...agents.map((a) => a.diskTotalKb - a.diskUsedKb)),
+    memFreeMax: Math.max(0, ...agents.map((a) => a.memAvailKb)),
     disks: agents.length,
     cpuAvg: cores ? agents.reduce((s, a) => s + a.cpuPct * a.cores, 0) / cores : 0,
     projects: projects.length,
