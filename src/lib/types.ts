@@ -30,6 +30,8 @@ export interface ProjectManifest {
   framework?: string;
   /** set when imported from GitHub; autoDeploy redeploys on every push to the branch */
   github?: GithubLink | null;
+  /** other projects this one talks to, and the env var that points at each */
+  uses?: { name: string; env: string }[];
   envKeys: string[];
   createdAt: string;
   updatedAt: string;

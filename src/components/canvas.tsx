@@ -308,7 +308,7 @@ function CanvasInner() {
 
   // Re-fit only when the set of nodes changes (a VM or project added), not on every status tick.
   useEffect(() => {
-    const t = setTimeout(() => fitView({ padding: { top: "70px", bottom: "110px", left: "40px", right: "40px" }, duration: 400 }), 80);
+    const t = setTimeout(() => fitView({ padding: { top: "130px", bottom: "110px", left: "40px", right: "40px" }, duration: 400 }), 80);
     return () => clearTimeout(t);
   }, [shape, fitView]);
 
@@ -359,10 +359,10 @@ function CanvasInner() {
         proOptions={{ hideAttribution: true }}
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="var(--line)" />
-        <Controls showInteractive={false} position="top-left" />
+        <Controls showInteractive={false} position="bottom-left" style={{ marginBottom: 96 }} />
       </ReactFlow>
 
-      <p className="pointer-events-none absolute top-3 left-14 rounded-md bg-black/40 px-2.5 py-1.5 text-[11px] text-muted backdrop-blur">
+      <p className="pointer-events-none absolute top-16 left-4 rounded-md bg-black/40 px-2.5 py-1.5 text-[11px] text-muted backdrop-blur">
         Click a machine to inspect it · shift-click to pick several · commands go to the selection, or every online machine
       </p>
 

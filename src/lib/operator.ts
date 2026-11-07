@@ -31,6 +31,7 @@ import {
 } from "./github";
 import { capabilitySummary } from "./github-scopes";
 import { rankMachines } from "./placement";
+import { connectProjects, disconnectProjects } from "./connections";
 import { projectType, typeFields, type ProjectType } from "./project-type";
 
 export type { OperatorEvent } from "./assistant-items";
@@ -57,6 +58,7 @@ How projects work (prefer deploy_project for anything that should keep running)
   Use install "mkdir -p ~/data/<engine>" and build "docker pull <image>" so slow downloads happen during the deploy job.
 - type groups projects on the Projects page: "website" (pages people open), "service" (APIs, models), "worker" (no port), "database", "tool" (admin UIs).
 - GitHub: github_repos lists the user's repos; github_repos with repo "owner/name" returns a detected setup (framework, install, build, start, port). Deploy from GitHub with deploy_project github_repo "owner/name" (private repos work, the URL is filled in) and github_auto_deploy true so every push to the branch redeploys. If GitHub isn't connected, tell the user to connect it on the Projects page (button "Connect GitHub").
+- Relationships: when an app should use a database or another service, call connect_projects (never hand-write connection strings or tunnels). The Pipeline page draws these links.
 - A dedicated database machine plus link_databases lets every other machine reach the databases at 127.0.0.1:<port>.
 - Recurring work (cron jobs: heartbeats, backups, cleanups, reports) uses schedule_task, never hand-edited crontabs: it installs cron if needed, logs every run, and shows up in the dashboard. Run it once right away with run_now to prove it works. Remember that a paused machine skips runs until it wakes.
 
@@ -235,6 +237,12 @@ const TOOLS: ToolDef[] = [
     ["method", "path"],
   ),
   fn(
+    "connect_projects",
+    "Connect a project to a database or another service (\"watch uses postgres\"): sets the connection env var on the app (DATABASE_URL, MONGODB_URI, REDIS_URL or <NAME>_URL) from the target's stored credentials, opens tunnels between machines when needed, records the link (it shows on the Pipeline), and restarts the app. disconnect=true removes it.",
+    { from: { type: "string", description: "the app" }, to: { type: "string", description: "the database or service it uses" }, env: { type: "string", description: "env var name (optional)" }, disconnect: { type: "boolean" } },
+    ["from", "to"],
+  ),
+  fn(
     "link_databases",
     "Connect machines to the databases on a database machine through private tunnels: apps there reach them at 127.0.0.1:<port>. unlink=true removes the tunnel.",
     { db_vm: { type: "string" }, vms: { type: "array", items: { type: "string" } }, unlink: { type: "boolean" } },
@@ -355,6 +363,8 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Read attachment ${str(a.id)}`, needsApproval: false, detail: "" };
     case "copy_attachment":
       return { label: `Copied attachment ${str(a.id)} to ~/${str(a.path)} on ${on(a.vms)}`, needsApproval: false, detail: "" };
+    case "connect_projects":
+      return { label: `${a.disconnect ? "Disconnected" : "Connected"} ${str(a.from)} ${a.disconnect ? "from" : "→"} ${str(a.to)}`, needsApproval: false, detail: "" };
     case "github_repos":
       return { label: a.repo ? `Inspected GitHub repo ${str(a.repo)}` : "Listed GitHub repos", needsApproval: false, detail: "" };
     case "link_databases":
@@ -600,6 +610,12 @@ async function execute(call: ToolCall, ctx: { sessionId?: string }): Promise<{ o
         const script = `set -a; . "$HOME/.hosting/projects/${name}.env" 2>/dev/null; set +a; Q=$(cat); ${cmd[engine]}`;
         const r = await withVm(found.vm, (c) => run(c, script, { stdin: query, timeoutMs: 60_000, maxBytes: 128 * 1024 }));
         return { ok: r.code === 0, output: `[${found.vm.name}] exit ${r.code}\n${clip((r.stdout + (r.stderr ? `\n${r.stderr}` : "")).trim(), 5000) || "(no rows)"}` };
+      }
+      case "connect_projects": {
+        const from = str(a.from).toLowerCase();
+        const to = str(a.to).toLowerCase();
+        if (!PROJECT_NAME_RE.test(from) || !PROJECT_NAME_RE.test(to)) return { ok: false, output: "from and to are project names" };
+        return { ok: true, output: a.disconnect ? await disconnectProjects(from, to) : await connectProjects(from, to, str(a.env) || undefined) };
       }
       case "repo_branches": {
         const repo = str(a.repo);

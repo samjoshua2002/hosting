@@ -198,6 +198,32 @@ export function setReview(review: "auto" | "manual") {
   set({ review });
 }
 
+/** A session's doc (any session, not only the open one). */
+export function getDoc(id: string): Doc {
+  return state.docs[id] ?? empty();
+}
+
+/** Make a session exist without opening it (the Pipeline's AI panel keeps its own). */
+export function ensureDoc(id: string, title: string) {
+  if (!state.docs[id]) set({ docs: { ...state.docs, [id]: { ...empty(), title } } });
+}
+
+/** Approve or decline an action; once nothing is pending, the run continues. */
+export function decide(id: string, callId: string, ok: boolean) {
+  updateItems(id, (x) => x.map((i) => (i.kind === "approval" && i.id === callId ? { ...i, decision: ok } : i)));
+  const next = getDoc(id).items;
+  if (!next.some((i) => i.kind === "approval" && i.decision === undefined)) {
+    const approvals: Record<string, boolean> = {};
+    for (const i of next) if (i.kind === "approval" && i.decision !== undefined) approvals[i.id] = i.decision;
+    void send(id, { approvals });
+  }
+}
+
+export function answer(id: string, callId: string, text: string) {
+  updateItems(id, (x) => x.map((i) => (i.kind === "question" && i.id === callId ? { ...i, answer: text } : i)));
+  void send(id, { answers: { [callId]: text } });
+}
+
 export function addFiles(id: string, files: Att[]) {
   patchDoc(id, (d) => ({ ...d, files: [...d.files, ...files] }));
 }

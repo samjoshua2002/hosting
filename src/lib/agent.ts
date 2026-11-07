@@ -171,6 +171,7 @@ export async function saveProject(conn: Client, p: ProjectInput, createdAt?: str
     kind: p.kind !== undefined ? p.kind : prev?.kind,
     framework: p.framework !== undefined ? p.framework : prev?.framework,
     github: p.github !== undefined ? p.github : (prev?.github ?? null),
+    uses: prev?.uses,
     envKeys: p.env ? Object.keys(p.env) : [],
     createdAt: createdAt ?? prev?.createdAt ?? now,
     updatedAt: now,

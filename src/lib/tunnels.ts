@@ -13,17 +13,23 @@ const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
 export async function linkTunnel(app: VmConfig, db: VmConfig, wanted: number[]): Promise<{ forwarded: number[]; skipped: number[] }> {
   if (app.kind !== "instabox" || db.kind !== "instabox") throw new Error("tunnels work between InstaBox machines");
   if (app.name === db.name) throw new Error("same machine: use localhost directly");
-  // stop our own old tunnel first, then see which ports are genuinely taken by something else
-  const used = await withVm(app, async (conn) => {
+  // keep what the tunnel already forwards (adding a port must never drop another app's database),
+  // stop our own old tunnel, then see which ports are genuinely taken by something else
+  const { used, current } = await withVm(app, async (conn) => {
     const r = await run(
       conn,
-      `systemctl --user stop hosting-tunnel-${db.name}.service >/dev/null 2>&1; sleep 1; ss -ltnH 2>/dev/null | awk '{print $4}'`,
+      `u="$HOME/.config/systemd/user/hosting-tunnel-${db.name}.service"; [ -f "$u" ] && grep -o -- '-L 127.0.0.1:[0-9]*' "$u" | sed 's/.*://' | tr '\\n' ' '; echo; systemctl --user stop hosting-tunnel-${db.name}.service >/dev/null 2>&1; sleep 1; ss -ltnH 2>/dev/null | awk '{print $4}'`,
       { timeoutMs: 20_000 },
     );
-    return new Set(r.stdout.split("\n").map((a) => Number(a.split(":").pop())).filter(Number.isFinite));
+    const [first, ...rest] = r.stdout.split("\n");
+    return {
+      current: first.split(" ").map(Number).filter((n) => Number.isInteger(n) && n > 0),
+      used: new Set(rest.map((a) => Number(a.split(":").pop())).filter(Number.isFinite)),
+    };
   });
-  const ports = wanted.filter((p) => !used.has(p));
-  const skipped = wanted.filter((p) => used.has(p));
+  const all = [...new Set([...current, ...wanted])].sort((x, y) => x - y);
+  const ports = all.filter((p) => !used.has(p));
+  const skipped = all.filter((p) => used.has(p));
   if (!ports.length) return { forwarded: [], skipped };
   const forwards = ports.map((p) => `-L 127.0.0.1:${p}:127.0.0.1:${p}`).join(" ");
   const unit = [
