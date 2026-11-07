@@ -44,3 +44,6 @@ next-env.d.ts
 tokens.txt
 *.pdf
 .env*.local
+
+# Vercel import file (contains secrets)
+vercel.env

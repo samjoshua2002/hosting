@@ -132,8 +132,8 @@ body {
   object-fit: cover;
   opacity: 0;
   transition: opacity 0.8s ease;
-  filter: grayscale(1) contrast(0.85) brightness(0.8) blur(1.5px);
-  transform: scale(1.04);
+  /* the photo in its own colours (the theme hue already comes from it), slightly calmed for text on top */
+  filter: saturate(1.08) brightness(0.92);
 }
 .ub-img.in {
   opacity: 1;
@@ -149,7 +149,14 @@ body {
   transition: opacity 0.8s ease;
 }
 .ub-tint.in {
-  opacity: 1;
+  opacity: 0;
+}
+/* login art: full-colour photo, only the bottom darkened for the caption */
+.login-art .ub-img {
+  filter: saturate(1.12);
+}
+.login-art .ub-shade {
+  background: linear-gradient(180deg, transparent 45%, rgb(0 0 0 / 0.55) 100%);
 }
 .ub-shade {
   position: absolute;
