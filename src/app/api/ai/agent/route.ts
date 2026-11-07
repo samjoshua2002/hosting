@@ -13,15 +13,20 @@ export const maxDuration = 300;
 export const POST = handle(async (req: NextRequest) => {
   await requireAuth(req);
   if (!aiConfigured()) throw new HttpError(503, "Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY to use the assistant.");
-  const body = await readJson<{ transcript?: unknown; message?: unknown; approvals?: unknown; model?: unknown }>(req, 2_000_000);
+  const body = await readJson<{ transcript?: unknown; message?: unknown; approvals?: unknown; answers?: unknown; session?: unknown; model?: unknown }>(req, 2_000_000);
   const transcript = Array.isArray(body.transcript) ? (body.transcript as ChatMessage[]).slice(-300) : [];
   const message = typeof body.message === "string" && body.message.trim() ? body.message : undefined;
   const approvals =
     body.approvals && typeof body.approvals === "object"
       ? Object.fromEntries(Object.entries(body.approvals as Record<string, unknown>).map(([k, v]) => [k, v === true]))
       : undefined;
+  const answers =
+    body.answers && typeof body.answers === "object"
+      ? Object.fromEntries(Object.entries(body.answers as Record<string, unknown>).map(([k, v]) => [k, String(v).slice(0, 4000)]))
+      : undefined;
+  const sessionId = typeof body.session === "string" && /^[a-z0-9-]{8,64}$/.test(body.session) ? body.session : undefined;
   const model = typeof body.model === "string" && /^[\w.-]{1,64}$/.test(body.model) ? body.model : undefined;
-  if (!message && !approvals) throw new HttpError(400, "send a message or approvals");
+  if (!message && !approvals && !answers) throw new HttpError(400, "send a message, approvals or answers");
   audit(req, "ai.operator", { message: message?.slice(0, 200), approvals });
 
   const encoder = new TextEncoder();
@@ -36,7 +41,7 @@ export const POST = handle(async (req: NextRequest) => {
         if (e.type === "tool") audit(req, "ai.tool", { label: e.label });
       };
       try {
-        await runOperator({ transcript, message, approvals, model }, emit, req.signal);
+        await runOperator({ transcript, message, approvals, answers, sessionId, model }, emit, req.signal);
       } catch (e) {
         emit({ type: "text", content: `Stopped: ${(e as Error).message}` });
         emit({ type: "done", transcript, waiting: false, paused: false });
