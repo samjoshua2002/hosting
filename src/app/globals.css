@@ -1,0 +1,200 @@
+@import "tailwindcss";
+
+/*
+ * Theme engine: the whole palette derives from one hue (--h), taken from the random Unsplash banner photo on every
+ * page load (components/theme.tsx). --h is a registered number, so changing it animates every colour at once.
+ */
+@property --h {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 232;
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-ink: var(--accent-text);
+  --color-chip: var(--chip);
+  --color-track: var(--track);
+}
+
+:root {
+  color-scheme: dark;
+  transition: --h 0.9s ease;
+  --bg: hsl(var(--h) 45% 6%);
+  --sidebar: hsl(var(--h) 42% 8%);
+  --panel: hsl(var(--h) 38% 11%);
+  --panel-2: hsl(var(--h) 36% 15%);
+  --line: hsl(var(--h) 32% 18%);
+  --line-strong: hsl(var(--h) 30% 26%);
+  --text: hsl(var(--h) 60% 96%);
+  --muted: hsl(var(--h) 20% 65%);
+  --accent: hsl(var(--h) 95% 73%);
+  --accent-soft: hsl(var(--h) 100% 84%);
+  --accent-text: hsl(var(--h) 100% 92%);
+  --accent-deep: hsl(var(--h) 85% 60%);
+  --accent-alt: hsl(calc(var(--h) + 40) 85% 66%);
+  --chip: hsl(var(--h) 42% 22%);
+  --track: hsl(var(--h) 45% 24%);
+  --tint: hsl(var(--h) 75% 50%);
+  --glow: hsl(var(--h) 95% 73% / 0.45);
+  --story-a: hsl(var(--h) 58% 24% / 0.95);
+  --story-b: hsl(var(--h) 50% 16% / 0.95);
+  --others: hsl(var(--h) 16% 40%);
+  /* sequential ramp for heat cells: one hue, dark → bright (step 0 sits near the surface) */
+  --heat-0: hsl(var(--h) 52% 17%);
+  --heat-1: hsl(var(--h) 56% 23%);
+  --heat-2: hsl(var(--h) 60% 30%);
+  --heat-3: hsl(var(--h) 64% 39%);
+  --heat-4: hsl(var(--h) 72% 50%);
+  --heat-5: hsl(var(--h) 85% 61%);
+  --heat-6: hsl(var(--h) 95% 72%);
+  --heat-7: hsl(var(--h) 100% 84%);
+  /* status (reserved, never a series colour, never themed) */
+  --good: #0ca30c;
+  --good-text: #4ed04e;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  --critical-text: #ff7a7a;
+  /* categorical series, fixed order (validated on the dark surface), never themed: colour follows the VM */
+  --s1: #3987e5;
+  --s2: #d95926;
+  --s3: #199e70;
+  --s4: #c98500;
+  --s5: #d55181;
+  --s6: #008300;
+  --s7: #9085e9;
+  --s8: #e66767;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  background:
+    radial-gradient(1200px 520px at 20% -10%, hsl(var(--h) 70% 45% / 0.26), transparent 70%),
+    radial-gradient(900px 420px at 90% -5%, hsl(calc(var(--h) + 30) 70% 50% / 0.14), transparent 70%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+::selection {
+  background: hsl(var(--h) 95% 73% / 0.35);
+}
+
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.animate-pulse-dot {
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+/* ── Unsplash banner (components/theme.tsx) ── */
+.ub {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(120% 140% at 0% 0%, hsl(var(--h) 70% 48%) 0%, transparent 55%),
+    radial-gradient(120% 140% at 100% 20%, hsl(calc(var(--h) + 30) 60% 45%) 0%, transparent 50%),
+    linear-gradient(160deg, hsl(var(--h) 55% 20%), hsl(var(--h) 50% 9%));
+}
+.ub-img {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.8s ease;
+  filter: grayscale(1) contrast(0.85) brightness(0.8) blur(1.5px);
+  transform: scale(1.04);
+}
+.ub-img.in {
+  opacity: 1;
+}
+.ub-tint {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background: var(--tint);
+  mix-blend-mode: color;
+  opacity: 0;
+  transition: opacity 0.8s ease;
+}
+.ub-tint.in {
+  opacity: 1;
+}
+.ub-shade {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(180deg, hsl(var(--h) 45% 6% / 0.15) 0%, hsl(var(--h) 45% 6% / 0.45) 55%, hsl(var(--h) 45% 6% / 0.92) 100%);
+}
+.page-cover {
+  position: absolute !important;
+  inset: 0 0 auto 0;
+  height: 420px;
+  z-index: -1;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(180deg, #000 40%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 40%, transparent 100%);
+}
+.page-cover .ub-shade {
+  background: linear-gradient(180deg, hsl(var(--h) 45% 6% / 0.35) 0%, hsl(var(--h) 45% 6% / 0.6) 60%, hsl(var(--h) 45% 6% / 0.95) 100%);
+}
+
+/* React Flow, matched to the theme */
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-edge-stroke-default: var(--line-strong);
+  --xy-node-background-color-default: transparent;
+  --xy-node-border-default: none;
+  --xy-controls-button-background-color-default: var(--panel-2);
+  --xy-controls-button-background-color-hover-default: var(--chip);
+  --xy-controls-button-color-default: var(--accent-text);
+  --xy-controls-button-border-color-default: var(--line);
+  --xy-minimap-background-color-default: var(--bg);
+}
+.react-flow__node {
+  cursor: pointer;
+}
+.react-flow__attribution {
+  background: transparent !important;
+}
+.react-flow__attribution a {
+  color: var(--others) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    transition: none;
+  }
+}
