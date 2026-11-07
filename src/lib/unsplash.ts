@@ -4,14 +4,24 @@
 import { cacheLife } from "next/cache";
 import type { BannerPhoto } from "./types";
 
-const QUERY = "colorful gradient waves";
+/** Art styles that suit the UI. Every page load picks one; each is one cached Unsplash search a day. */
+export const STYLES = {
+  oil: "abstract oil painting",
+  art: "vivid abstract art",
+  render: "3d render abstract",
+  fluid: "fluid art",
+  waves: "colorful gradient waves",
+} as const;
+export type Style = keyof typeof STYLES;
 export const UTM = "utm_source=hosting_control&utm_medium=referral";
 
 // Real-world scenes the colour searches sometimes return: we want abstract gradient art only.
-const SCENE = /\b(sand|beach|sea|ocean|shore|water|fur|trees?|forest|mountains?|landscape|sky|person|woman|man|building|city|text|letter)\b/i;
+const SCENE =
+  /\b(sand|beach|sea|ocean|shore|fur|trees?|forest|mountains?|landscape|sky|person|people|woman|man|hand|building|city|room|text|letter|chair|furniture|book|umbrella|lemon|fruit|food|phone|laptop|screen|wall|tile|brain)\b/i;
 
 interface RawPhoto {
   id?: string;
+  likes?: number;
   color?: string;
   alt_description?: string | null;
   description?: string | null;
@@ -36,20 +46,20 @@ function saturation(hex: string | undefined): number {
 function isDull(p: RawPhoto): boolean {
   const text = `${p.alt_description ?? ""} ${p.description ?? ""}`;
   if (SCENE.test(text) || /black and white|monochrome|grayscale|greyscale|computer generated image of a/i.test(text)) return true;
-  return saturation(p.color) < 0.3;
+  return saturation(p.color) < 0.3 || (p.likes ?? 0) < 20;
 }
 
-/** Cached across requests and instances by Next ("use cache"). Throws on failure so errors are never cached. */
-export const TONES = ["blue", "purple", "magenta", "red", "orange", "yellow", "green", "teal"] as const;
-
-/** One cached list per Unsplash colour filter (8 tones → at most 8 API calls a day). */
-export async function getBannerPhotos(tone: (typeof TONES)[number] = "blue"): Promise<BannerPhoto[]> {
+/**
+ * Top photos for one art style, cached by Next ("use cache") for a day: 5 styles → at most 5 Unsplash calls a day.
+ * Throws on failure so an error is never cached.
+ */
+export async function getBannerPhotos(style: Style = "art"): Promise<BannerPhoto[]> {
   "use cache";
   cacheLife("days");
 
   const key = process.env.UNSPLASH_ACCESS_KEY;
   if (!key) return [];
-  const params = new URLSearchParams({ query: QUERY, per_page: "30", orientation: "landscape", content_filter: "high", color: tone });
+  const params = new URLSearchParams({ query: STYLES[style], per_page: "30", orientation: "landscape", content_filter: "high" });
   const res = await fetch(`https://api.unsplash.com/search/photos?${params}`, {
     headers: { Authorization: `Client-ID ${key}`, "Accept-Version": "v1" },
     signal: AbortSignal.timeout(8000),
@@ -57,8 +67,9 @@ export async function getBannerPhotos(tone: (typeof TONES)[number] = "blue"): Pr
   if (!res.ok) throw new Error(`Unsplash ${res.status}`);
   const { results } = (await res.json()) as { results?: RawPhoto[] };
   const valid = (results ?? []).filter((p) => p?.id && isPhotoUrl(p.urls?.raw));
-  const vivid = valid.filter((p) => !isDull(p));
-  const photos = (vivid.length >= 5 ? vivid : valid).map((p) => ({
+  // most-liked first: a good proxy for "looks amazing"
+  const vivid = valid.filter((p) => !isDull(p)).sort((a, b) => (b.likes ?? 0) - (a.likes ?? 0));
+  const photos = (vivid.length >= 5 ? vivid : valid).slice(0, 24).map((p) => ({
     id: String(p.id),
     raw: p.urls!.raw!,
     color: p.color ?? null,

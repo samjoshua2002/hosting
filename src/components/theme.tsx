@@ -1,14 +1,15 @@
 "use client";
 
-// Every full page load picks a random Unsplash colour family and photo; the photo's colour becomes the app's hue.
+// Every full page load picks a random art style and photo from Unsplash; the photo's colour becomes the app's hue.
 // Client-side navigation keeps the same look; the shuffle button picks a new one.
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { BannerPhoto } from "@/lib/types";
 
 const UTM = "utm_source=hosting_control&utm_medium=referral";
 
-/** Unsplash colour filters and the hue to fall back on when a photo's own colour is grey. */
-export const TONES: Record<string, number> = { blue: 225, purple: 265, magenta: 310, red: 352, orange: 24, yellow: 46, green: 145, teal: 178 };
+/** Art styles served by /api/banner (see lib/unsplash.ts). */
+const STYLES = ["oil", "art", "render", "fluid", "waves"];
+const FALLBACK_HUES = [225, 265, 310, 352, 24, 46, 145, 178];
 
 interface ThemeState {
   photo: BannerPhoto | null;
@@ -27,14 +28,14 @@ function set(next: ThemeState) {
   listeners.forEach((l) => l());
 }
 
-function photosFor(tone: string): Promise<BannerPhoto[]> {
-  let p = lists.get(tone);
+function photosFor(style: string): Promise<BannerPhoto[]> {
+  let p = lists.get(style);
   if (!p) {
-    p = fetch(`/api/banner?tone=${tone}`, { cache: "no-store" })
+    p = fetch(`/api/banner?style=${style}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : { photos: [] }))
       .then((d: { photos?: BannerPhoto[] }) => d.photos ?? [])
       .catch(() => []);
-    lists.set(tone, p);
+    lists.set(style, p);
   }
   return p;
 }
@@ -65,12 +66,12 @@ function applyHue(h: number) {
 }
 
 export async function shuffleTheme(): Promise<void> {
-  const choices = Object.keys(TONES).filter((t) => t !== state.tone);
+  const choices = STYLES.filter((t) => t !== state.tone);
   const tone = choices[Math.floor(Math.random() * choices.length)];
   const list = await photosFor(tone);
   const others = list.filter((p) => p.id !== state.photo?.id);
   const photo = others.length ? others[Math.floor(Math.random() * others.length)] : null;
-  const hue = hueOf(photo?.color ?? null, TONES[tone]);
+  const hue = hueOf(photo?.color ?? null, FALLBACK_HUES[Math.floor(Math.random() * FALLBACK_HUES.length)]);
   applyHue(hue);
   set({ photo, tone, hue });
 }
