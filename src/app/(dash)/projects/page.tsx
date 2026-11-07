@@ -1,6 +1,7 @@
 "use client";
 
 import { ExternalLink, FolderGit2, Pencil, Play, Plus, RefreshCw, RotateCw, ScrollText, Square, Trash2 } from "lucide-react";
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useCluster } from "@/components/cluster";
 import { PageHero } from "@/components/page-hero";
@@ -116,7 +117,7 @@ export default function ProjectsPage() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <FolderGit2 className="size-4 text-zinc-500" />
-                      <span className="font-semibold">{name}</span>
+                      <Link href={`/projects/${name}`} className="font-semibold text-white hover:text-accent-soft hover:underline">{name}</Link>
                       {m.port && <Badge>:{m.port}</Badge>}
                       <Badge tone="blue">
                         {instances.length} VM{instances.length > 1 ? "s" : ""}

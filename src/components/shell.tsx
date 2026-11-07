@@ -3,7 +3,7 @@
 import { Database, FolderGit2, LayoutDashboard, LogOut, MessagesSquare, RefreshCw, Server, ShieldCheck, SquareTerminal, Workflow } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 import { api } from "@/lib/client";
 import { useCluster } from "./cluster";
 import { cx } from "./ui";
@@ -20,7 +20,6 @@ const NAV = [
 ];
 
 export function Shell({ children }: { children: ReactNode }) {
-  const path = usePathname();
   const { vms, status, checking, refresh, auto, setAuto } = useCluster();
   const online = vms.filter((v) => status[v.name]?.ok).length;
   const anyChecking = Object.values(checking).some(Boolean);
@@ -39,22 +38,9 @@ export function Shell({ children }: { children: ReactNode }) {
           </span>
           <span className="text-sm font-semibold tracking-tight">hosting</span>
         </Link>
-        {NAV.map(({ href, label, icon: Icon }) => {
-          const active = href === "/" ? path === "/" : path.startsWith(href);
-          return (
-            <Link
-              key={href}
-              href={href}
-              className={cx(
-                "flex shrink-0 items-center gap-2.5 rounded-full px-3 py-1.5 text-sm transition-colors",
-                active ? "bg-white text-[#0b0e1c] font-medium" : "text-muted hover:bg-white/5 hover:text-zinc-100",
-              )}
-            >
-              <Icon className="size-4" />
-              {label}
-            </Link>
-          );
-        })}
+        <Suspense fallback={<Nav path={null} />}>
+          <NavWithPath />
+        </Suspense>
         <div className="flex-1" />
         <button
           onClick={logout}
@@ -92,5 +78,34 @@ export function Shell({ children }: { children: ReactNode }) {
         <main className="min-w-0 flex-1">{children}</main>
       </div>
     </div>
+  );
+}
+
+
+/** Reading the URL makes dynamic routes (e.g. /projects/[name]) suspend, so the nav lives in its own boundary. */
+function NavWithPath() {
+  return <Nav path={usePathname()} />;
+}
+
+function Nav({ path }: { path: string | null }) {
+  return (
+      <>
+        {NAV.map(({ href, label, icon: Icon }) => {
+          const active = path !== null && (href === "/" ? path === "/" : path.startsWith(href));
+          return (
+            <Link
+              key={href}
+              href={href}
+              className={cx(
+                "flex shrink-0 items-center gap-2.5 rounded-full px-3 py-1.5 text-sm transition-colors",
+                active ? "bg-white text-[#0b0e1c] font-medium" : "text-muted hover:bg-white/5 hover:text-zinc-100",
+              )}
+            >
+              <Icon className="size-4" />
+              {label}
+            </Link>
+          );
+        })}
+      </>
   );
 }
