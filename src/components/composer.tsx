@@ -1,6 +1,6 @@
 "use client";
 
-import { Cpu, Database, FileText, FolderGit2, Globe, Hash, Loader2, Paperclip, SendHorizonal, Server, ShieldCheck, Square, Wrench, X, Zap, type LucideIcon } from "lucide-react";
+import { Cloud, Cpu, Database, FileText, FolderGit2, Globe, Hash, Loader2, Paperclip, SendHorizonal, Server, ShieldCheck, Square, Wrench, X, Zap, type LucideIcon } from "lucide-react";
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Att } from "@/lib/assistant-items";
 import { projectType, TYPE_LABEL, type ProjectType } from "@/lib/project-type";
@@ -101,7 +101,73 @@ export function contextFor(text: string, vms: VmInfo[], status: Record<string, V
 
 type Menu = { kind: "commands"; items: Command[]; start: number; end: number } | { kind: "entities"; items: Entity[]; start: number; end: number; cmd?: Command };
 
+export interface ModelChoice {
+  id: string;
+  label: string;
+  sub: string;
+  local: boolean;
+}
+
+/** Cloud models do the work (tools); local ones on your machines chat only. */
+function ModelPicker({ value, models, onChange }: { value: string; models: ModelChoice[]; onChange: (id: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const cur = models.find((m) => m.id === value) ?? models[0];
+  if (!models.length) return null;
+  const group = (local: boolean) => models.filter((m) => m.local === local);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex h-7 max-w-[200px] items-center gap-1.5 rounded-lg border border-white/[0.08] px-2 text-[11.5px] text-ink hover:border-white/20"
+        title="Choose the model"
+      >
+        {cur?.local ? <Cpu className="size-3.5 shrink-0 text-muted" /> : <Cloud className="size-3.5 shrink-0 text-muted" />}
+        <span className="truncate">{cur?.label ?? "Model"}</span>
+      </button>
+      {open && (
+        <>
+          <button type="button" aria-label="Close" className="fixed inset-0 z-30 cursor-default" onClick={() => setOpen(false)} />
+          <div className="absolute bottom-9 left-0 z-40 w-80 overflow-hidden rounded-xl border border-line-strong bg-panel shadow-2xl shadow-black/60">
+            {([false, true] as const).map((local) =>
+              group(local).length ? (
+                <div key={String(local)} className="p-1.5">
+                  <p className="px-2 pt-1 pb-1 text-[10.5px] font-semibold tracking-wide text-muted uppercase">
+                    {local ? "On your machines · chat only" : "Cloud · does the work"}
+                  </p>
+                  {group(local).map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => {
+                        onChange(m.id);
+                        setOpen(false);
+                      }}
+                      className={cx("flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-white/[0.06]", m.id === (cur?.id ?? "") && "bg-white/[0.06]")}
+                    >
+                      {m.local ? <Cpu className="size-3.5 shrink-0 text-muted" /> : <Cloud className="size-3.5 shrink-0 text-muted" />}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm text-white">{m.label}</span>
+                        <span className="block truncate text-[11px] text-muted">{m.sub}</span>
+                      </span>
+                      {m.id === (cur?.id ?? "") && <span className="size-1.5 rounded-full bg-accent" />}
+                    </button>
+                  ))}
+                </div>
+              ) : null,
+            )}
+            <p className="border-t border-white/[0.06] px-3 py-2 text-[11px] text-muted">Local models know your fleet and answer questions; switch to a cloud model to deploy, fix or change things.</p>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function Composer({
+  models,
+  model,
+  onModel,
   entities,
   busy,
   disabled,
@@ -129,6 +195,9 @@ export function Composer({
   onUnstage: (id: string) => void;
   onReview: (r: "auto" | "manual") => void;
   onNew: () => void;
+  models: ModelChoice[];
+  model: string;
+  onModel: (id: string) => void;
 }) {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -324,6 +393,7 @@ export function Composer({
           >
             /
           </button>
+          <ModelPicker value={model} models={models} onChange={onModel} />
           <div className="ml-1 flex shrink-0 rounded-lg border border-white/[0.08] p-0.5 text-[11.5px]">
             {(["auto", "manual"] as const).map((r) => (
               <button

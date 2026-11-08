@@ -13,7 +13,7 @@ export interface Meta {
   running?: boolean;
   pinned?: boolean;
   named?: boolean;
-  source?: "pipeline";
+  source?: "pipeline" | "autopilot";
 }
 
 export interface Doc {
@@ -34,14 +34,17 @@ export interface AssistantState {
   list: Meta[] | null;
   error: string | null;
   review: "auto" | "manual";
+  /** "" = the default cloud model; Azure deployment name; or ollama/<service>/<model> */
+  model: string;
 }
 
 const CACHE = "hosting.assistant.v2";
 const REVIEW = "hosting.assistant.review";
+const MODEL = "hosting.assistant.model";
 export const newId = () => `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const empty = (): Doc => ({ title: "New session", items: [], transcript: [], files: [], busy: false, remote: false, paused: false });
 
-const SERVER: AssistantState = { current: "s0000000000", docs: {}, list: null, error: null, review: "auto" };
+const SERVER: AssistantState = { current: "s0000000000", docs: {}, list: null, error: null, review: "auto", model: "" };
 let state: AssistantState = SERVER;
 let hydrated = false;
 const listeners = new Set<() => void>();
@@ -95,6 +98,7 @@ export function hydrate() {
   let current = newId();
   let doc = empty();
   let review: "auto" | "manual" = "auto";
+  let model = "";
   try {
     const c = JSON.parse(sessionStorage.getItem(CACHE) ?? "null");
     if (c?.current && c.doc) {
@@ -102,10 +106,11 @@ export function hydrate() {
       doc = { ...empty(), ...c.doc, busy: false, items: settle(c.doc.items ?? []) };
     }
     if (localStorage.getItem(REVIEW) === "manual") review = "manual";
+    model = localStorage.getItem(MODEL) ?? "";
   } catch {
     /* nothing cached */
   }
-  state = { ...state, current, docs: { [current]: doc }, review };
+  state = { ...state, current, docs: { [current]: doc }, review, model };
   emit();
   void loadList();
   if (doc.items.length) void refreshFromServer(current);
@@ -205,6 +210,15 @@ export async function editSession(id: string, edit: { title?: string; pinned?: b
   if (!r.ok) void loadList();
 }
 
+export function setModel(model: string) {
+  try {
+    localStorage.setItem(MODEL, model);
+  } catch {
+    /* blocked */
+  }
+  set({ model });
+}
+
 export function setReview(review: "auto" | "manual") {
   try {
     localStorage.setItem(REVIEW, review);
@@ -268,7 +282,7 @@ export async function send(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // the server loads the session from box5 and applies just this change
-      body: JSON.stringify({ session: id, title: d.title, files: d.files, review: state.review, ...body }),
+      body: JSON.stringify({ session: id, title: d.title, files: d.files, review: state.review, model: state.model || undefined, ...body }),
       signal: ctrl.signal,
     });
     if (res.status === 401) return void window.location.replace("/login");

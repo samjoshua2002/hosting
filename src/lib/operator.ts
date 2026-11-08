@@ -36,6 +36,8 @@ import { addMachine, removeMachine } from "./machines";
 import { forget, listMemory, remember } from "./memory";
 import { CATALOG } from "./catalog";
 import { createService } from "./services";
+import { chatLocal, isLocal } from "./local-models";
+import { projectType as typeOfProject } from "./project-type";
 import { projectType, typeFields, type ProjectType } from "./project-type";
 
 export type { OperatorEvent } from "./assistant-items";
@@ -90,6 +92,7 @@ Context the user gives you
 
 Be proactive
 - The / commands in the UI are only shortcuts. Do the useful thing without being asked: draw a diagram when explaining how things connect, query the database when a question is about data, make an artifact when the answer is a report or document, check logs when something fails, follow deploys to the end.
+- Learn from experience: when you solve a problem or discover something about this fleet that would have saved time next time (a port that's taken on a machine, a fix that worked for a framework, a machine that's slow or full, a command that fails here), save it with remember as "Lesson: …" (one specific line). Check the lessons under Memory before acting and follow them. Don't save trivia or one-off results.
 - Memory: when the user states a lasting preference or fact ("use box3 for Java", "my main branch is dev", "always review code changes"), save it with remember. What you remember is listed under "Memory" below; follow it. forget removes an entry when the user changes their mind.
 
 Artifacts (like Claude)
@@ -858,7 +861,44 @@ function diagram(call: ToolCall, emit: (e: OperatorEvent) => void): string {
   return `Diagram shown (${nodes.length} nodes, ${edges.length} edges). Now explain it briefly.`;
 }
 
+/** Local models (Ollama on CPU) chat with a fleet snapshot; they don't run tools. */
+async function runLocal(input: OperatorInput, emit: (e: OperatorEvent) => void): Promise<void> {
+  const model = input.model!.split("/").slice(2).join("/");
+  const history = input.transcript.filter((m) => m.role === "user" || (m.role === "assistant" && typeof m.content === "string" && m.content.trim()));
+  if (!input.message) {
+    emit({ type: "text", content: `${model} runs in chat mode and can't carry out actions. Switch the model picker to the cloud model to continue.` });
+    emit({ type: "done", transcript: input.transcript, waiting: false, paused: false });
+    return;
+  }
+  const [fleet, memory] = await Promise.all([mapLimit(getVms(), 12, (vm) => probe(vm, 9_999_999_999)), listMemory().catch(() => [])]);
+  const snapshot = fleet
+    .map((s) => {
+      const a = s.agent;
+      if (!s.ok || !a) return `- ${s.name}: unreachable`;
+      const projects = a.projects
+        .map((p) => `${p.manifest.name} (${typeOfProject(p.manifest)}, ${p.active}${p.manifest.port ? `, port ${p.manifest.port}` : ""}${p.url ? `, ${p.url.includes("_token=") ? "private link" : p.url.replace(/^https:\/\//, "").split("/")[0]}` : ""})`)
+        .join("; ");
+      return `- ${s.name}: CPU ${Math.round(a.cpuPct)}%, ${(a.memAvailKb / 1048576).toFixed(1)} GB RAM free, ${((a.diskTotalKb - a.diskUsedKb) / 1048576).toFixed(1)} GB disk free. Projects: ${projects || "none"}`;
+    })
+    .join("\n");
+  const system = [
+    `You are the assistant of the user's hosting dashboard, running as the local model ${model} on their own machine.`,
+    "In this mode you can't run commands or change anything. Answer from the fleet snapshot below and general knowledge, briefly and accurately. Don't invent facts that aren't in the snapshot.",
+    "If the user asks you to do something (deploy, restart, fix, install, connect…), say in one or two lines what would be done, then tell them to pick the cloud model in the model menu so it can do it.",
+    `Fleet right now:\n${snapshot}`,
+    memory.length ? `Things the user asked to remember:\n${memory.map((m) => `- ${m.text}`).join("\n")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const msgs: ChatMessage[] = [{ role: "system", content: system }, ...history.slice(-12), { role: "user", content: input.message.slice(0, 6000) }];
+  const t0 = Date.now();
+  const reply = await chatLocal(input.model!, msgs);
+  emit({ type: "text", content: `${reply.trim() || "(no answer)"}\n\n*${model} · ${((Date.now() - t0) / 1000).toFixed(1)} s · chat only*` });
+  emit({ type: "done", transcript: [...input.transcript, { role: "user", content: input.message }, { role: "assistant", content: reply }], waiting: false, paused: false });
+}
+
 export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent) => void, signal: AbortSignal): Promise<void> {
+  if (isLocal(input.model)) return runLocal(input, emit);
   const started = Date.now();
   const BUDGET_MS = 250_000;
   const review = input.review ?? "auto";

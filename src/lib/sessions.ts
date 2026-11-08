@@ -17,8 +17,8 @@ export interface SessionMeta {
   named?: boolean;
   /** the AI already gave it a title */
   titled?: boolean;
-  /** started from the Pipeline's AI bar */
-  source?: "pipeline";
+  /** started from the Pipeline's AI bar, or by Autopilot */
+  source?: "pipeline" | "autopilot";
 }
 
 export interface SessionDoc extends SessionMeta {

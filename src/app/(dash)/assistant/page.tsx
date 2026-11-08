@@ -1,13 +1,13 @@
 "use client";
 
-import { ArrowUpRight, Brain, FileText, Layers, Link2, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, Sparkles, Trash2, Workflow, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { addFiles, currentDoc, editSession, hydrate, newSession, openSession, removeSession, send, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
+import { ArrowUpRight, Brain, FileText, Layers, Link2, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { addFiles, currentDoc, editSession, hydrate, loadList, newSession, openSession, removeSession, send, setModel, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
 import { ArtifactView } from "@/components/artifact-view";
 import { ChatItems } from "@/components/chat-items";
 import { CopyButton } from "@/components/chat-blocks";
 import { useCluster } from "@/components/cluster";
-import { Composer, contextFor, entitiesFrom } from "@/components/composer";
+import { Composer, contextFor, entitiesFrom, type ModelChoice } from "@/components/composer";
 import { UnsplashLayer, useTheme } from "@/components/theme";
 import { Button, cx } from "@/components/ui";
 import { latestArtifacts, type Att, type Item } from "@/lib/assistant-items";
@@ -50,6 +50,15 @@ export default function AssistantPage() {
   const [staged, setStaged] = useState<Att[]>([]);
   const [uploading, setUploading] = useState(false);
   const [configured, setConfigured] = useState(true);
+  const [models, setModels] = useState<ModelChoice[]>([]);
+  const [autopilot, setAutopilot] = useState<{ enabled: boolean; lastRun?: number; lastSummary?: string; sessionId?: string; canEnable?: boolean } | null>(null);
+  const loadAutopilot = useCallback(
+    () =>
+      api<{ enabled: boolean; lastRun?: number; lastSummary?: string; sessionId?: string; canEnable?: boolean }>("/api/autopilot")
+        .then(setAutopilot)
+        .catch(() => setAutopilot(null)),
+    [],
+  );
   const [note, setNote] = useState<string | null>(null);
   const [art, setArt] = useState<string | null>(null);
   const [memory, setMemory] = useState<{ id: string; text: string }[] | null>(null);
@@ -62,11 +71,22 @@ export default function AssistantPage() {
   useEffect(() => {
     hydrate();
     void loadMemory();
+    void loadAutopilot();
     fetch("/api/ai/models", { cache: "no-store" })
       .then((r) => r.json())
-      .then((d) => setConfigured(Boolean(d.configured)))
+      .then((d: { configured: boolean; models?: { id: string; model: string }[]; agent?: string; local?: { id: string; model: string; vm: string; service: string; sizeGb: number }[] }) => {
+        setConfigured(Boolean(d.configured) || Boolean(d.local?.length));
+        const cloud: ModelChoice[] = d.configured
+          ? [
+              { id: "", label: d.agent ?? "Default", sub: "default · runs commands, deploys, fixes", local: false },
+              ...(d.models ?? []).filter((m) => m.id !== d.agent).map((m) => ({ id: m.id, label: m.id, sub: m.model, local: false })),
+            ]
+          : [];
+        const local: ModelChoice[] = (d.local ?? []).map((m) => ({ id: m.id, label: m.model, sub: `${m.service} on ${m.vm} · ${m.sizeGb} GB`, local: true }));
+        setModels([...cloud, ...local]);
+      })
       .catch(() => setConfigured(false));
-  }, []);
+  }, [loadAutopilot]);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -259,6 +279,9 @@ export default function AssistantPage() {
             onUnstage={(id) => setStaged((s) => s.filter((x) => x.id !== id))}
             onReview={setReview}
             onNew={newSession}
+            models={models}
+            model={st.model}
+            onModel={setModel}
           />
           {(note || st.error) && <p className="mt-2 text-xs text-[var(--critical-text)]">{note || st.error}</p>}
         </div>
@@ -343,6 +366,63 @@ export default function AssistantPage() {
           )}
         </Section>
 
+        <Section title="Autopilot" icon={<ShieldCheck className="size-3.5" />}>
+          {autopilot === null ? (
+            <p className="text-xs text-muted">Loading…</p>
+          ) : (
+            <div className="space-y-2 px-2">
+              <label className="flex items-center justify-between gap-2 text-xs text-ink">
+                <span>Check and fix the fleet every 15 min</span>
+                <button
+                  role="switch"
+                  aria-checked={autopilot.enabled}
+                  disabled={!autopilot.canEnable}
+                  onClick={async () => {
+                    try {
+                      const r = await api<typeof autopilot>("/api/autopilot", { enabled: !autopilot.enabled });
+                      setAutopilot({ ...autopilot, ...r });
+                    } catch (e) {
+                      setNote((e as Error).message);
+                    }
+                  }}
+                  className={cx("relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-40", autopilot.enabled ? "bg-accent" : "bg-white/15")}
+                >
+                  <span className={cx("absolute top-0.5 size-4 rounded-full bg-white transition-all", autopilot.enabled ? "left-[18px]" : "left-0.5")} />
+                </button>
+              </label>
+              {!autopilot.canEnable && <p className="text-[11px] text-muted">Needs CRON_SECRET in the environment.</p>}
+              {autopilot.lastRun ? (
+                <p className="text-[11px] text-muted">
+                  Last check {timeAgo(autopilot.lastRun)}: {(autopilot.lastSummary ?? "").split("\n")[0]}
+                </p>
+              ) : (
+                <p className="text-[11px] text-muted">Restarts crashed services and tunnels, clears full disks, and asks the Assistant to fix the rest. Emails you what it did.</p>
+              )}
+              <div className="flex gap-3 text-[11px]">
+                <button
+                  onClick={async () => {
+                    await api("/api/autopilot", { run: true }).catch(() => null);
+                    setNote("Autopilot is checking the fleet…");
+                    setTimeout(() => {
+                      void loadAutopilot();
+                      setNote(null);
+                      void loadList();
+                    }, 25_000);
+                  }}
+                  className="text-accent-soft hover:text-white"
+                >
+                  Check now
+                </button>
+                {autopilot.sessionId && (
+                  <button onClick={() => void openSession(autopilot.sessionId!)} className="text-accent-soft hover:text-white">
+                    Open its session
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </Section>
+
         <Section title="Memory" icon={<Brain className="size-3.5" />}>
           {memory === null ? (
             <p className="text-xs text-muted">Loading…</p>
@@ -413,10 +493,16 @@ function SessionRow({ s, active, live }: { s: Meta; active: boolean; live: boole
       ) : (
         <button onClick={() => void openSession(s.id)} onDoubleClick={() => setEditing(true)} className="min-w-0 flex-1 px-3 py-2 text-left">
           <p className="flex items-center gap-1.5 truncate text-sm text-white">
-            {live ? <Loader2 className="size-3 shrink-0 animate-spin text-accent" /> : s.source === "pipeline" ? <Workflow className="size-3 shrink-0 text-muted" /> : null}
+            {live ? (
+              <Loader2 className="size-3 shrink-0 animate-spin text-accent" />
+            ) : s.source === "pipeline" ? (
+              <Workflow className="size-3 shrink-0 text-muted" />
+            ) : s.source === "autopilot" ? (
+              <ShieldCheck className="size-3 shrink-0 text-accent-soft" />
+            ) : null}
             <span className="truncate">{s.title}</span>
           </p>
-          <p className="text-[11px] text-muted">{live ? "working in the background" : `${s.source === "pipeline" ? "from Pipeline · " : ""}${timeAgo(s.updatedAt)}`}</p>
+          <p className="text-[11px] text-muted">{live ? "working in the background" : `${s.source === "pipeline" ? "from Pipeline · " : s.source === "autopilot" ? "Autopilot · " : ""}${timeAgo(s.updatedAt)}`}</p>
         </button>
       )}
       {!editing && (
