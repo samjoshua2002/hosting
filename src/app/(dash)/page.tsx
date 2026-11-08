@@ -1,27 +1,24 @@
 "use client";
 
-import { AlertTriangle, ChevronRight, Layers, Server, Shuffle, SquareTerminal, Table2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, FolderGit2, HardDrive, MemoryStick, MessagesSquare, Rocket, Search, Server, SquareTerminal } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Suggestions } from "@/components/ai-recs";
 import { ColumnChart, Segmented } from "@/components/charts";
 import { useCluster } from "@/components/cluster";
-import { PhotoCredit, UnsplashLayer, shuffleTheme, useTheme } from "@/components/theme";
-import { Card, Empty, Meter, StatusDot, cx } from "@/components/ui";
-import { METRICS, RANGES, buildBuckets, fmtClock, totals, type Metric, type RangeId } from "@/lib/analytics";
+import { Card, Empty, cx } from "@/components/ui";
+import { METRICS, RANGES, buildBuckets, totals, type Metric, type RangeId } from "@/lib/analytics";
 import { useStored } from "@/lib/client";
-import { fmtDuration, fmtKb, timeAgo, vmMetrics, vmState } from "@/lib/format";
+import { fmtKb, vmMetrics, vmState } from "@/lib/format";
 import { findProblems } from "@/lib/health";
+import type { JobState } from "@/lib/types";
 
 const NOUN: Record<Metric, string> = { cpu: "CPU", memory: "Memory", storage: "Storage" };
 
 export default function OverviewPage() {
   const { vms, status, history, checking, loaded, configErrors } = useCluster();
-  const { photo } = useTheme();
-  const [shuffling, setShuffling] = useState(false);
   const [metric, setMetric] = useStored<Metric>("hosting.metric", "cpu");
   const [range, setRange] = useStored<RangeId>("hosting.range", "1h");
-  const [table, setTable] = useState(false);
   // 0 until mounted: the clock can't be read during prerender (and would be stale anyway)
   const [now, setNow] = useState(0);
 
@@ -39,244 +36,288 @@ export default function OverviewPage() {
   const r = RANGES.find((x) => x.id === range) ?? RANGES[1];
   const buckets = useMemo(() => buildBuckets(names, history, status, metric, r.sec, now), [names, history, status, metric, r.sec, now]);
   const t = useMemo(() => totals(vms, status), [vms, status]);
-  const problems = useMemo(
-    () => findProblems(vms.filter((v) => status[v.name] && !checking[v.name]).map((v) => status[v.name]!)),
-    [vms, status, checking],
-  );
+  const problems = useMemo(() => findProblems(vms.filter((v) => status[v.name] && !checking[v.name]).map((v) => status[v.name]!)), [vms, status, checking]);
   const valued = buckets.filter((b) => b.value !== null);
   const avg = valued.length ? valued.reduce((s, b) => s + (b.value ?? 0), 0) / valued.length : 0;
+  const pct = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 0);
 
   return (
-    <div className="relative isolate">
-      <UnsplashLayer photo={photo} className="page-cover" />
-      <div className="mx-auto w-full max-w-7xl space-y-6 px-10 py-8">
-        <header className="flex items-center gap-6">
-          <UnsplashLayer photo={photo} className="grid size-32 shrink-0 place-items-center rounded-3xl shadow-2xl ring-1 ring-white/10">
-            <Layers className="size-14 text-white drop-shadow-lg" strokeWidth={1.75} />
-          </UnsplashLayer>
+    <div className="mx-auto w-full max-w-7xl space-y-6 px-10 py-8">
+      <header className="flex items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-white">Overview</h1>
+          <p className="mt-1 text-sm text-muted">Here is the summary of your fleet</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Segmented value={range} options={RANGES.map((x) => ({ id: x.id, label: x.label }))} onChange={setRange} size="sm" />
+          <Link href="/assistant" className="flex h-8 items-center gap-1.5 rounded-lg border border-[var(--line-strong)] px-3 text-sm text-zinc-200 hover:bg-white/5">
+            <MessagesSquare className="size-4 text-[var(--accent)]" /> Ask the Assistant
+          </Link>
+        </div>
+      </header>
+
+      {configErrors.length > 0 && (
+        <Card className="p-4 text-sm text-ink">
+          {configErrors.map((e) => (
+            <p key={e}>{e}</p>
+          ))}
+        </Card>
+      )}
+
+      {problems.length > 0 && (
+        <Card className="flex items-start gap-3 p-4">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-[var(--critical-text)]" />
           <div className="min-w-0 flex-1">
-            <p className="text-xs font-bold tracking-[0.14em] text-ink/90 uppercase">Command center</p>
-            <h1 className="mt-1 text-6xl font-extrabold tracking-[-0.03em] text-white">Fleet Overview</h1>
-            <p className="mt-2 text-[15px] text-ink/75">
-              {vms.length || "…"} machine{vms.length === 1 ? "" : "s"} · {t.online} online · {t.projectsLive} project{t.projectsLive === 1 ? "" : "s"} live
+            <p className="text-sm font-medium text-white">
+              {problems.length} thing{problems.length > 1 ? "s" : ""} need{problems.length === 1 ? "s" : ""} attention
             </p>
+            <ul className="mt-1 space-y-0.5 text-sm text-zinc-400">
+              {problems.map((p) => (
+                <li key={p.title}>
+                  {p.title}
+                  {p.detail && <span className="text-muted"> · {p.detail}</span>}
+                </li>
+              ))}
+            </ul>
           </div>
-          <button
-            onClick={async () => {
-              setShuffling(true);
-              await shuffleTheme();
-              setShuffling(false);
-            }}
-            className="self-start rounded-full border border-white/15 bg-white/5 p-2.5 text-ink backdrop-blur hover:bg-white/10"
-            title="New Unsplash photo and theme"
-            aria-label="New theme"
-          >
-            <Shuffle className={cx("size-4", shuffling && "animate-spin")} />
-          </button>
-        </header>
+          <Link href="/assistant" className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--accent-ink)] hover:brightness-110">
+            Investigate
+          </Link>
+        </Card>
+      )}
 
-        {configErrors.length > 0 && (
-          <Card className="border-[var(--warning)]/40 p-4 text-sm text-ink">
-            {configErrors.map((e) => (
-              <p key={e}>{e}</p>
-            ))}
-          </Card>
-        )}
+      {loaded && vms.length === 0 ? (
+        <Card>
+          <Empty icon={<Server className="size-8" />} title="No machines yet">
+            <Link href="/machines?add=1" className="text-accent-soft underline">
+              Add a machine
+            </Link>{" "}
+            by pasting its SSH command.
+          </Empty>
+        </Card>
+      ) : (
+        <>
+          <div className="grid grid-cols-4 gap-4">
+            <StatCard icon={Server} title="Machines" sub="Online right now" value={`${t.online}/${t.total}`} badge={t.online === t.total ? "all up" : `${t.total - t.online} resting`} good={t.online === t.total} href="/machines" footer="Manage machines" />
+            <StatCard
+              icon={FolderGit2}
+              title="Projects"
+              sub={t.jobsRunning ? `${t.jobsRunning} job${t.jobsRunning > 1 ? "s" : ""} running` : "Live right now"}
+              value={`${t.projectsLive}/${t.projects}`}
+              badge={t.projectsLive === t.projects ? "healthy" : `${t.projects - t.projectsLive} down`}
+              good={t.projectsLive === t.projects}
+              href="/projects"
+              footer="View projects"
+            />
+            <StatCard icon={MemoryStick} title="Memory" sub={`of ${fmtKb(t.memTotal)} · up to ${fmtKb(t.memFreeMax)} free on one`} value={fmtKb(t.memUsed)} badge={`${pct(t.memUsed, t.memTotal)}% used`} good={pct(t.memUsed, t.memTotal) < 80} href="#usage" footer="See usage" />
+            <StatCard
+              icon={HardDrive}
+              title="Storage"
+              sub={`of ${fmtKb(t.diskTotal)} · up to ${fmtKb(t.diskFreeMax)} free on one`}
+              value={fmtKb(t.diskUsed)}
+              badge={`${pct(t.diskUsed, t.diskTotal)}% used`}
+              good={pct(t.diskUsed, t.diskTotal) < 80}
+              href="/machines"
+              footer="See machines"
+            />
+          </div>
 
-        {problems.length > 0 && (
-          <Card className="border-[var(--critical)]/40 p-4">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-[var(--critical-text)]" />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-white">
-                  {problems.length} thing{problems.length > 1 ? "s" : ""} need{problems.length === 1 ? "s" : ""} attention
-                </p>
-                <ul className="mt-1 space-y-0.5 text-sm text-ink/80">
-                  {problems.map((p) => (
-                    <li key={p.title}>
-                      {p.title}
-                      {p.detail && <span className="text-muted"> · {p.detail}</span>}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <Link href="/assistant" className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-[#0b0e1c]">
-                Investigate
-              </Link>
-            </div>
-          </Card>
-        )}
-
-        {loaded && vms.length === 0 ? (
-          <Card>
-            <Empty icon={<Server className="size-8" />} title="No machines configured">
-              Add them to the <code className="text-white">VMS</code> environment variable. See{" "}
-              <Link href="/machines" className="text-accent-soft underline">
-                Machines
-              </Link>
-              .
-            </Empty>
-          </Card>
-        ) : (
-          <>
-            {/* the numbers that matter */}
-            <Card className="grid grid-cols-5 divide-x divide-white/[0.06]">
-              <Stat label="Machines" value={`${t.online}/${t.total}`} sub="online" />
-              <Stat label="CPU" value={`${t.cpuAvg.toFixed(t.cpuAvg < 10 ? 1 : 0)}%`} sub={`of ${t.cores} vCPU`} />
-              <Stat
-                label="Memory"
-                value={fmtKb(t.memUsed)}
-                sub={`of ${fmtKb(t.memTotal)} on ${t.disks} separate machine${t.disks === 1 ? "" : "s"} · max ${fmtKb(t.memFreeMax)} free on one`}
-              />
-              <Stat
-                label="Storage"
-                value={fmtKb(t.diskUsed)}
-                sub={`of ${fmtKb(t.diskTotal)} on ${t.disks} separate disk${t.disks === 1 ? "" : "s"} · max ${fmtKb(t.diskFreeMax)} free on one`}
-              />
-              <Stat label="Projects" value={`${t.projectsLive}/${t.projects}`} sub={t.jobsRunning ? `${t.jobsRunning} job${t.jobsRunning > 1 ? "s" : ""} running` : "running"} />
-            </Card>
-
-            {/* every machine, one row each */}
-            <Card className="overflow-hidden">
-              <div className="flex items-center justify-between px-6 pt-5 pb-3">
-                <h2 className="text-[17px] font-semibold text-white">Machines</h2>
-                <Link href="/machines" className="flex items-center gap-0.5 text-xs font-semibold text-accent-soft hover:text-white">
-                  Manage <ChevronRight className="size-3.5" />
+          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)] gap-4">
+            <Card className="p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h2 className="text-base font-semibold text-white">Machines</h2>
+                  <p className="text-xs text-muted">
+                    {t.cores} vCPU · {fmtKb(t.memTotal)} RAM in total
+                  </p>
+                </div>
+                <Link href="/machines?add=1" className="flex h-8 items-center gap-1.5 rounded-lg border border-[var(--line-strong)] px-3 text-xs text-zinc-200 hover:bg-white/5">
+                  <span className="text-[var(--accent)]">+</span> Add new
                 </Link>
               </div>
-              <table className="w-full text-left text-sm">
-                <thead className="border-y border-white/[0.06] text-xs text-muted">
-                  <tr>
-                    <th className="px-6 py-2 font-medium">Machine</th>
-                    <th className="w-[17%] px-3 py-2 font-medium">CPU</th>
-                    <th className="w-[17%] px-3 py-2 font-medium">Memory</th>
-                    <th className="w-[17%] px-3 py-2 font-medium">Disk</th>
-                    <th className="px-3 py-2 font-medium">Projects</th>
-                    <th className="px-3 py-2 font-medium">Uptime</th>
-                    <th className="px-6 py-2" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/[0.05]">
-                  {vms.map((v) => {
-                    const s = status[v.name];
-                    const st = vmState(s, Boolean(checking[v.name]));
-                    const m = vmMetrics(s);
-                    const a = s?.agent;
-                    return (
-                      <tr key={v.name} className="hover:bg-white/[0.02]">
-                        <td className="px-6 py-3">
-                          <div className="flex items-center gap-2.5">
-                            <StatusDot state={st} />
-                            <div className="min-w-0">
-                              <p className="font-mono font-semibold text-white">{v.name}</p>
-                              <p className="truncate text-[11px] text-muted">
-                                {st === "checking" ? "waking up…" : st === "offline" ? (s?.error ?? "unreachable") : (a?.hostname ?? v.host)}
-                              </p>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-3 py-3">{m ? <Meter label="" value={m.cpu} detail={`${m.cpu}%`} /> : <Dash />}</td>
-                        <td className="px-3 py-3">{m ? <Meter label="" value={m.memPct} detail={fmtKb(m.memUsedKb)} /> : <Dash />}</td>
-                        <td className="px-3 py-3">{m ? <Meter label="" value={m.diskPct} detail={`${fmtKb(m.diskTotalKb - m.diskUsedKb)} free`} /> : <Dash />}</td>
-                        <td className="px-3 py-3 text-ink/80">
-                          {a ? (a.projects.length ? `${a.projects.filter((p) => p.active === "active").length}/${a.projects.length} live` : "none") : <Dash />}
-                        </td>
-                        <td className="px-3 py-3 text-ink/80">{a ? fmtDuration(a.uptimeSec) : <Dash />}</td>
-                        <td className="px-6 py-3 text-right">
-                          <Link
-                            href={`/run?vm=${v.name}`}
-                            className="inline-flex items-center gap-1 rounded-full border border-white/10 px-2.5 py-1 text-xs text-ink hover:bg-white/5"
-                          >
-                            <SquareTerminal className="size-3.5" /> Run
-                          </Link>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <div className="grid grid-cols-2 gap-3">
+                {vms.map((v) => {
+                  const s = status[v.name];
+                  const st = vmState(s, Boolean(checking[v.name]));
+                  const m = vmMetrics(s);
+                  const a = s?.agent;
+                  const resting = /cool|paus/i.test(s?.error ?? "");
+                  return (
+                    <div key={v.name} className="rounded-xl border border-[var(--line)] bg-[var(--panel-2)] p-3">
+                      <div className="flex items-center gap-2">
+                        <span className="grid size-7 place-items-center rounded-md border border-[var(--line)] bg-[var(--panel)]">
+                          <Server className="size-3.5 text-[var(--accent)]" />
+                        </span>
+                        <span className="font-mono text-sm font-medium text-white">{v.name}</span>
+                        <span className="flex-1" />
+                        <Link href={`/run?vm=${v.name}`} className="text-zinc-500 hover:text-white" title={`Open a shell on ${v.name}`}>
+                          <SquareTerminal className="size-4" />
+                        </Link>
+                      </div>
+                      <p className="mt-3 text-xl font-semibold tabular-nums text-white">
+                        {m ? `${m.cpu}%` : "—"} <span className="text-xs font-normal text-muted">CPU</span>
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-muted">{m ? `${fmtKb(m.memUsedKb)} RAM · ${fmtKb(m.diskTotalKb - m.diskUsedKb)} disk free` : (s?.error?.slice(0, 48) ?? "checking…")}</p>
+                      <p className={cx("mt-1.5 text-[11px] font-medium", st === "online" ? "text-[var(--good-text)]" : st === "checking" ? "text-[var(--warning)]" : "text-[var(--critical-text)]")}>
+                        {st === "online" ? `Active · ${a?.projects.length ?? 0} project${a?.projects.length === 1 ? "" : "s"}` : st === "checking" ? "Checking…" : resting ? "Resting (InstaBox limit)" : "Unreachable"}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
             </Card>
 
-            <div className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-5">
-              {/* usage over time */}
-              <Card className="p-6">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h2 className="text-[17px] font-semibold text-white">{NOUN[metric]} over time</h2>
-                    <p className="mt-0.5 text-xs text-muted">
-                      Fleet average · last {r.words} · <span className="text-ink">{avg.toFixed(avg < 10 ? 1 : 0)}%</span> on average
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setTable((x) => !x)}
-                    className="flex items-center gap-1 rounded-full border border-white/10 px-2.5 py-1 text-[11px] text-muted hover:text-white"
-                    aria-pressed={table}
-                  >
-                    <Table2 className="size-3" /> {table ? "Chart" : "Table"}
-                  </button>
+            <Card id="usage" className="p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm text-muted">{NOUN[metric]} · fleet average</p>
+                  <p className="mt-1 text-[28px] font-semibold tracking-tight text-white tabular-nums">{avg.toFixed(avg < 10 ? 1 : 0)}%</p>
+                  <p className="text-xs text-muted">last {r.words}</p>
                 </div>
-                <div className="mt-4 mb-5 flex items-center justify-between gap-3">
-                  <Segmented value={metric} options={METRICS} onChange={setMetric} size="sm" />
-                  <Segmented value={range} options={RANGES.map((x) => ({ id: x.id, label: x.label }))} onChange={setRange} size="sm" />
-                </div>
-                {table ? (
-                  <div className="scroll-thin max-h-56 overflow-auto rounded-lg border border-white/[0.06]">
-                    <table className="w-full text-left text-xs">
-                      <thead className="sticky top-0 bg-panel text-muted">
-                        <tr>
-                          <th className="px-3 py-1.5 font-medium">Window</th>
-                          <th className="px-3 py-1.5 text-right font-medium">{NOUN[metric]}</th>
-                          <th className="px-3 py-1.5 text-right font-medium">Machines reporting</th>
-                        </tr>
-                      </thead>
-                      <tbody className="tabular-nums">
-                        {buckets
-                          .filter((b) => b.value !== null)
-                          .map((b) => (
-                            <tr key={b.start} className="border-t border-white/[0.04]">
-                              <td className="px-3 py-1.5 text-ink/80">
-                                {fmtClock(b.start)}–{fmtClock(b.end)}
-                              </td>
-                              <td className="px-3 py-1.5 text-right text-white">{b.value!.toFixed(1)}%</td>
-                              <td className="px-3 py-1.5 text-right text-muted">{b.reporting}</td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : now > 0 ? (
-                  <ColumnChart buckets={buckets} emptyText="History builds up while this page is open" />
-                ) : (
-                  <div className="h-[244px]" />
-                )}
-              </Card>
-              <Suggestions />
-            </div>
-          </>
-        )}
+                <Segmented value={metric} options={METRICS} onChange={setMetric} size="sm" />
+              </div>
+              <div className="mt-4">{now > 0 ? <ColumnChart buckets={buckets} height={230} emptyText="History builds up while this page is open" /> : <div className="h-[254px]" />}</div>
+            </Card>
+          </div>
 
-        <div className="flex items-center justify-between pt-1">
-          <span className="text-[11px] text-muted">
-            Checked {timeAgo(Math.max(0, ...vms.map((v) => status[v.name]?.checkedAt ?? 0)))}
-            {Object.values(checking).some(Boolean) && " · refreshing…"}
+          <div className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-4">
+            <RecentActivity />
+            <Suggestions />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function StatCard({
+  icon: Icon,
+  title,
+  sub,
+  value,
+  badge,
+  good,
+  href,
+  footer,
+}: {
+  icon: typeof Server;
+  title: string;
+  sub: string;
+  value: string;
+  badge?: string;
+  good?: boolean;
+  href: string;
+  footer: string;
+}) {
+  return (
+    <Card className="flex flex-col overflow-hidden">
+      <div className="flex-1 p-5">
+        <div className="flex items-start gap-3">
+          <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-[var(--line)] bg-[var(--panel-2)]">
+            <Icon className="size-[18px] text-[var(--accent)]" />
           </span>
-          <PhotoCredit photo={photo} />
+          <div className="min-w-0">
+            <p className="font-medium text-white">{title}</p>
+            <p className="truncate text-xs text-muted">{sub}</p>
+          </div>
+        </div>
+        <div className="mt-4 flex items-center gap-2">
+          <p className="text-[26px] font-semibold tracking-tight text-white tabular-nums">{value}</p>
+          {badge && (
+            <span className={cx("rounded-full border px-2 py-0.5 text-[11px]", good ? "border-[var(--good)]/30 text-[var(--good-text)]" : "border-[var(--warning)]/30 text-[var(--warning)]")}>
+              {badge}
+            </span>
+          )}
         </div>
       </div>
-    </div>
+      <Link href={href} className="flex items-center justify-between border-t border-[var(--line)] px-5 py-3 text-sm text-zinc-400 hover:bg-white/[0.02] hover:text-white">
+        {footer}
+        <ArrowRight className="size-4 text-[var(--accent)]" />
+      </Link>
+    </Card>
   );
 }
 
-function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
+type Filter = "all" | "deploy" | "command" | "failed";
+
+/** Deploys and jobs across the fleet, newest first. */
+function RecentActivity() {
+  const { vms, status, openJob } = useCluster();
+  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState<Filter>("all");
+  const rows = useMemo(
+    () =>
+      vms
+        .flatMap((v) => (status[v.name]?.agent?.jobs ?? []).map((j) => ({ vm: v.name, j })))
+        .sort((a, b) => b.j.meta.startedAt - a.j.meta.startedAt)
+        .filter(({ j }) => (filter === "all" ? true : filter === "failed" ? j.state === "done" && j.exitCode !== 0 : j.meta.kind === filter))
+        .filter(({ vm, j }) => !q || `${j.meta.label} ${vm}`.toLowerCase().includes(q.toLowerCase()))
+        .slice(0, 8),
+    [vms, status, q, filter],
+  );
+  const state = (j: JobState): { text: string; cls: string } =>
+    j.state === "running" ? { text: "Running", cls: "bg-[var(--warning)]" } : j.state === "done" && j.exitCode === 0 ? { text: "Completed", cls: "bg-[var(--good)]" } : j.state === "lost" ? { text: "Stopped", cls: "bg-zinc-500" } : { text: "Failed", cls: "bg-[var(--critical)]" };
+
   return (
-    <div className="px-6 py-5">
-      <p className="text-xs text-muted">{label}</p>
-      <p className="mt-1 text-[28px] font-bold tracking-tight text-white">{value}</p>
-      <p className="mt-0.5 text-xs leading-snug text-muted">{sub}</p>
-    </div>
+    <Card className="overflow-hidden">
+      <div className="flex items-center gap-3 px-5 pt-5 pb-4">
+        <h2 className="flex-1 text-base font-semibold text-white">Recent activity</h2>
+        <label className="flex h-8 w-48 items-center gap-2 rounded-lg border border-[var(--line-strong)] px-2.5">
+          <Search className="size-3.5 text-[var(--accent)]" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search" className="w-full bg-transparent text-xs text-white outline-none placeholder:text-muted" />
+        </label>
+        <select value={filter} onChange={(e) => setFilter(e.target.value as Filter)} className="h-8 rounded-lg border border-[var(--line-strong)] bg-transparent px-2 text-xs text-zinc-300">
+          <option value="all">All</option>
+          <option value="deploy">Deploys</option>
+          <option value="command">Commands</option>
+          <option value="failed">Failed</option>
+        </select>
+      </div>
+      <table className="w-full text-left text-sm">
+        <thead className="border-y border-[var(--line)] bg-white/[0.015] text-xs text-muted">
+          <tr>
+            <th className="px-5 py-2.5 font-medium">Activity</th>
+            <th className="px-3 py-2.5 font-medium">Machine</th>
+            <th className="px-3 py-2.5 font-medium">Date</th>
+            <th className="px-3 py-2.5 font-medium">Time</th>
+            <th className="px-5 py-2.5 font-medium">Status</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-[var(--line)]">
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={5} className="px-5 py-8 text-center text-sm text-muted">
+                Nothing yet.
+              </td>
+            </tr>
+          ) : (
+            rows.map(({ vm, j }) => {
+              const s = state(j);
+              const d = new Date(j.meta.startedAt * 1000);
+              return (
+                <tr key={`${vm}-${j.id}`} onClick={() => openJob({ vm, id: j.id, title: j.meta.label })} className="cursor-pointer hover:bg-white/[0.02]">
+                  <td className="px-5 py-3">
+                    <span className="flex items-center gap-2.5">
+                      <span className="grid size-7 shrink-0 place-items-center rounded-md border border-[var(--line)] bg-[var(--panel-2)]">
+                        {j.meta.kind === "deploy" ? <Rocket className="size-3.5 text-[var(--accent)]" /> : <SquareTerminal className="size-3.5 text-[var(--accent)]" />}
+                      </span>
+                      <span className="truncate text-white">{j.meta.label}</span>
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 font-mono text-xs text-zinc-400">{vm}</td>
+                  <td className="px-3 py-3 text-xs text-zinc-400">{d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</td>
+                  <td className="px-3 py-3 text-xs text-zinc-400">{d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</td>
+                  <td className="px-5 py-3">
+                    <span className="flex items-center gap-1.5 text-xs text-zinc-300">
+                      <span className={cx("size-1.5 rounded-full", s.cls)} /> {s.text}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })
+          )}
+        </tbody>
+      </table>
+    </Card>
   );
-}
-
-function Dash() {
-  return <span className="text-muted">—</span>;
 }

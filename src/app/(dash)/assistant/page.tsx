@@ -8,7 +8,6 @@ import { ChatItems } from "@/components/chat-items";
 import { CopyButton } from "@/components/chat-blocks";
 import { useCluster } from "@/components/cluster";
 import { Composer, contextFor, entitiesFrom, type ModelChoice } from "@/components/composer";
-import { UnsplashLayer, useTheme } from "@/components/theme";
 import { Button, cx } from "@/components/ui";
 import { latestArtifacts, type Att, type Item } from "@/lib/assistant-items";
 import { api } from "@/lib/client";
@@ -40,7 +39,6 @@ function splitSuggestions(text: string): { body: string; suggestions: string[] }
 
 export default function AssistantPage() {
   const { vms, status, refresh, reloadVms } = useCluster();
-  const { photo } = useTheme();
   const st = useAssistant();
   const doc = currentDoc(st);
   const sid = st.current;
@@ -293,15 +291,13 @@ export default function AssistantPage() {
         </aside>
       ) : (
       <aside className="scroll-thin w-80 shrink-0 space-y-6 overflow-y-auto border-l border-white/[0.06] p-5">
-        <UnsplashLayer photo={photo} className="rounded-2xl ring-1 ring-white/10">
-          <div className="px-4 pt-10 pb-4">
-            <p className="text-[11px] font-bold tracking-[0.14em] text-ink/80 uppercase">Session</p>
-            <p className="mt-1 line-clamp-2 text-base font-semibold text-white">{title}</p>
-            <p className="mt-1 text-xs text-ink/70">
-              {stepCount} step{stepCount === 1 ? "" : "s"} · {st.review === "manual" ? "review each step" : "auto"} · saved on box5
-            </p>
-          </div>
-        </UnsplashLayer>
+        <div className="rounded-2xl border border-[var(--line)] bg-panel px-4 py-4">
+          <p className="text-[11px] font-semibold tracking-[0.12em] text-muted uppercase">Session</p>
+          <p className="mt-1 line-clamp-2 text-base font-semibold text-white">{title}</p>
+          <p className="mt-1 text-xs text-muted">
+            {stepCount} step{stepCount === 1 ? "" : "s"} · {st.review === "manual" ? "review each step" : "auto"} · saved on box5
+          </p>
+        </div>
 
         {artifacts.length > 0 && (
           <Section title="Artifacts" icon={<Layers className="size-3.5" />}>

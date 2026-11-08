@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertTriangle, Check, Pencil, Plus, Server, ShieldCheck, ShieldAlert, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useCluster } from "@/components/cluster";
 import { Drawer } from "@/components/drawer";
 import { PageHero } from "@/components/page-hero";
@@ -13,6 +13,12 @@ export default function VmsPage() {
   const { vms, status, checking, refresh, reloadVms, configErrors, agentVersion, hostKeyPinned } = useCluster();
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!new URLSearchParams(window.location.search).has("add")) return;
+    window.history.replaceState(null, "", "/machines");
+    queueMicrotask(() => setAdding(true));
+  }, []);
 
   const rename = async (name: string) => {
     const to = prompt(`New name for ${name} (lowercase letters, digits, dashes):`, name)?.trim().toLowerCase();

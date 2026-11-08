@@ -33,7 +33,7 @@ const ICON: Record<ProjectType, LucideIcon> = { website: Globe, service: Server,
 
 type Tone = "ok" | "busy" | "bad" | "off";
 const TONE_DOT: Record<Tone, string> = {
-  ok: "bg-accent shadow-[0_0_8px_var(--glow)]",
+  ok: "bg-[var(--good)]",
   busy: "bg-accent animate-pulse-dot",
   bad: "bg-[var(--critical)]",
   off: "bg-[var(--others)]",
@@ -124,6 +124,14 @@ export default function ProjectsPage() {
     const best = rankMachines(vms.map((v) => v.name), status, extra?.type ?? "website", "box5");
     setForm({ state: { ...blank(best.slice(0, 1)), ...extra }, importRepo });
   };
+
+  // the top bar's Deploy button and ⌘K open the form with ?new=1
+  useEffect(() => {
+    if (!new URLSearchParams(window.location.search).has("new")) return;
+    window.history.replaceState(null, "", "/projects");
+    queueMicrotask(() => newProject());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const actAll = async (p: Project, action: "deploy" | "restart" | "stop" | "start" | "remove") => {
     if (action === "remove" && !confirm(`Remove ${p.name} from ${p.instances.map((i) => i.vm).join(", ")}? This stops it and deletes its files there.`)) return;

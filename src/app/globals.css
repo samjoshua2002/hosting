@@ -29,26 +29,28 @@
 :root {
   color-scheme: dark;
   transition: --h 0.9s ease;
-  --bg: hsl(var(--h) 45% 6%);
-  --sidebar: hsl(var(--h) 42% 8%);
-  --panel: hsl(var(--h) 38% 11%);
-  --panel-2: hsl(var(--h) 36% 15%);
-  --line: hsl(var(--h) 32% 18%);
-  --line-strong: hsl(var(--h) 30% 26%);
-  --text: hsl(var(--h) 60% 96%);
-  --muted: hsl(var(--h) 20% 65%);
-  --accent: hsl(var(--h) 95% 73%);
-  --accent-soft: hsl(var(--h) 100% 84%);
-  --accent-text: hsl(var(--h) 100% 92%);
-  --accent-deep: hsl(var(--h) 85% 60%);
+  /* neutral black surfaces and text; only the accent (buttons, icons, active states) follows the photo's hue */
+  --bg: #09090b;
+  --sidebar: #0c0c0e;
+  --panel: #111113;
+  --panel-2: #17171a;
+  --line: #1e1e22;
+  --line-strong: #2a2a2f;
+  --text: #fafafa;
+  --muted: #8b8b94;
+  --accent: hsl(var(--h) 88% 66%);
+  --accent-soft: hsl(var(--h) 92% 78%);
+  --accent-text: #e4e4e7;
+  --accent-deep: hsl(var(--h) 80% 56%);
   --accent-alt: hsl(calc(var(--h) + 40) 85% 66%);
-  --chip: hsl(var(--h) 42% 22%);
-  --track: hsl(var(--h) 45% 24%);
+  --accent-ink: #0a0a0b;
+  --chip: #1b1b1f;
+  --track: #232328;
   --tint: hsl(var(--h) 75% 50%);
-  --glow: hsl(var(--h) 95% 73% / 0.45);
-  --story-a: hsl(var(--h) 58% 24% / 0.95);
-  --story-b: hsl(var(--h) 50% 16% / 0.95);
-  --others: hsl(var(--h) 16% 40%);
+  --glow: hsl(var(--h) 88% 66% / 0.35);
+  --story-a: #18181b;
+  --story-b: #111113;
+  --others: #52525b;
   /* sequential ramp for heat cells: one hue, dark → bright (step 0 sits near the surface) */
   --heat-0: hsl(var(--h) 52% 17%);
   --heat-1: hsl(var(--h) 56% 23%);
@@ -84,11 +86,7 @@ body {
 
 body {
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
-  background:
-    radial-gradient(1200px 520px at 20% -10%, hsl(var(--h) 70% 45% / 0.26), transparent 70%),
-    radial-gradient(900px 420px at 90% -5%, hsl(calc(var(--h) + 30) 70% 50% / 0.14), transparent 70%),
-    var(--bg);
-  background-attachment: fixed;
+  background: var(--bg);
 }
 
 ::selection {

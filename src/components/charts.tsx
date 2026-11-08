@@ -68,7 +68,7 @@ export function ColumnChart({
                   <span
                     className={cx(
                       "block w-full max-w-6 rounded-t-[4px] transition-[height,background-color] duration-500",
-                      hover === i ? "bg-[var(--accent-soft)]" : "bg-[var(--accent)]",
+                      hover === i || (hover === null && i === buckets.length - 1) ? "bg-[var(--accent)]" : "bg-white/[0.13]",
                     )}
                     style={{ height: `${Math.max((b.value / top) * 100, b.value > 0 ? 1.5 : 0.6)}%` }}
                   />
@@ -196,7 +196,7 @@ export function Segmented<T extends string>({
   size?: "md" | "sm";
 }) {
   return (
-    <div className="inline-flex rounded-full border border-white/[0.08] bg-white/[0.04] p-1 backdrop-blur" role="tablist">
+    <div className="inline-flex rounded-full border border-[var(--line-strong)] bg-transparent p-1" role="tablist">
       {options.map((o) => (
         <button
           key={o.id}
@@ -206,7 +206,7 @@ export function Segmented<T extends string>({
           className={cx(
             "rounded-full font-semibold transition-colors",
             size === "md" ? "px-4 py-1.5 text-sm" : "px-3 py-1 text-xs",
-            value === o.id ? "bg-white text-[#0b0e1c] shadow" : "text-ink/80 hover:text-white",
+            value === o.id ? "bg-white/[0.1] text-white" : "text-muted hover:text-white",
           )}
         >
           {o.label}

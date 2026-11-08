@@ -25,10 +25,10 @@ export function Button({
       className={cx(
         "inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
         size === "sm" ? "h-7 px-2.5 text-xs" : "h-9 px-3.5 text-sm",
-        variant === "primary" && "rounded-full bg-white text-[#0b0e1c] hover:bg-white/85 shadow-sm",
-        variant === "default" && "border border-[var(--line-strong)] bg-[var(--panel-2)] text-zinc-200 hover:bg-[#20254a]",
-        variant === "ghost" && "text-muted hover:bg-white/5 hover:text-zinc-100",
-        variant === "danger" && "border border-rose-900/70 bg-rose-950/40 text-rose-300 hover:bg-rose-900/40",
+        variant === "primary" && "rounded-lg bg-[var(--accent)] text-[var(--accent-ink)] hover:brightness-110 shadow-sm [&_svg]:text-[var(--accent-ink)]",
+        variant === "default" && "rounded-lg border border-[var(--line-strong)] bg-[var(--panel-2)] text-zinc-200 hover:bg-[#1f1f23] [&_svg]:text-[var(--accent)]",
+        variant === "ghost" && "rounded-lg text-muted hover:bg-white/5 hover:text-zinc-100",
+        variant === "danger" && "rounded-lg border border-rose-900/70 bg-rose-950/40 text-rose-300 hover:bg-rose-900/40",
         className,
       )}
     >
@@ -39,7 +39,7 @@ export function Button({
 }
 
 export function Card({ className, children, id }: { className?: string; children: ReactNode; id?: string }) {
-  return <div id={id} className={cx("rounded-2xl border border-white/[0.06] bg-panel/90 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]", className)}>{children}</div>;
+  return <div id={id} className={cx("rounded-2xl border border-[var(--line)] bg-panel", className)}>{children}</div>;
 }
 
 export function SectionTitle({ children, right }: { children: ReactNode; right?: ReactNode }) {
@@ -53,9 +53,9 @@ export function SectionTitle({ children, right }: { children: ReactNode; right?:
 
 // Theme colour for normal states; red is kept only for real problems.
 const DOT: Record<VmState, string> = {
-  online: "bg-accent shadow-[0_0_8px_var(--glow)]",
+  online: "bg-[var(--good)]",
   offline: "bg-[var(--critical)]",
-  checking: "bg-accent animate-pulse-dot",
+  checking: "bg-[var(--warning)] animate-pulse-dot",
   unknown: "bg-[var(--others)]",
 };
 
@@ -64,10 +64,10 @@ export function StatusDot({ state, className }: { state: VmState; className?: st
 }
 
 const BADGE: Record<string, string> = {
-  green: "border-accent/35 bg-accent/10 text-ink",
+  green: "border-[var(--good)]/35 bg-[var(--good)]/10 text-[var(--good-text)]",
   red: "border-[var(--critical)]/50 bg-[var(--critical)]/15 text-[var(--critical-text)]",
-  amber: "border-accent/35 bg-accent/10 text-ink",
-  blue: "border-accent/35 bg-accent/10 text-ink",
+  amber: "border-[var(--warning)]/35 bg-[var(--warning)]/10 text-[var(--warning)]",
+  blue: "border-line-strong bg-white/[0.04] text-ink",
   gray: "border-line-strong bg-white/[0.03] text-muted",
 };
 
@@ -89,7 +89,7 @@ export function serviceTone(active: string): keyof typeof BADGE {
 export function Meter({ label, value, detail }: { label: string; value: number; detail?: string }) {
   const v = Math.max(0, Math.min(100, value));
   // fill carries severity (accent → warning → critical); track is a darker step of the accent ramp
-  const color = v >= 90 ? "bg-[var(--critical)]" : v >= 70 ? "bg-[var(--warning)]" : "bg-[var(--accent)]";
+  const color = v >= 90 ? "bg-[var(--critical)]" : v >= 70 ? "bg-[var(--warning)]" : "bg-zinc-300";
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between text-[11px]">

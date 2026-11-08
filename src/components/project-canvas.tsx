@@ -65,7 +65,7 @@ type AnyNode = RepoNode | ProjNode;
 type RelEdge = Edge<{ label: string; tone: "deploy" | "uses" | "manual"; busy: boolean }, "rel">;
 
 const DOT: Record<Tone, string> = {
-  ok: "bg-accent shadow-[0_0_8px_var(--glow)]",
+  ok: "bg-[var(--good)]",
   busy: "bg-accent animate-pulse-dot",
   bad: "bg-[var(--critical)]",
   off: "bg-[var(--others)]",

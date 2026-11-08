@@ -327,7 +327,7 @@ function ServiceCard({ x, open: initiallyOpen }: { x: Installed; open: boolean }
           </p>
         </div>
         <span className="flex items-center gap-1.5 text-xs text-ink">
-          <span className={cx("size-2 rounded-full", ok ? "bg-accent shadow-[0_0_8px_var(--glow)]" : failed ? "bg-[var(--critical)]" : "bg-[var(--others)]")} />
+          <span className={cx("size-2 rounded-full", ok ? "bg-[var(--good)]" : failed ? "bg-[var(--critical)]" : "bg-[var(--others)]")} />
           {ok ? "Running" : failed ? "Crashed" : x.inst[0].p.active}
         </span>
       </div>
