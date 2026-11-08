@@ -4,7 +4,8 @@ import { handle, HttpError, readJson, requireAuth } from "@/lib/api";
 import { applyEvent, settle, type Att, type Item, type OperatorEvent } from "@/lib/assistant-items";
 import { runOperator } from "@/lib/operator";
 import { audit } from "@/lib/security";
-import { saveSessionDoc, SESSION_ID, sessionPath, updateIndex, type SessionDoc } from "@/lib/sessions";
+import { titleFor } from "@/lib/session-title";
+import { listSessions, saveSessionDoc, SESSION_ID, sessionPath, updateIndex, type SessionDoc } from "@/lib/sessions";
 import { storeGetJson } from "@/lib/store";
 
 export const maxDuration = 300;
@@ -33,6 +34,7 @@ export const POST = handle(async (req: NextRequest) => {
     display?: unknown;
     /** attachments sent with this message */
     staged?: unknown;
+    source?: unknown;
   }>(req, 2_000_000);
   const transcript = Array.isArray(body.transcript) ? (body.transcript as ChatMessage[]).slice(-300) : [];
   const message = typeof body.message === "string" && body.message.trim() ? body.message : undefined;
@@ -68,6 +70,7 @@ export const POST = handle(async (req: NextRequest) => {
   const history = (prev?.transcript as ChatMessage[] | undefined) ?? transcript;
 
   const doc: SessionDoc = {
+    ...(prev ? { pinned: prev.pinned, named: prev.named, titled: prev.titled, source: prev.source } : { source: body.source === "pipeline" ? ("pipeline" as const) : undefined }),
     id: sessionId ?? "",
     title: prev?.title ?? (typeof body.title === "string" ? body.title : "New session").slice(0, 120),
     updatedAt: Date.now(),
@@ -118,7 +121,7 @@ export const POST = handle(async (req: NextRequest) => {
   const run = (async () => {
     if (sessionId) {
       await save({ clearStop: true });
-      await updateIndex({ id: doc.id, title: doc.title, updatedAt: Date.now(), running: true }).catch(() => {});
+      await updateIndex({ id: doc.id, title: doc.title, updatedAt: Date.now(), running: true, source: doc.source }).catch(() => {});
     }
     try {
       await runOperator({ transcript: history, message, approvals, answers, sessionId, model, review, onRound: () => save() }, emit, stopper.signal);
@@ -129,9 +132,23 @@ export const POST = handle(async (req: NextRequest) => {
     }
     doc.items = settle(doc.items);
     doc.running = false;
+    // the user may have renamed or pinned it while it ran
+    if (sessionId) {
+      const cur = (await listSessions().catch(() => [])).find((x) => x.id === doc.id);
+      if (cur?.named) Object.assign(doc, { title: cur.title, named: true });
+      if (cur) doc.pinned = cur.pinned;
+    }
+    // a real title once there's something to name (unless the user named it)
+    if (sessionId && !doc.named && !doc.titled) {
+      const t = await titleFor(doc.items).catch(() => null);
+      if (t) {
+        doc.title = t;
+        doc.titled = true;
+      }
+    }
     if (sessionId) {
       await save();
-      await updateIndex({ id: doc.id, title: doc.title, updatedAt: Date.now() }).catch(() => {});
+      await updateIndex({ id: doc.id, title: doc.title, updatedAt: Date.now(), running: false, pinned: doc.pinned, named: doc.named, titled: doc.titled, source: doc.source }).catch(() => {});
     }
     if (open) {
       try {

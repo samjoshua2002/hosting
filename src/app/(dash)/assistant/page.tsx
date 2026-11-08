@@ -1,8 +1,8 @@
 "use client";
 
-import { ArrowUpRight, Brain, FileText, Layers, Link2, Loader2, MessageSquarePlus, Paperclip, Search, Server, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowUpRight, Brain, FileText, Layers, Link2, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { addFiles, currentDoc, hydrate, newSession, openSession, removeSession, send, setReview, setTitle, stop, updateItems, useAssistant } from "@/components/assistant-store";
+import { addFiles, currentDoc, editSession, hydrate, newSession, openSession, removeSession, send, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
 import { ArtifactView } from "@/components/artifact-view";
 import { ChatItems } from "@/components/chat-items";
 import { CopyButton } from "@/components/chat-blocks";
@@ -169,7 +169,6 @@ export default function AssistantPage() {
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search" className="min-w-0 flex-1 bg-transparent text-white placeholder:text-muted focus:outline-none" />
           </label>
         </div>
-        <p className="px-5 pt-2 pb-1 text-[11px] font-medium tracking-wide text-muted uppercase">Recents</p>
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-3">
           {st.list === null ? (
             <p className="flex items-center gap-2 px-3 py-2 text-xs text-muted">
@@ -178,27 +177,20 @@ export default function AssistantPage() {
           ) : shown.length === 0 ? (
             <p className="px-3 py-2 text-xs text-muted">{query ? "No matches." : "Sessions you start show up here."}</p>
           ) : (
-            shown.map((s) => {
-              const live = st.docs[s.id]?.busy || st.docs[s.id]?.remote || s.running;
-              return (
-                <div key={s.id} className={cx("group flex items-center rounded-lg", s.id === sid ? "bg-white/[0.07]" : "hover:bg-white/[0.04]")}>
-                  <button onClick={() => void openSession(s.id)} className="min-w-0 flex-1 px-3 py-2 text-left">
-                    <p className="flex items-center gap-1.5 truncate text-sm text-white">
-                      {live && <Loader2 className="size-3 shrink-0 animate-spin text-accent" />}
-                      <span className="truncate">{s.title}</span>
-                    </p>
-                    <p className="text-[11px] text-muted">{live ? "working in the background" : timeAgo(s.updatedAt)}</p>
-                  </button>
-                  <button
-                    onClick={() => confirm("Delete this session and its attachments?") && void removeSession(s.id)}
-                    className="mr-2 hidden p-1 text-muted hover:text-[var(--critical-text)] group-hover:block"
-                    aria-label="Delete session"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </button>
-                </div>
-              );
-            })
+            <>
+              {shown.some((x) => x.pinned) && <p className="px-3 pt-2 pb-1 text-[11px] font-medium tracking-wide text-muted uppercase">Pinned</p>}
+              {shown
+                .filter((x) => x.pinned)
+                .map((x) => (
+                  <SessionRow key={x.id} s={x} active={x.id === sid} live={Boolean(st.docs[x.id]?.busy || st.docs[x.id]?.remote || x.running)} />
+                ))}
+              <p className="px-3 pt-3 pb-1 text-[11px] font-medium tracking-wide text-muted uppercase">Recents</p>
+              {shown
+                .filter((x) => !x.pinned)
+                .map((x) => (
+                  <SessionRow key={x.id} s={x} active={x.id === sid} live={Boolean(st.docs[x.id]?.busy || st.docs[x.id]?.remote || x.running)} />
+                ))}
+            </>
           )}
         </div>
       </aside>
@@ -391,3 +383,55 @@ function Section({ title, icon, action, children }: { title: string; icon: React
   );
 }
 
+
+function SessionRow({ s, active, live }: { s: Meta; active: boolean; live: boolean }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(s.title);
+  const save = () => {
+    setEditing(false);
+    const t = name.trim();
+    if (t && t !== s.title) void editSession(s.id, { title: t });
+    else setName(s.title);
+  };
+  return (
+    <div className={cx("group flex items-center rounded-lg", active ? "bg-white/[0.07]" : "hover:bg-white/[0.04]")}>
+      {editing ? (
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={save}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save();
+            if (e.key === "Escape") {
+              setName(s.title);
+              setEditing(false);
+            }
+          }}
+          className="m-1 min-w-0 flex-1 rounded-md border border-accent/60 bg-transparent px-2 py-1.5 text-sm text-white outline-none"
+        />
+      ) : (
+        <button onClick={() => void openSession(s.id)} onDoubleClick={() => setEditing(true)} className="min-w-0 flex-1 px-3 py-2 text-left">
+          <p className="flex items-center gap-1.5 truncate text-sm text-white">
+            {live ? <Loader2 className="size-3 shrink-0 animate-spin text-accent" /> : s.source === "pipeline" ? <Workflow className="size-3 shrink-0 text-muted" /> : null}
+            <span className="truncate">{s.title}</span>
+          </p>
+          <p className="text-[11px] text-muted">{live ? "working in the background" : `${s.source === "pipeline" ? "from Pipeline · " : ""}${timeAgo(s.updatedAt)}`}</p>
+        </button>
+      )}
+      {!editing && (
+        <div className="mr-1.5 hidden items-center group-hover:flex">
+          <button onClick={() => void editSession(s.id, { pinned: !s.pinned })} className="rounded p-1 text-muted hover:text-white" title={s.pinned ? "Unpin" : "Pin"} aria-label={s.pinned ? "Unpin" : "Pin"}>
+            {s.pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
+          </button>
+          <button onClick={() => setEditing(true)} className="rounded p-1 text-muted hover:text-white" title="Rename" aria-label="Rename">
+            <Pencil className="size-3.5" />
+          </button>
+          <button onClick={() => confirm("Delete this session and its attachments?") && void removeSession(s.id)} className="rounded p-1 text-muted hover:text-[var(--critical-text)]" title="Delete" aria-label="Delete session">
+            <Trash2 className="size-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -775,7 +775,7 @@ function AiBar({ sel }: { sel: Sel }) {
     }
     const focus = selected && !t.includes(`@${selected}`) ? `\n\n(The user has @${selected} selected on the Pipeline.)` : "";
     updateItems(id, (x) => [...x, { kind: "user", text: t }]);
-    void send(id, { message: t + focus + contextFor(`${t} ${selected ? `@${selected}` : ""}`, vms, status), display: t });
+    void send(id, { message: t + focus + contextFor(`${t} ${selected ? `@${selected}` : ""}`, vms, status), display: t, source: "pipeline" });
     setText("");
     setOpen(true);
   };

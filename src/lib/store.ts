@@ -85,3 +85,25 @@ export async function storePutAndTakeFlag(path: string, data: string, flag: stri
     return r.stdout.includes("__FLAG__");
   });
 }
+
+/** Every *.json file directly in a directory, read in one round trip. */
+export async function storeReadJsonDir<T>(dir: string): Promise<{ name: string; value: T }[]> {
+  const p = check(dir);
+  return withVm(storeVm(), async (c) => {
+    const r = await run(c, `[ -d ${p} ] || exit 0; for f in ${p}/*.json; do [ -f "$f" ] || continue; printf '%s\\t' "$(basename "$f")"; base64 -w0 < "$f"; echo; done`, {
+      timeoutMs: 30_000,
+      maxBytes: 8 * 1024 * 1024,
+    });
+    const out: { name: string; value: T }[] = [];
+    for (const line of r.stdout.split("\n")) {
+      const tab = line.indexOf("\t");
+      if (tab < 0) continue;
+      try {
+        out.push({ name: line.slice(0, tab), value: JSON.parse(Buffer.from(line.slice(tab + 1), "base64").toString("utf8")) as T });
+      } catch {
+        /* skip a broken file */
+      }
+    }
+    return out;
+  });
+}

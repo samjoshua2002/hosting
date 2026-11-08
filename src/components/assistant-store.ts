@@ -11,6 +11,9 @@ export interface Meta {
   title: string;
   updatedAt: number;
   running?: boolean;
+  pinned?: boolean;
+  named?: boolean;
+  source?: "pipeline";
 }
 
 export interface Doc {
@@ -189,6 +192,19 @@ export async function removeSession(id: string) {
   void loadList();
 }
 
+/** Rename (title) or pin a session; the list updates right away. */
+export async function editSession(id: string, edit: { title?: string; pinned?: boolean }) {
+  const list = state.list ?? [];
+  set({
+    list: list
+      .map((m) => (m.id === id ? { ...m, ...(edit.title ? { title: edit.title, named: true } : {}), ...(edit.pinned !== undefined ? { pinned: edit.pinned } : {}) } : m))
+      .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updatedAt - a.updatedAt),
+  });
+  if (edit.title) patchDoc(id, (d) => ({ ...d, title: edit.title! }));
+  const r = await fetch("/api/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, rename: edit.title, pin: edit.pinned }) });
+  if (!r.ok) void loadList();
+}
+
 export function setReview(review: "auto" | "manual") {
   try {
     localStorage.setItem(REVIEW, review);
@@ -237,7 +253,10 @@ export function setTitle(id: string, title: string) {
 }
 
 /** Start (or continue) a run for a session and stream it into the store. */
-export async function send(id: string, body: { message?: string; display?: string; staged?: Att[]; approvals?: Record<string, boolean>; answers?: Record<string, string> }) {
+export async function send(
+  id: string,
+  body: { message?: string; display?: string; staged?: Att[]; approvals?: Record<string, boolean>; answers?: Record<string, string>; source?: "pipeline" },
+) {
   if (streams.has(id)) return;
   const ctrl = new AbortController();
   streams.set(id, ctrl);
