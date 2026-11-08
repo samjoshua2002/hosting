@@ -131,6 +131,8 @@ export interface ProjectInput {
   kind?: "website" | "service" | "worker";
   framework?: string;
   github?: GithubLink | null;
+  uses?: ProjectManifest["uses"];
+  template?: string;
   /** null keeps the env file already on the VM. */
   env: Record<string, string> | null;
 }
@@ -171,7 +173,8 @@ export async function saveProject(conn: Client, p: ProjectInput, createdAt?: str
     kind: p.kind !== undefined ? p.kind : prev?.kind,
     framework: p.framework !== undefined ? p.framework : prev?.framework,
     github: p.github !== undefined ? p.github : (prev?.github ?? null),
-    uses: prev?.uses,
+    uses: p.uses !== undefined ? p.uses : prev?.uses,
+    template: p.template ?? prev?.template,
     envKeys: p.env ? Object.keys(p.env) : [],
     createdAt: createdAt ?? prev?.createdAt ?? now,
     updatedAt: now,

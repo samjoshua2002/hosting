@@ -95,12 +95,22 @@ async function editApp(vm: VmConfig, app: string, changes: Record<string, string
   });
 }
 
-export async function connectProjects(from: string, to: string, envName?: string): Promise<string> {
-  if (from === to) throw new Error("pick two different projects");
-  const [apps, targets] = await Promise.all([locate(from), locate(to)]);
-  if (!apps.length) throw new Error(`no project called ${from} on a reachable machine`);
+export interface ConnectionPlan {
+  /** env values per app machine */
+  envFor: (vm: VmConfig) => Promise<Record<string, string>>;
+  link: { name: string; env: string; keys: string[] };
+  notes: string[];
+}
+
+/**
+ * Work out what an app on these machines needs to reach `to` (env values, tunnels opened, MySQL app
+ * database created). Used by connectProjects and when a service is created already connected.
+ */
+export async function planConnection(appVms: VmConfig[], existingUses: ProjectManifest["uses"], to: string, envName?: string): Promise<ConnectionPlan> {
+  const targets = await locate(to);
   if (!targets.length) throw new Error(`no project called ${to} on a reachable machine`);
   const target = targets[0];
+  const apps = appVms.map((vm) => ({ vm }));
   const engine = projectType(target.m) === "database" ? engineOf(target.m) : null;
   const key = envName && /^[A-Za-z_][A-Za-z0-9_]*$/.test(envName) ? envName : defaultEnv(target.m, engine);
   const notes: string[] = [];
@@ -120,7 +130,7 @@ export async function connectProjects(from: string, to: string, envName?: string
       redis: () => (env.REDIS_PASSWORD ? `redis://:${enc(env.REDIS_PASSWORD)}@127.0.0.1:${port}` : `redis://127.0.0.1:${port}`),
     }[engine]();
     value = async () => url;
-    const sqlTaken = (apps[0].m.uses ?? []).some((u) => u.name !== to && u.keys?.includes("DB_HOST"));
+    const sqlTaken = (existingUses ?? []).some((u) => u.name !== to && u.keys?.includes("DB_HOST"));
     if ((engine === "mysql" || engine === "postgres") && !sqlTaken)
       parts = {
         DB_CONNECTION: engine === "mysql" ? "mysql" : "pgsql",
@@ -164,9 +174,22 @@ export async function connectProjects(from: string, to: string, envName?: string
   }
 
   const keys = [key, ...Object.keys(parts)];
-  const uses = [...(apps[0].m.uses ?? []).filter((u) => u.name !== to), { name: to, env: key, keys }];
-  await mapLimit(apps, 8, async (a) => editApp(a.vm, from, { [key]: await value(a.vm), ...parts }, uses));
-  return `Connected ${from} → ${to}: set ${keys.join(", ")} on ${apps.map((a) => a.vm.name).join(", ")} and restarted ${from}.${notes.length ? ` (${notes.join("; ")})` : ""}`;
+  return { envFor: async (vm) => ({ [key]: await value(vm), ...parts }), link: { name: to, env: key, keys }, notes };
+}
+
+export async function connectProjects(from: string, to: string, envName?: string): Promise<string> {
+  if (from === to) throw new Error("pick two different projects");
+  const apps = await locate(from);
+  if (!apps.length) throw new Error(`no project called ${from} on a reachable machine`);
+  const plan = await planConnection(
+    apps.map((a) => a.vm),
+    apps[0].m.uses,
+    to,
+    envName,
+  );
+  const uses = [...(apps[0].m.uses ?? []).filter((u) => u.name !== to), plan.link];
+  await mapLimit(apps, 8, async (a) => editApp(a.vm, from, await plan.envFor(a.vm), uses));
+  return `Connected ${from} → ${to}: set ${plan.link.keys.join(", ")} on ${apps.map((a) => a.vm.name).join(", ")} and restarted ${from}.${plan.notes.length ? ` (${plan.notes.join("; ")})` : ""}`;
 }
 
 export async function disconnectProjects(from: string, to: string): Promise<string> {

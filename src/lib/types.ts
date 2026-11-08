@@ -34,6 +34,8 @@ export interface ProjectManifest {
   github?: GithubLink | null;
   /** other projects this one talks to, and the env var that points at each */
   uses?: { name: string; env: string; keys?: string[] }[];
+  /** made from a Services catalog entry (its id) */
+  template?: string;
   envKeys: string[];
   createdAt: string;
   updatedAt: string;
