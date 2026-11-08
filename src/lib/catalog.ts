@@ -335,3 +335,62 @@ export function engineFromStart(start: string): DbEngine | null {
   if (/redis/.test(start)) return "redis";
   return null;
 }
+
+/** Recognise a running service from its start command (covers ones installed before the catalog). */
+const DETECT: [string, RegExp][] = [
+  ["mongo-express", /mongo-express/],
+  ["pgadmin", /pgadmin4|pgadmin/],
+  ["phpmyadmin", /phpmyadmin/],
+  ["adminer", /\badminer\b/],
+  ["redisinsight", /redisinsight/],
+  ["cloudbeaver", /cloudbeaver/],
+  ["minio", /minio\/minio/],
+  ["uptime-kuma", /uptime-kuma/],
+  ["grafana", /grafana\/grafana/],
+  ["n8n", /n8nio\/n8n/],
+  ["metabase", /metabase\/metabase/],
+  ["ollama", /\bollama\b/],
+  ["code-server", /code-server/],
+  ["portainer", /portainer/],
+  ["mariadb", /mariadb:/],
+  ["mysql", /\bmysql:/],
+  ["postgres", /postgres:/],
+  ["mongodb", /\bmongo:/],
+  ["redis", /redis:\d|redis-server/],
+];
+
+export function serviceIdOf(m: { template?: string; start: string; build: string }): string | null {
+  if (m.template && template(m.template)) return m.template;
+  const s = `${m.start} ${m.build}`;
+  return DETECT.find(([, re]) => re.test(s))?.[0] ?? null;
+}
+
+/** What to do once it's running. {url} is its link, {vm} its machine, {port} its port. */
+export const USAGE: Record<string, string[]> = {
+  postgres: ["Host, user, password and connection string are in the Databases section above.", "To use it from a project, connect them on the Pipeline: the app gets DATABASE_URL and DB_* settings."],
+  mysql: ["Connection details are in the Databases section above; the \"app\" database is ready.", "Connect a project to it on the Pipeline: it gets DATABASE_URL and DB_HOST/DB_USERNAME/DB_PASSWORD."],
+  mariadb: ["Connection details are in the Databases section above (port 3307).", "Connect a project to it on the Pipeline to get its settings."],
+  mongodb: ["Connection string and password are in the Databases section above.", "Connect a project on the Pipeline: it gets MONGODB_URI."],
+  redis: ["Password and URL are in the Databases section above.", "Connect a project on the Pipeline: it gets REDIS_URL."],
+  pgadmin: ["Open it and sign in with the email and password shown here.", "Your PostgreSQL server is already listed under Servers. When it asks, paste the database password from the Databases section."],
+  phpmyadmin: ["Open it and sign in as root with the password shown here.", "Pick the \"app\" database on the left to see and edit its tables."],
+  adminer: ["Open it, choose MySQL or PostgreSQL, server 127.0.0.1, and the user and password shown here."],
+  "mongo-express": ["Open it and sign in as admin with the password shown here.", "Pick a database on the left to browse and edit documents."],
+  redisinsight: ["Open it: your Redis is already added. Click it to browse keys and run commands."],
+  cloudbeaver: ["First visit: set the admin password.", "Then New Connection → pick the engine, host 127.0.0.1, and the port and password from the Databases section."],
+  minio: [
+    "Open the console and sign in with the user and password shown here, then create a bucket.",
+    "Apps on {vm} use the S3 endpoint http://127.0.0.1:{port+1} with that user as access key and the password as secret key.",
+  ],
+  "uptime-kuma": ["First visit: create the admin user.", "Add New Monitor → paste a project's link (Projects page) to get alerts when it goes down."],
+  grafana: ["Sign in as admin with the password shown here.", "Connections → Add data source → PostgreSQL/MySQL, host 127.0.0.1 and the Databases section's password."],
+  n8n: ["First visit: create the owner account.", "Build a workflow; webhook triggers use this service's link."],
+  metabase: ["First visit: create the admin user.", "Add your database with host 127.0.0.1 and the Databases section's password, then ask questions."],
+  ollama: [
+    "Ollama answers on an API, it has no web page of its own (that's why it only says \"Ollama is running\").",
+    "Try it right here, call it from code with the snippets below, or connect a project to it on the Pipeline (it gets {NAME}_URL).",
+    "More models: ask the Assistant, e.g. \"pull mistral on {name}\".",
+  ],
+  "code-server": ["Open it and enter the password shown here.", "Your projects on {vm} are in the project folder; edits apply after Redeploy (or Restart for scripts)."],
+  portainer: ["Open it within 5 minutes of the start to create the admin user (it locks itself otherwise: then Restart it).", "Choose Get Started to manage the Docker containers on {vm}."],
+};

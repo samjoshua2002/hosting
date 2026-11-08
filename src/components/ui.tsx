@@ -38,8 +38,8 @@ export function Button({
   );
 }
 
-export function Card({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cx("rounded-2xl border border-white/[0.06] bg-panel/90 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]", className)}>{children}</div>;
+export function Card({ className, children, id }: { className?: string; children: ReactNode; id?: string }) {
+  return <div id={id} className={cx("rounded-2xl border border-white/[0.06] bg-panel/90 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]", className)}>{children}</div>;
 }
 
 export function SectionTitle({ children, right }: { children: ReactNode; right?: ReactNode }) {

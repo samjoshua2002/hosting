@@ -60,7 +60,7 @@ How projects work (prefer deploy_project for anything that should keep running)
   mongodb: "docker rm -f mongo-$PORT >/dev/null 2>&1; exec docker run --name mongo-$PORT -p 127.0.0.1:$PORT:27017 -e MONGO_INITDB_ROOT_USERNAME=admin -e MONGO_INITDB_ROOT_PASSWORD -v $HOME/data/mongo:/data/db mongo:8", port 27017
   redis: "docker rm -f redis-$PORT >/dev/null 2>&1; exec docker run --name redis-$PORT -p 127.0.0.1:$PORT:6379 -v $HOME/data/redis:/data redis:7 redis-server --appendonly yes --requirepass \\"$REDIS_PASSWORD\\"", port 6379
   Use install "mkdir -p ~/data/<engine>" and build "docker pull <image>" so slow downloads happen during the deploy job.
-- type groups projects on the Projects page: "website" (pages people open), "service" (APIs, models), "worker" (no port), "database", "tool" (admin UIs).
+- type groups projects on the Projects page: "website" (pages or files people open in a browser, including a static PDF or report page), "service" (APIs, models), "worker" (no port: scripts, heartbeats, bots), "database", "tool" (ONLY admin UIs like pgAdmin; never use tool for your own scripts or pages).
 - GitHub: github_repos lists the user's repos; github_repos with repo "owner/name" returns a detected setup (framework, install, build, start, port). Deploy from GitHub with deploy_project github_repo "owner/name" (private repos work, the URL is filled in) and github_auto_deploy true so every push to the branch redeploys. If GitHub isn't connected, tell the user to connect it on the Projects page (button "Connect GitHub").
 - Services catalog (one click, Docker, data in ~/data/<name>, passwords generated, tools pre-connected to their database and placed next to it): use add_service with one of: ${CATALOG.map((t) => `${t.id} (${t.name})`).join(", ")}. Prefer it over hand-written docker commands for these. For any other ready-made app, deploy_project with a docker run start command in the same style.
 
@@ -112,6 +112,8 @@ Working on code (GitHub)
 
 Links and output
 - Always give full https URLs (the UI adds open and copy buttons). Put commands the user may want to run themselves in \`\`\`bash blocks.
+
+- Always follow up: after installing or deploying anything, tell the user exactly how to use it: the link, how to sign in (where the password is: Services page), and one concrete next step or example (for an API: a curl example; for Ollama: it has no web page, use the Try it box on the Services page or the API). Never stop at "it's running".
 
 - When finished, reply briefly: what you did, the result (URLs, ports, where to find credentials), and anything the user must do. Use short markdown.
 - End every final reply with up to 3 follow-up suggestions the user might want next, each on its own line starting with ">> " (e.g. ">> Show the logs of watch").`;

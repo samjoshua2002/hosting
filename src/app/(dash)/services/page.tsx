@@ -6,6 +6,8 @@ import {
   BarChart3,
   Bot,
   Boxes,
+  Check,
+  ChevronDown,
   Code2,
   Container,
   Database,
@@ -17,7 +19,7 @@ import {
   Loader2,
   Lock,
   Plus,
-  Settings2,
+  SendHorizonal,
   Table2,
   Workflow,
   Zap,
@@ -28,13 +30,12 @@ import { useMemo, useState, type ReactNode } from "react";
 import { CopyButton } from "@/components/chat-blocks";
 import { useCluster } from "@/components/cluster";
 import { DatabasesSection } from "@/components/databases-section";
-import { Drawer } from "@/components/drawer";
+import { Markdown } from "@/components/markdown";
 import { PageHero } from "@/components/page-hero";
-import { Badge, Button, Card, Field, cx, inputCls } from "@/components/ui";
-import { CATALOG, CATEGORIES, engineFromStart, template, type ServiceCategory, type ServiceTemplate } from "@/lib/catalog";
+import { Button, Card, cx } from "@/components/ui";
+import { CATALOG, CATEGORIES, serviceIdOf, template, USAGE, type ServiceCategory, type ServiceTemplate } from "@/lib/catalog";
 import { api } from "@/lib/client";
-import { rankMachines } from "@/lib/placement";
-import type { ProjectManifest, ProjectState } from "@/lib/types";
+import type { JobLog, ProjectState } from "@/lib/types";
 
 const ICON: Record<string, LucideIcon> = {
   postgres: Database,
@@ -57,30 +58,83 @@ const ICON: Record<string, LucideIcon> = {
   "code-server": Code2,
   portainer: Container,
 };
+const ENGINE_LABEL = { postgres: "PostgreSQL", mysql: "MySQL", mongo: "MongoDB", redis: "Redis" };
 
-const ENGINE_LABEL = { postgres: "PostgreSQL", mysql: "MySQL / MariaDB", mongo: "MongoDB", redis: "Redis" };
+interface Installed {
+  name: string;
+  id: string;
+  t: ServiceTemplate;
+  inst: { vm: string; p: ProjectState }[];
+}
 
-interface Running {
+interface Install {
+  name: string;
   vm: string;
-  p: ProjectState;
-  t?: ServiceTemplate;
+  jobId: string;
+  stage: string;
+  pct: number;
+  state: "running" | "done" | "failed";
+  notes: string[];
+}
+
+/** Turn a deploy log into a friendly step. */
+function stageOf(log: string): { stage: string; pct: number } {
+  if (/==> done/.test(log)) return { stage: "Ready", pct: 100 };
+  if (/publishing port/.test(log)) return { stage: "Creating its link…", pct: 90 };
+  if (/\(re\)starting service/.test(log)) return { stage: "Starting…", pct: 78 };
+  if (/pulling manifest|pulling [0-9a-f]{12}/.test(log)) return { stage: "Downloading the AI model (a few minutes)…", pct: 62 };
+  if (/Pull complete|Downloaded newer image|Image is up to date|Status: /.test(log)) return { stage: "Downloaded, setting up…", pct: 55 };
+  if (/Pulling fs layer|Downloading|docker pull/.test(log)) return { stage: "Downloading…", pct: 30 };
+  return { stage: "Preparing…", pct: 12 };
 }
 
 export default function ServicesPage() {
-  const { vms, status } = useCluster();
+  const { vms, status, refresh, openJob } = useCluster();
   const [cat, setCat] = useState<ServiceCategory | "All">("All");
-  const [adding, setAdding] = useState<ServiceTemplate | null>(null);
+  const [installs, setInstalls] = useState<Record<string, Install>>({});
+  const [fresh, setFresh] = useState<string | null>(null);
 
-  // installed tools and apps (everything that isn't a database or your own code)
-  const tools = useMemo<Running[]>(
-    () =>
-      vms.flatMap((v) =>
-        (status[v.name]?.agent?.projects ?? [])
-          .filter((p) => p.manifest.category === "tool" || (p.manifest.template && template(p.manifest.template)?.type !== "database"))
-          .map((p) => ({ vm: v.name, p, t: p.manifest.template ? template(p.manifest.template) : undefined })),
-      ),
-    [vms, status],
-  );
+  // every recognised service, one entry per name (a service can run on several machines)
+  const installed = useMemo(() => {
+    const map = new Map<string, Installed>();
+    for (const v of vms)
+      for (const p of status[v.name]?.agent?.projects ?? []) {
+        const id = serviceIdOf(p.manifest);
+        const t = id ? template(id) : undefined;
+        if (!id || !t) continue;
+        const e = map.get(p.manifest.name) ?? { name: p.manifest.name, id, t, inst: [] };
+        e.inst.push({ vm: v.name, p });
+        map.set(p.manifest.name, e);
+      }
+    return [...map.values()];
+  }, [vms, status]);
+  const byTemplate = (id: string) => installed.filter((x) => x.id === id);
+  const apps = installed.filter((x) => x.t.type !== "database");
+
+  const install = async (t: ServiceTemplate) => {
+    setInstalls((s) => ({ ...s, [t.id]: { name: "", vm: "", jobId: "", stage: "Choosing the best machine…", pct: 6, state: "running", notes: [] } }));
+    try {
+      const r = await api<{ name: string; vm: string; jobId: string; notes: string[] }>("/api/services", { template: t.id });
+      const base: Install = { ...r, stage: `Installing on ${r.vm}…`, pct: 10, state: "running" };
+      setInstalls((s) => ({ ...s, [t.id]: base }));
+      // follow the deploy until it finishes
+      for (;;) {
+        await new Promise((ok) => setTimeout(ok, 2500));
+        const j = await api<JobLog>(`/api/jobs/log?vm=${encodeURIComponent(r.vm)}&id=${encodeURIComponent(r.jobId)}`).catch(() => null);
+        if (!j) continue;
+        const st = stageOf(j.log);
+        const state: Install["state"] = j.state === "running" ? "running" : j.state === "done" && j.exitCode === 0 ? "done" : "failed";
+        setInstalls((s) => ({ ...s, [t.id]: { ...base, stage: state === "failed" ? "Didn't finish" : st.stage, pct: state === "done" ? 100 : st.pct, state } }));
+        if (state !== "running") break;
+      }
+      await refresh([r.vm]);
+      setFresh(r.name);
+      setTimeout(() => document.getElementById(`svc-${r.name}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 300);
+    } catch (e) {
+      setInstalls((s) => ({ ...s, [t.id]: { name: "", vm: "", jobId: "", stage: (e as Error).message, pct: 0, state: "failed", notes: [] } }));
+    }
+  };
+
   const shown = CATALOG.filter((t) => cat === "All" || t.category === cat);
 
   return (
@@ -89,7 +143,7 @@ export default function ServicesPage() {
         eyebrow="Databases, tools, apps"
         title="Services"
         icon={<Boxes className="size-6" />}
-        desc="Everything that isn't your own code. Add one in a click: it goes on the right machine, gets strong passwords, and database tools come already pointed at your databases."
+        desc="Ready-made software next to your projects. One click installs it on the best machine with strong passwords, and tells you how to use it."
         actions={
           <Button variant="primary" onClick={() => document.getElementById("catalog")?.scrollIntoView({ behavior: "smooth" })}>
             <Plus className="size-4" /> Add a service
@@ -101,20 +155,20 @@ export default function ServicesPage() {
         <DatabasesSection />
       </Section>
 
-      <Section title="Tools & apps" hint="Admin tools and ready-made apps, with their link and sign-in.">
-        {tools.length === 0 ? (
-          <Card className="p-6 text-sm text-muted">Nothing yet. pgAdmin, phpMyAdmin, Uptime Kuma, n8n and more are one click away below.</Card>
+      <Section title="Your services" hint="Open them, sign in, and see how to use each one.">
+        {apps.length === 0 ? (
+          <Card className="p-6 text-sm text-muted">Nothing yet. pgAdmin, phpMyAdmin, Uptime Kuma, n8n, Ollama and more are one click away below.</Card>
         ) : (
-          <div className="grid grid-cols-2 gap-4 xl:grid-cols-3">
-            {tools.map((x) => (
-              <ToolCard key={`${x.vm}-${x.p.manifest.name}`} x={x} />
+          <div className="grid grid-cols-2 gap-4">
+            {apps.map((x) => (
+              <ServiceCard key={x.name} x={x} open={x.name === fresh} />
             ))}
           </div>
         )}
       </Section>
 
       <section id="catalog" className="scroll-mt-6">
-        <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
           <h2 className="mr-2 text-[15px] font-semibold text-white">Add a service</h2>
           {(["All", ...CATEGORIES] as const).map((c) => (
             <button
@@ -129,10 +183,13 @@ export default function ServicesPage() {
         <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
           {shown.map((t) => {
             const Icon = ICON[t.id] ?? Boxes;
+            const have = byTemplate(t.id);
+            const job = installs[t.id];
+            const link = have.flatMap((h) => h.inst).find((i) => i.p.url)?.p.url;
             return (
-              <Card key={t.id} className="flex flex-col p-4 transition-colors hover:border-white/15">
+              <Card key={t.id} className={cx("flex flex-col p-4 transition-colors", have.length ? "border-accent/30" : "hover:border-white/15")}>
                 <div className="flex items-start gap-3">
-                  <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-line-strong bg-chip text-ink">
+                  <span className={cx("grid size-10 shrink-0 place-items-center rounded-xl border bg-chip text-ink", have.length ? "border-accent/50" : "border-line-strong")}>
                     <Icon className="size-5" />
                   </span>
                   <div className="min-w-0 flex-1">
@@ -140,22 +197,68 @@ export default function ServicesPage() {
                     <p className="mt-0.5 text-xs leading-relaxed text-muted">{t.desc}</p>
                   </div>
                 </div>
-                <div className="mt-auto flex items-center gap-1.5 pt-4">
-                  <Badge>{t.category}</Badge>
-                  {t.connects && <Badge tone="blue">for {t.connects.engines.length > 1 ? "SQL databases" : ENGINE_LABEL[t.connects.engines[0]]}</Badge>}
-                  {t.ram && <span className="text-[11px] text-muted">needs ~{t.ram}</span>}
-                  <span className="flex-1" />
-                  <Button size="sm" onClick={() => setAdding(t)}>
-                    <Plus className="size-3.5" /> Add
-                  </Button>
-                </div>
+
+                {job?.state === "running" ? (
+                  <div className="mt-auto pt-4">
+                    <div className="mb-1.5 flex items-center justify-between text-xs">
+                      <span className="flex items-center gap-1.5 text-ink">
+                        <Loader2 className="size-3.5 animate-spin text-accent" /> {job.stage}
+                      </span>
+                      {job.jobId && (
+                        <button onClick={() => openJob({ vm: job.vm, id: job.jobId, title: `install ${job.name}` })} className="text-muted hover:text-white">
+                          details
+                        </button>
+                      )}
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-track">
+                      <div className="h-full rounded-full bg-accent transition-[width] duration-700" style={{ width: `${job.pct}%` }} />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-auto flex items-center gap-1.5 pt-4">
+                    {have.length ? (
+                      <span className="flex items-center gap-1 text-xs text-ink">
+                        <Check className="size-3.5 text-accent-soft" /> Installed on {[...new Set(have.flatMap((h) => h.inst.map((i) => i.vm)))].join(", ")}
+                      </span>
+                    ) : job?.state === "failed" ? (
+                      <span className="truncate text-xs text-[var(--critical-text)]" title={job.stage}>
+                        {job.stage}
+                        {job.jobId && (
+                          <button onClick={() => openJob({ vm: job.vm, id: job.jobId, title: `install ${job.name}` })} className="ml-1 underline">
+                            log
+                          </button>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-muted">
+                        {t.connects ? `for ${t.connects.engines.length > 1 ? "SQL databases" : ENGINE_LABEL[t.connects.engines[0]]}` : t.category}
+                        {t.ram ? ` · needs ~${t.ram}` : ""}
+                      </span>
+                    )}
+                    <span className="flex-1" />
+                    {have.length ? (
+                      <>
+                        {link && (
+                          <a href={link} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-[#0b0e1c] hover:bg-white/90">
+                            Open <ExternalLink className="size-3" />
+                          </a>
+                        )}
+                        <Button size="sm" variant="ghost" onClick={() => void install(t)} title="Install a second one">
+                          <Plus className="size-3.5" /> Another
+                        </Button>
+                      </>
+                    ) : (
+                      <Button size="sm" variant="primary" onClick={() => void install(t)}>
+                        <Plus className="size-3.5" /> Add
+                      </Button>
+                    )}
+                  </div>
+                )}
               </Card>
             );
           })}
         </div>
       </section>
-
-      {adding && <AddService t={adding} onClose={() => setAdding(null)} />}
     </div>
   );
 }
@@ -172,20 +275,25 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
   );
 }
 
-/** An installed tool: status, link, how to sign in. */
-function ToolCard({ x }: { x: Running }) {
-  const m: ProjectManifest = x.p.manifest;
-  const Icon = (x.t && ICON[x.t.id]) || Settings2;
-  const login = x.t?.login;
+/** One of your services: open it, sign in, how to use it (and try Ollama right here). */
+function ServiceCard({ x, open: initiallyOpen }: { x: Installed; open: boolean }) {
+  const m = x.inst[0].p.manifest;
+  const Icon = ICON[x.id] ?? Boxes;
+  const login = x.t.login;
+  const url = x.inst.find((i) => i.p.url)?.p.url ?? null;
+  const vm = x.inst[0].vm;
   const [env, setEnv] = useState<Record<string, string> | null>(null);
   const [show, setShow] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [howOpen, setHowOpen] = useState(initiallyOpen || x.id === "ollama");
+  const ok = x.inst.every((i) => i.p.active === "active");
+  const failed = x.inst.some((i) => i.p.active === "failed");
 
   const load = async () => {
     if (env) return env;
     setLoading(true);
     try {
-      const r = await api<{ env: { key: string; value: string }[] }>("/api/projects/action", { vm: x.vm, name: m.name, action: "env" });
+      const r = await api<{ env: { key: string; value: string }[] }>("/api/projects/action", { vm, name: m.name, action: "env" });
       const e = Object.fromEntries(r.env.map((v) => [v.key, v.value]));
       setEnv(e);
       return e;
@@ -195,51 +303,61 @@ function ToolCard({ x }: { x: Running }) {
   };
   const user = login?.user ?? (login?.userEnv ? env?.[login.userEnv] : undefined);
   const pass = login?.passEnv ? env?.[login.passEnv] : undefined;
-  const ok = x.p.active === "active";
+  const fill = (s: string) =>
+    s
+      .replaceAll("{vm}", vm)
+      .replaceAll("{name}", m.name)
+      .replaceAll("{NAME}", m.name.toUpperCase().replace(/[^A-Z0-9]+/g, "_"))
+      .replaceAll("{port+1}", String((m.port ?? 0) + 1))
+      .replaceAll("{port}", String(m.port ?? ""));
 
   return (
-    <Card className="flex flex-col p-4">
+    <Card id={`svc-${m.name}`} className={cx("flex flex-col p-5", initiallyOpen && "ring-2 ring-accent/40")}>
       <div className="flex items-start gap-3">
-        <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-line-strong bg-chip text-ink">
+        <span className="grid size-11 shrink-0 place-items-center rounded-xl border border-line-strong bg-chip text-ink">
           <Icon className="size-5" />
         </span>
         <div className="min-w-0 flex-1">
-          <Link href={`/projects/${m.name}`} className="block truncate font-semibold text-white hover:underline">
+          <Link href={`/projects/${m.name}`} className="block truncate text-base font-semibold text-white hover:underline">
             {m.name}
           </Link>
           <p className="truncate text-xs text-muted">
-            {m.framework ?? x.t?.name ?? "Tool"} · <span className="font-mono">{x.vm}</span>
-            {m.uses?.length ? ` · uses ${m.uses.map((u) => u.name).join(", ")}` : ""}
+            {x.t.name} · {x.inst.map((i) => i.vm).join(", ")}
+            {m.uses?.length ? ` · connected to ${m.uses.map((u) => u.name).join(", ")}` : ""}
           </p>
         </div>
         <span className="flex items-center gap-1.5 text-xs text-ink">
-          <span className={cx("size-1.5 rounded-full", ok ? "bg-accent" : x.p.active === "failed" ? "bg-[var(--critical)]" : "bg-[var(--others)]")} />
-          {ok ? "Running" : x.p.active}
+          <span className={cx("size-2 rounded-full", ok ? "bg-accent shadow-[0_0_8px_var(--glow)]" : failed ? "bg-[var(--critical)]" : "bg-[var(--others)]")} />
+          {ok ? "Running" : failed ? "Crashed" : x.inst[0].p.active}
         </span>
       </div>
 
-      {x.p.url ? (
-        <div className="mt-3 flex items-center gap-1 rounded-lg border border-line-strong px-2.5 py-1.5">
-          {x.p.url.includes("_token=") && <Lock className="size-3.5 shrink-0 text-muted" />}
-          <a href={x.p.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-sm text-accent-soft hover:underline">
-            Open {x.t?.name ?? m.name}
+      {url && (
+        <div className="mt-4 flex items-center gap-2">
+          <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-[#0b0e1c] hover:bg-white/90">
+            Open {x.t.name.split(" (")[0]} <ExternalLink className="size-3.5" />
           </a>
-          <a href={x.p.url} target="_blank" rel="noreferrer" className="p-1 text-muted hover:text-white" title="Open">
-            <ExternalLink className="size-3.5" />
-          </a>
-          <CopyButton text={x.p.url} />
+          {url.includes("_token=") && (
+            <span className="flex items-center gap-1 text-[11px] text-muted">
+              <Lock className="size-3" /> private link
+            </span>
+          )}
+          <span className="flex-1" />
+          <CopyButton text={url} label="Copy link" />
         </div>
-      ) : (
-        <p className="mt-3 text-xs text-muted">No link{m.port ? ` · port ${m.port}` : ""}</p>
       )}
 
-      {login && (login.user || login.userEnv || login.passEnv) ? (
-        <div className="mt-3 grid grid-cols-[72px_minmax(0,1fr)] items-center gap-y-1.5 text-xs">
+      {login && (login.user || login.userEnv || login.passEnv) && (
+        <div className="mt-4 grid grid-cols-[80px_minmax(0,1fr)] items-center gap-y-1.5 rounded-xl border border-white/[0.06] bg-black/20 px-3 py-2.5 text-xs">
           {(login.user || login.userEnv) && (
             <>
-              <span className="text-muted">User</span>
+              <span className="text-muted">Sign in as</span>
               <span className="flex items-center gap-1 font-mono text-ink">
-                {user ?? (login.userEnv ? "•••" : "")}
+                {user ?? (
+                  <button onClick={() => void load()} className="text-muted hover:text-white">
+                    show
+                  </button>
+                )}
                 {user && <CopyButton text={user} />}
               </span>
             </>
@@ -248,7 +366,7 @@ function ToolCard({ x }: { x: Running }) {
             <>
               <span className="text-muted">Password</span>
               <span className="flex min-w-0 items-center gap-1 font-mono text-ink">
-                <span className="truncate">{show && pass !== undefined ? pass || "(none)" : "••••••••••••"}</span>
+                <span className="truncate">{show && pass !== undefined ? pass || "(none)" : "••••••••••••••"}</span>
                 <button
                   onClick={async () => {
                     await load();
@@ -259,130 +377,112 @@ function ToolCard({ x }: { x: Running }) {
                 >
                   {loading ? <Loader2 className="size-3.5 animate-spin" /> : show ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
                 </button>
-                {pass !== undefined ? (
-                  <CopyButton text={pass} />
-                ) : (
-                  <button onClick={() => void load()} className="text-[11px] text-muted hover:text-white">
-                    load
-                  </button>
-                )}
+                {pass !== undefined && <CopyButton text={pass} />}
               </span>
             </>
           )}
         </div>
-      ) : null}
-      {login?.note && <p className="mt-2 text-[11px] text-muted">{login.note}</p>}
+      )}
+
+      <button onClick={() => setHowOpen((o) => !o)} className="mt-4 flex items-center gap-1.5 text-sm font-medium text-white">
+        <ChevronDown className={cx("size-4 transition-transform", !howOpen && "-rotate-90")} /> How to use it
+      </button>
+      {howOpen && (
+        <div className="mt-2 space-y-3">
+          <ol className="space-y-1.5 text-sm text-ink">
+            {(USAGE[x.id] ?? []).map((line, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="grid size-5 shrink-0 place-items-center rounded-full bg-chip text-[11px] text-muted">{i + 1}</span>
+                <span>{fill(line)}</span>
+              </li>
+            ))}
+            {login?.note && (
+              <li className="flex gap-2 text-muted">
+                <span className="size-5 shrink-0" />
+                <span>{login.note}</span>
+              </li>
+            )}
+          </ol>
+          {x.id === "ollama" && <OllamaTry name={m.name} url={url} />}
+        </div>
+      )}
     </Card>
   );
 }
 
-function AddService({ t, onClose }: { t: ServiceTemplate; onClose: () => void }) {
-  const { vms, status, openJob, refresh } = useCluster();
-  const [name, setName] = useState("");
-  const [vm, setVm] = useState("");
+/** Chat with an Ollama service right here, plus code to call it. */
+function OllamaTry({ name, url }: { name: string; url: string | null }) {
+  const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{ name: string; vm: string; notes: string[] } | null>(null);
+  const [a, setA] = useState<{ model: string; answer: string; ms: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [tab, setTab] = useState<"curl" | "python" | "js">("curl");
 
-  const dbs = useMemo(
-    () =>
-      t.connects
-        ? vms.flatMap((v) =>
-            (status[v.name]?.agent?.projects ?? [])
-              .filter((p) => p.manifest.category === "database" && t.connects!.engines.includes(engineFromStart(p.manifest.start) as never))
-              .map((p) => ({ name: p.manifest.name, vm: v.name })),
-          )
-        : [],
-    [t, vms, status],
-  );
-  const [target, setTarget] = useState(dbs[0]?.name ?? "");
-  const auto = target ? dbs.find((d) => d.name === target)?.vm : rankMachines(vms.map((v) => v.name), status, t.type === "database" ? "database" : t.type === "tool" ? "tool" : "service", "box5")[0];
-
-  const add = async () => {
+  const ask = async () => {
+    if (!q.trim() || busy) return;
     setBusy(true);
-    setError(null);
+    setErr(null);
     try {
-      const r = await api<{ name: string; vm: string; jobId: string; notes: string[] }>("/api/services", { template: t.id, name: name || undefined, vm: vm || undefined, connectTo: target || undefined });
-      setResult(r);
-      openJob({ vm: r.vm, id: r.jobId, title: `deploy ${r.name}` });
-      void refresh([r.vm]);
+      setA(await api<{ model: string; answer: string; ms: number }>("/api/services/try", { name, prompt: q }));
     } catch (e) {
-      setError((e as Error).message);
+      setErr((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
 
-  const Icon = ICON[t.id] ?? Boxes;
+  let api_ = "http://127.0.0.1:11434/api/generate";
+  if (url)
+    try {
+      const u = new URL(url);
+      api_ = `${u.origin}/api/generate${u.search}`;
+    } catch {}
+  const model = a?.model ?? "llama3.2:3b";
+  const code = {
+    curl: `curl "${api_}" \\\n  -d '{"model": "${model}", "prompt": "Why is the sky blue?", "stream": false}'`,
+    python: `import requests\n\nr = requests.post("${api_}", json={\n    "model": "${model}",\n    "prompt": "Why is the sky blue?",\n    "stream": False,\n})\nprint(r.json()["response"])`,
+    js: `const r = await fetch("${api_}", {\n  method: "POST",\n  body: JSON.stringify({ model: "${model}", prompt: "Why is the sky blue?", stream: false }),\n});\nconsole.log((await r.json()).response);`,
+  }[tab];
+
   return (
-    <Drawer title={`Add ${t.name}`} subtitle={t.desc} onClose={onClose}>
-      {result ? (
-        <div className="space-y-3">
-          <p className="text-lg font-semibold text-white">
-            {result.name} is being set up on {result.vm}
-          </p>
-          <ul className="space-y-1 text-sm text-ink">
-            {result.notes.map((n) => (
-              <li key={n}>• {n}</li>
-            ))}
-            <li>• Its link and sign-in appear under Tools & apps (or Databases) when the deploy finishes.</li>
-          </ul>
-          <div className="flex justify-end">
-            <Button variant="primary" onClick={onClose}>
-              Done
-            </Button>
-          </div>
+    <div className="space-y-3">
+      <div className="rounded-xl border border-white/[0.08] bg-black/25 p-3">
+        <p className="mb-2 text-xs font-medium text-muted">Try it</p>
+        <div className="flex items-center gap-2">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && void ask()}
+            placeholder="Ask the model anything…"
+            className="h-9 min-w-0 flex-1 rounded-lg border border-line-strong bg-transparent px-3 text-sm text-white outline-none placeholder:text-muted focus:border-accent/60"
+          />
+          <Button size="sm" variant="primary" onClick={() => void ask()} loading={busy} disabled={!q.trim()}>
+            <SendHorizonal className="size-3.5" />
+          </Button>
         </div>
-      ) : (
-        <div className="space-y-4">
-          <div className="flex items-center gap-3 rounded-xl border border-line-strong p-3">
-            <span className="grid size-10 place-items-center rounded-xl bg-chip text-ink">
-              <Icon className="size-5" />
-            </span>
-            <div className="text-sm">
-              <p className="text-white">
-                {t.category} · port {t.port} · {t.link === "none" ? "no link (private)" : t.link === "private" ? "private link with a secret token" : "public link"}
-              </p>
-              <p className="text-xs text-muted">Docker container, data kept in ~/data/{name || t.id}{t.ram ? `, needs about ${t.ram} of memory` : ""}</p>
-            </div>
+        {busy && <p className="mt-2 text-xs text-muted">Thinking… the first answer takes longer while the model loads.</p>}
+        {err && <p className="mt-2 text-xs text-[var(--critical-text)]">{err}</p>}
+        {a && !busy && (
+          <div className="mt-3 text-sm">
+            <Markdown text={a.answer} />
+            <p className="mt-1 text-[11px] text-muted">
+              {a.model} · {(a.ms / 1000).toFixed(1)} s
+            </p>
           </div>
-          <Field label="Name" hint={`Defaults to ${t.id} (or ${t.id}-2 if taken)`}>
-            <input value={name} onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} placeholder={t.id} className={inputCls} />
-          </Field>
-          {t.connects && (
-            <Field label="Connect to" hint={dbs.length ? "Its settings are filled in and it runs next to the database." : "No matching database yet: add one first, or connect it later on the Pipeline."}>
-              <select value={target} onChange={(e) => setTarget(e.target.value)} className={inputCls}>
-                {dbs.map((d) => (
-                  <option key={d.name} value={d.name}>
-                    {d.name} on {d.vm}
-                  </option>
-                ))}
-                <option value="">Don&apos;t connect now</option>
-              </select>
-            </Field>
-          )}
-          <Field label="Machine">
-            <select value={vm} onChange={(e) => setVm(e.target.value)} className={inputCls}>
-              <option value="">Auto{auto ? ` (${auto})` : ""}</option>
-              {vms.map((v) => (
-                <option key={v.name} value={v.name} disabled={!status[v.name]?.ok}>
-                  {v.name}
-                  {status[v.name]?.ok ? "" : " (unreachable)"}
-                </option>
-              ))}
-            </select>
-          </Field>
-          {error && <p className="text-sm text-[var(--critical-text)]">{error}</p>}
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button variant="primary" onClick={add} loading={busy}>
-              <Plus className="size-4" /> Add {t.name}
-            </Button>
-          </div>
+        )}
+      </div>
+      <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#07080d]">
+        <div className="flex items-center gap-1 border-b border-white/[0.06] px-2 py-1">
+          {(["curl", "python", "js"] as const).map((t) => (
+            <button key={t} onClick={() => setTab(t)} className={cx("rounded-md px-2 py-0.5 text-[11px]", tab === t ? "bg-white/[0.1] text-white" : "text-muted hover:text-white")}>
+              {t === "js" ? "JavaScript" : t === "python" ? "Python" : "curl"}
+            </button>
+          ))}
+          <span className="flex-1" />
+          <CopyButton text={code} label="Copy" />
         </div>
-      )}
-    </Drawer>
+        <pre className="scroll-thin overflow-x-auto px-3 py-2 font-mono text-[11.5px] leading-relaxed text-ink">{code}</pre>
+      </div>
+    </div>
   );
 }
