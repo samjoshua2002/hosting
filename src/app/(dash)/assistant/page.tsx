@@ -107,21 +107,21 @@ export default function AssistantPage() {
 
   const submit = async (raw: string) => {
     if ((!raw && !staged.length) || busy) return;
-    // machine tokens never go to the AI: the dashboard adds the machine itself
+    // machine tokens never go to the AI: the dashboard adds the machine itself, and every copy is hidden
     let text = raw;
-    const token = raw.match(/(?:ssh\s+(?:-p\s*\d+\s+)?)?ibssh_[A-Za-z0-9]+(?:@[\w.-]+)?(?:\s+-p\s*\d+)?/);
-    if (token) {
+    if (/ibssh_[A-Za-z0-9]{4,}/.test(raw)) {
       setNote("Adding the machine…");
+      let outcome: string;
       try {
-        // the server picks the token and an optional "name box6" / "call it box6" out of the message
+        // the server picks the token and an optional "box6" / "call it box6" out of the message
         const r = await api<{ name: string; summary: string[] }>("/api/machines", { ssh: raw });
-        text = raw.replace(token[0], `[machine added as ${r.name}: ${r.summary.join("; ")}]`);
-        setNote(null);
+        outcome = `[machine added as ${r.name}: ${r.summary.join("; ")}]`;
         void reloadVms();
       } catch (e) {
-        setNote(`Couldn't add the machine: ${(e as Error).message}`);
-        return;
+        outcome = `[the dashboard couldn't add this machine: ${(e as Error).message}]`;
       }
+      setNote(null);
+      text = `${raw.replace(/ibssh_[A-Za-z0-9]{4,}/g, "ibssh_••••(hidden)")}\n\n${outcome}`;
     }
     if (!items.length) setTitle(sid, (text || staged[0]?.name || "New session").slice(0, 70));
     const withFiles = staged.length ? `${text}\n\n${staged.map((f) => `[Attached: ${f.name} (id ${f.id}, ${fmtSize(f.size)})]`).join("\n")}` : text;

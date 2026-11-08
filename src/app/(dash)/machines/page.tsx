@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Check, Plus, Server, ShieldCheck, ShieldAlert, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, Pencil, Plus, Server, ShieldCheck, ShieldAlert, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useCluster } from "@/components/cluster";
 import { Drawer } from "@/components/drawer";
@@ -13,6 +13,17 @@ export default function VmsPage() {
   const { vms, status, checking, refresh, reloadVms, configErrors, agentVersion, hostKeyPinned } = useCluster();
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
+
+  const rename = async (name: string) => {
+    const to = prompt(`New name for ${name} (lowercase letters, digits, dashes):`, name)?.trim().toLowerCase();
+    if (!to || to === name) return;
+    try {
+      await api("/api/machines", { rename: { from: name, to } });
+      await reloadVms();
+    } catch (e) {
+      alert((e as Error).message);
+    }
+  };
 
   const remove = async (name: string) => {
     if (!confirm(`Remove ${name} from the dashboard? Projects on it keep running there but are no longer managed.`)) return;
@@ -109,6 +120,11 @@ export default function VmsPage() {
                       <Button size="sm" onClick={() => refresh([v.name])} loading={checking[v.name]}>
                         Check
                       </Button>
+                      {v.added && (
+                        <Button size="sm" variant="ghost" onClick={() => void rename(v.name)} title="Rename">
+                          <Pencil className="size-3.5" />
+                        </Button>
+                      )}
                       {v.added && (
                         <Button size="sm" variant="ghost" onClick={() => void remove(v.name)} loading={removing === v.name} className="hover:text-[var(--critical-text)]" title="Remove from the dashboard">
                           <Trash2 className="size-3.5" />

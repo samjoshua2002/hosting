@@ -32,7 +32,7 @@ import {
 import { capabilitySummary } from "./github-scopes";
 import { rankMachines } from "./placement";
 import { connectProjects, disconnectProjects } from "./connections";
-import { addMachine, removeMachine } from "./machines";
+import { addMachine, removeMachine, renameMachine } from "./machines";
 import { forget, listMemory, remember } from "./memory";
 import { CATALOG } from "./catalog";
 import { createService } from "./services";
@@ -296,7 +296,8 @@ const TOOLS: ToolDef[] = [
     { ssh: { type: "string", description: "token, ssh command or user@host:port; or 'saved' when the dashboard already stored it" }, name: { type: "string", description: "optional, e.g. box6" } },
     ["ssh"],
   ),
-  fn("remove_machine", "Remove a machine that was added from the dashboard (projects on it keep running there but are no longer managed).", { name: { type: "string" } }, ["name"]),
+  fn("rename_machine", "Rename a machine that was added from the dashboard (e.g. a wrong name to box6). Projects on it are unaffected.", { from: { type: "string" }, to: { type: "string" } }, ["from", "to"]),
+    fn("remove_machine", "Remove a machine that was added from the dashboard (projects on it keep running there but are no longer managed).", { name: { type: "string" } }, ["name"]),
   fn(
     "connect_projects",
     "Connect a project to a database or another service (\"watch uses postgres\"): sets the connection env var on the app (DATABASE_URL, MONGODB_URI, REDIS_URL or <NAME>_URL) from the target's stored credentials, opens tunnels between machines when needed, records the link (it shows on the Pipeline), and restarts the app. disconnect=true removes it.",
@@ -434,6 +435,8 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Forgot ${clip(str(a.what), 60)}`, needsApproval: false, detail: "" };
     case "add_machine":
       return { label: `Added machine ${str(a.name) || "(new)"}`, needsApproval: false, detail: "" };
+    case "rename_machine":
+      return { label: `Renamed machine ${str(a.from)} → ${str(a.to)}`, needsApproval: false, detail: "" };
     case "remove_machine":
       return { label: `Removed machine ${str(a.name)}`, needsApproval: true, detail: `${str(a.name)} stops being managed by the dashboard` };
     case "connect_projects":
@@ -700,6 +703,10 @@ async function execute(call: ToolCall, ctx: { sessionId?: string }): Promise<{ o
       case "add_machine": {
         const r = await addMachine(str(a.ssh), str(a.name) || undefined);
         return { ok: true, output: `Added ${r.name}.\n- ${r.summary.join("\n- ")}` };
+      }
+      case "rename_machine": {
+        await renameMachine(str(a.from), str(a.to));
+        return { ok: true, output: `Renamed ${str(a.from)} to ${str(a.to)}. It shows under the new name everywhere.` };
       }
       case "remove_machine": {
         await removeMachine(str(a.name));

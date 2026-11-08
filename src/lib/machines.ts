@@ -50,11 +50,18 @@ export async function refreshMachines(force = false): Promise<void> {
   if (force || !loadedAt) await Promise.race([loading, new Promise((r) => setTimeout(r, 8000))]);
 }
 
-/** Pull "box6", an InstaBox token / ssh command, or user@host[:port] out of what the user pasted. */
+const NOT_NAMES = new Set(["no", "yes", "the", "a", "an", "it", "this", "that", "user", "password", "ssh", "key", "token", "host", "port", "name", "machine", "server", "box"]);
+
+/**
+ * Pull the token / ssh command / user@host out of whatever the user pasted, plus a name only when they
+ * clearly gave one ("box6", "call it web-1"). Pasted InstaBox pages say things like "user name: no
+ * password", so loose phrases are never taken as names.
+ */
 export function parseMachineInput(text: string): { value: string; name?: string } | null {
   const t = text.trim();
+  const said = t.match(/\b(box\d{1,3})\b/i)?.[1] ?? t.match(/\b(?:call it|name it|named|rename (?:it )?to)\s+["'`]?([a-z][a-z0-9-]{1,31})/i)?.[1];
+  const name = said && !NOT_NAMES.has(said.toLowerCase()) ? said.toLowerCase() : undefined;
   const token = t.match(/ibssh_[A-Za-z0-9]+/)?.[0];
-  const name = t.match(/\b(?:name|call it|as)\s*[:=]?\s*([a-z0-9][a-z0-9-]{0,31})\b/i)?.[1]?.toLowerCase();
   if (token) return { value: token, name };
   const ssh = t.match(/(?:ssh\s+(?:-p\s*(\d+)\s+)?)?([A-Za-z0-9._-]+)@([A-Za-z0-9.-]+)(?::(\d+))?(?:\s+-p\s*(\d+))?/);
   if (ssh) {
@@ -62,6 +69,11 @@ export function parseMachineInput(text: string): { value: string; name?: string 
     return { value: `${ssh[2]}@${ssh[3]}${port ? `:${port}` : ""}`, name };
   }
   return null;
+}
+
+/** Hide machine tokens in any text that's about to be shown, saved or sent to a model. */
+export function maskTokens(text: string): string {
+  return text.replace(/ibssh_[A-Za-z0-9]{4,}/g, "ibssh_••••(hidden)");
 }
 
 function nextName(): string {
@@ -79,7 +91,8 @@ export async function addMachine(text: string, wanted?: string): Promise<{ name:
   if (all.some((v) => v.name === name)) throw new Error(`${name} already exists`);
   const vm = parseVms(`${name}=${parsed.value}`).vms[0];
   if (!vm) throw new Error("That doesn't look like an InstaBox token or user@host");
-  if (all.some((v) => v.host === vm.host && v.username === vm.username && v.port === vm.port)) throw new Error("That machine is already added");
+  const same = all.find((v) => v.host === vm.host && v.username === vm.username && v.port === vm.port);
+  if (same) throw new Error(`That machine is already added as ${same.name}`);
 
   // 1. it must answer, and gets the agent
   const st = await probe({ ...vm, added: true });
@@ -123,6 +136,20 @@ export async function addMachine(text: string, wanted?: string): Promise<{ name:
     if (n) summary.push(`copied ${n} scheduled task${n > 1 ? "s" : ""} every machine runs (keep-alive)`);
   }
   return { name, summary };
+}
+
+/** Rename a machine added from the dashboard (the registry entry; nothing on the machine refers to its name). */
+export async function renameMachine(from: string, to: string): Promise<void> {
+  const next = to.trim().toLowerCase();
+  if (!NAME_RE.test(next)) throw new Error("name: lowercase letters, digits and dashes");
+  if (envVms().some((v) => v.name === from)) throw new Error(`${from} comes from the VMS env var; rename it there`);
+  if (getVms().some((v) => v.name === next)) throw new Error(`${next} is already taken`);
+  const list = (await storeGetJson<Entry[]>(PATH)) ?? [];
+  const e = list.find((x) => x.name === from);
+  if (!e) throw new Error(`no added machine called ${from}`);
+  e.name = next;
+  await storePut(PATH, JSON.stringify(list));
+  await refreshMachines(true);
 }
 
 export async function removeMachine(name: string): Promise<void> {
