@@ -9,6 +9,8 @@ export interface VmInfo {
   host: string;
   port: number;
   userHint: string;
+  /** added from the dashboard, so it can be removed there */
+  added?: boolean;
 }
 
 export interface ProjectManifest {

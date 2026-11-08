@@ -10,6 +10,8 @@ export interface VmConfig {
   privateKey?: string;
   /** Accepted SHA256 host-key fingerprints (base64, no "SHA256:" prefix). Empty = accept any. */
   hostKeys: string[];
+  /** added from the dashboard (kept on the storage machine) rather than the VMS env var */
+  added?: boolean;
 }
 
 interface Parsed {
@@ -100,10 +102,24 @@ export function parseVms(raw: string): Parsed {
   return { vms, errors };
 }
 
+let extra: VmConfig[] = [];
+
+/** Machines added from the dashboard (see machines.ts). */
+export function setExtraVms(list: VmConfig[]) {
+  extra = list;
+}
+
 export function getConfig(): Parsed {
   const raw = process.env.VMS ?? "";
   if (cache?.raw !== raw) cache = { raw, parsed: parseVms(raw) };
-  return cache.parsed;
+  const names = new Set(cache.parsed.vms.map((v) => v.name));
+  return { vms: [...cache.parsed.vms, ...extra.filter((e) => !names.has(e.name))], errors: cache.parsed.errors };
+}
+
+/** Machines from the VMS env var only. */
+export function envVms(): VmConfig[] {
+  getConfig();
+  return cache!.parsed.vms;
 }
 
 export function getVms(): VmConfig[] {
@@ -125,5 +141,6 @@ export function toInfo(vm: VmConfig): VmInfo {
     host: vm.host,
     port: vm.port,
     userHint: vm.kind === "instabox" ? mask(vm.username) : vm.username,
+    added: vm.added || undefined,
   };
 }

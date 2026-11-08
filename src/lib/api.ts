@@ -1,5 +1,6 @@
 // Helpers shared by route handlers.
 import { connection, type NextRequest } from "next/server";
+import { refreshMachines } from "./machines";
 import { verifySession } from "./auth";
 import { getVm, type VmConfig } from "./config";
 
@@ -63,6 +64,7 @@ export function handle(fn: (req: NextRequest) => Promise<Response>) {
     await connection();
     try {
       checkOrigin(req);
+      await refreshMachines();
       const res = await fn(req);
       res.headers.set("Cache-Control", "no-store");
       return res;

@@ -30,6 +30,7 @@ import { timeAgo } from "@/lib/format";
 import { projectType, TYPE_LABEL, type ProjectType } from "@/lib/project-type";
 import type { ProjectManifest, ProjectState, VmStatus } from "@/lib/types";
 import { ensureDoc, getDoc, newId, openSession, send, stop, updateItems, useAssistant } from "./assistant-store";
+import { ArtifactView } from "./artifact-view";
 import { CopyButton } from "./chat-blocks";
 import { ChatItems } from "./chat-items";
 import { useCluster } from "./cluster";
@@ -744,6 +745,7 @@ function AiBar({ sel }: { sel: Sel }) {
   const [sid, setSid] = useState<string | null>(() => pipelineSid);
   const [text, setText] = useState("");
   const [open, setOpen] = useState(true);
+  const [art, setArt] = useState<string | null>(null);
   const doc = sid ? (st.docs[sid] ?? getDoc(sid)) : null;
   const busy = Boolean(doc?.busy || doc?.remote);
   const mentions = useMemo(() => new Set(entitiesFrom(vms, status).map((e) => e.name)), [vms, status]);
@@ -773,8 +775,16 @@ function AiBar({ sel }: { sel: Sel }) {
   };
 
   const items = doc?.items ?? [];
+  const artVersions = items.filter((i): i is Extract<(typeof items)[number], { kind: "artifact" }> => i.kind === "artifact" && i.id === art);
   return (
     <div className="absolute inset-x-3 bottom-3 z-20 mx-auto max-w-3xl">
+      {art && artVersions.length > 0 && (
+        <Drawer title={artVersions[artVersions.length - 1].title} onClose={() => setArt(null)}>
+          <div className="-m-5 h-[calc(100dvh-90px)]">
+            <ArtifactView versions={artVersions} onClose={() => setArt(null)} />
+          </div>
+        </Drawer>
+      )}
       {doc && items.length > 0 && open && (
         <div className="mb-2 overflow-hidden rounded-2xl border border-line-strong bg-panel/95 shadow-2xl backdrop-blur">
           <div className="flex items-center gap-2 border-b border-white/[0.06] px-4 py-2">
@@ -806,7 +816,7 @@ function AiBar({ sel }: { sel: Sel }) {
             </button>
           </div>
           <div className="scroll-thin max-h-[42vh] overflow-y-auto px-4 py-3 text-[13.5px]">
-            <ChatItems sid={sid!} items={items.slice(-14)} busy={busy} mentions={mentions} compact />
+            <ChatItems sid={sid!} items={items.slice(-14)} busy={busy} mentions={mentions} compact onOpenArtifact={setArt} />
           </div>
         </div>
       )}

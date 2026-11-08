@@ -1,9 +1,10 @@
 // GitHub connection: a token (from GITHUB_TOKEN, or pasted in the dashboard and kept encrypted on the
 // storage machine), repo listing, framework detection, and push webhooks for auto-deploy.
 // The token never goes to the browser; machines only get it for the length of one private-repo deploy.
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { unifiedDiff } from "./diff";
 import { hasScope } from "./github-scopes";
+import { seal, unseal } from "./seal";
 import { storeDelete, storeGetJson, storePut } from "./store";
 
 import { REPO_RE } from "./github-shared";
@@ -34,22 +35,7 @@ function secret(): string {
   return s;
 }
 
-function sealKey(): Buffer {
-  return createHash("sha256").update(`${secret()}:github-token:v1`).digest();
-}
-
-function seal(token: string): Pick<Sealed, "iv" | "tag" | "data"> {
-  const iv = randomBytes(12);
-  const c = createCipheriv("aes-256-gcm", sealKey(), iv);
-  const data = Buffer.concat([c.update(token, "utf8"), c.final()]);
-  return { iv: iv.toString("base64"), tag: c.getAuthTag().toString("base64"), data: data.toString("base64") };
-}
-
-function unseal(s: Sealed): string {
-  const d = createDecipheriv("aes-256-gcm", sealKey(), Buffer.from(s.iv, "base64"));
-  d.setAuthTag(Buffer.from(s.tag, "base64"));
-  return Buffer.concat([d.update(Buffer.from(s.data, "base64")), d.final()]).toString("utf8");
-}
+const PURPOSE = "github-token:v1"; // same key as before, so saved tokens keep working
 
 let cached: { at: number; auth: GithubAuth | null } | null = null;
 
@@ -93,7 +79,7 @@ export async function githubAuth(fresh = false): Promise<GithubAuth | null> {
     const s = await storeGetJson<Sealed>(STORE_PATH).catch(() => null);
     if (s?.v === 1) {
       try {
-        auth = { token: unseal(s), login: s.login, scopes: s.scopes, source: "dashboard" };
+        auth = { token: unseal(s, PURPOSE), login: s.login, scopes: s.scopes, source: "dashboard" };
       } catch {
         auth = null; // SESSION_SECRET changed: reconnect
       }
@@ -113,7 +99,7 @@ export async function connectGithub(token: string): Promise<GithubAuth> {
   const t = token.trim();
   if (!/^[A-Za-z0-9_]{20,255}$/.test(t)) throw new Error("That doesn't look like a GitHub token");
   const who = await whoami(t);
-  await storePut(STORE_PATH, JSON.stringify({ v: 1, ...seal(t), login: who.login, scopes: who.scopes, savedAt: new Date().toISOString() } satisfies Sealed));
+  await storePut(STORE_PATH, JSON.stringify({ v: 1, ...seal(t, PURPOSE), login: who.login, scopes: who.scopes, savedAt: new Date().toISOString() } satisfies Sealed));
   cached = null;
   return { token: t, ...who, source: "dashboard" };
 }
@@ -202,8 +188,118 @@ export async function detectFramework(repo: string, ref: string): Promise<Detect
   const install = { npm: "npm ci || npm install", pnpm: "npx --yes pnpm install --frozen-lockfile", yarn: "npx --yes yarn install --frozen-lockfile", bun: "npx --yes bun install" }[lock];
   const run = (s: string) => (lock === "npm" ? `npm run ${s}` : `npx --yes ${lock} run ${s}`);
 
-  if (has("docker-compose.yml") || has("docker-compose.yaml") || has("compose.yml") || has("compose.yaml"))
-    return { framework: "Docker Compose", kind: "service", install: "", build: "docker compose build", start: "exec docker compose up", port: "8080", publish: true };
+  if (has("go.mod"))
+    return {
+      framework: "Go",
+      kind: "service",
+      install: "command -v go >/dev/null || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq golang)",
+      build: "go build -o app .",
+      start: "./app",
+      port: "8080",
+      publish: true,
+    };
+
+  // Java: Maven or Gradle (wrapper preferred), Spring Boot gets its port from --server.port
+  const jdk = "command -v java >/dev/null || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq default-jdk-headless)";
+  if (has("pom.xml")) {
+    const pom = (await file(token, repo, "pom.xml", ref)) ?? "";
+    const spring = /spring-boot/.test(pom);
+    const wrapper = has("mvnw");
+    return {
+      framework: spring ? "Spring Boot (Maven)" : "Java (Maven)",
+      kind: "service",
+      install: wrapper ? `${jdk} && chmod +x mvnw` : "command -v mvn >/dev/null || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq default-jdk-headless maven)",
+      build: `${wrapper ? "./mvnw" : "mvn"} -q -B -DskipTests package`,
+      start: `exec java -jar "$(ls target/*.jar | grep -v -e '-sources' -e '-javadoc' -e 'original-' | head -n 1)"${spring ? " --server.port=$PORT" : ""}`,
+      port: "8080",
+      publish: true,
+    };
+  }
+  if (has("build.gradle") || has("build.gradle.kts")) {
+    const g = ((await file(token, repo, "build.gradle", ref)) ?? "") + ((await file(token, repo, "build.gradle.kts", ref)) ?? "");
+    const spring = /org\.springframework\.boot/.test(g);
+    const wrapper = has("gradlew");
+    return {
+      framework: spring ? "Spring Boot (Gradle)" : "Java (Gradle)",
+      kind: "service",
+      install: wrapper ? `${jdk} && chmod +x gradlew` : "command -v gradle >/dev/null || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq default-jdk-headless gradle)",
+      build: `${wrapper ? "./gradlew" : "gradle"} -q build -x test`,
+      start: `exec java -jar "$(ls build/libs/*.jar | grep -v -e '-plain' -e '-sources' | head -n 1)"${spring ? " --server.port=$PORT" : ""}`,
+      port: "8080",
+      publish: true,
+    };
+  }
+
+  if (has("Cargo.toml")) {
+    const cargo = (await file(token, repo, "Cargo.toml", ref)) ?? "";
+    const bin = cargo.match(/\[package\][^[]*?name\s*=\s*"([^"]+)"/)?.[1] ?? "app";
+    const env = '. "$HOME/.cargo/env" 2>/dev/null;';
+    return {
+      framework: "Rust",
+      kind: "service",
+      install: `command -v cargo >/dev/null || [ -x "$HOME/.cargo/bin/cargo" ] || (curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal)`,
+      build: `${env} cargo build --release`,
+      start: `exec ./target/release/${bin}`,
+      port: "8080",
+      publish: true,
+    };
+  }
+
+  if (has("composer.json") || has("index.php") || has("artisan")) {
+    const laravel = has("artisan");
+    const php = "command -v php >/dev/null || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq php-cli php-mbstring php-xml php-curl php-zip php-sqlite3 unzip)";
+    const composer = has("composer.json")
+      ? ' && (command -v composer >/dev/null || (mkdir -p "$HOME/.local/bin" && curl -sS https://getcomposer.org/installer | php -- --install-dir="$HOME/.local/bin" --filename=composer)) && PATH="$HOME/.local/bin:$PATH" composer install --no-dev --no-interaction'
+      : "";
+    return {
+      framework: laravel ? "Laravel" : "PHP",
+      kind: "website",
+      install: php + composer,
+      build: laravel ? "[ -f .env ] || cp .env.example .env; php artisan key:generate --force || true" : "",
+      start: laravel ? "exec php artisan serve --host=0.0.0.0 --port=$PORT" : `exec php -S 0.0.0.0:$PORT -t ${has("public") ? "public" : "."}`,
+      port: "8000",
+      publish: true,
+    };
+  }
+
+  if (has("Gemfile")) {
+    const gems = (await file(token, repo, "Gemfile", ref)) ?? "";
+    const rails = /gem ["']rails["']/.test(gems);
+    return {
+      framework: rails ? "Ruby on Rails" : "Ruby",
+      kind: rails ? "website" : "service",
+      install: "command -v bundle >/dev/null || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ruby-full build-essential libyaml-dev); bundle config set --local path vendor/bundle && bundle install",
+      build: rails ? "RAILS_ENV=production bundle exec rails assets:precompile || true" : "",
+      start: rails ? "exec bundle exec rails server -b 0.0.0.0 -p $PORT -e production" : "exec bundle exec rackup -o 0.0.0.0 -p $PORT",
+      port: "3000",
+      publish: true,
+    };
+  }
+
+  const csproj = names.find((n) => n.endsWith(".csproj"));
+  if (csproj) {
+    const dn = '"$HOME/.dotnet/dotnet"';
+    return {
+      framework: ".NET",
+      kind: "service",
+      install: `[ -x ${dn} ] || (curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0)`,
+      build: `${dn} publish -c Release -o out`,
+      start: `ASPNETCORE_URLS=http://0.0.0.0:$PORT exec ${dn} out/${csproj.replace(/\.csproj$/, "")}.dll`,
+      port: "8080",
+      publish: true,
+    };
+  }
+
+  if (has("requirements.txt") || has("pyproject.toml")) {
+    const req = ((await file(token, repo, "requirements.txt", ref)) ?? "") + ((await file(token, repo, "pyproject.toml", ref)) ?? "");
+    const pyInstall = has("requirements.txt") ? "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" : "python3 -m venv .venv && .venv/bin/pip install .";
+    const entry = has("main.py") ? "main" : has("app.py") ? "app" : "main";
+    if (/fastapi/i.test(req)) return { framework: "FastAPI", kind: "service", install: pyInstall, build: "", start: `.venv/bin/python -m uvicorn ${entry}:app --host 0.0.0.0 --port $PORT`, port: "8000", publish: true };
+    if (/django/i.test(req)) return { framework: "Django", kind: "website", install: pyInstall, build: "", start: ".venv/bin/python manage.py runserver 0.0.0.0:$PORT", port: "8000", publish: true };
+    if (/flask/i.test(req)) return { framework: "Flask", kind: "service", install: `${pyInstall} && .venv/bin/pip install gunicorn`, build: "", start: `.venv/bin/gunicorn -b 0.0.0.0:$PORT ${entry}:app`, port: "8000", publish: true };
+    if (/streamlit/i.test(req)) return { framework: "Streamlit", kind: "website", install: pyInstall, build: "", start: `.venv/bin/streamlit run ${entry}.py --server.port $PORT --server.address 0.0.0.0`, port: "8501", publish: true };
+    return { framework: "Python", kind: "worker", install: pyInstall, build: "", start: `.venv/bin/python ${entry}.py`, port: "", publish: false };
+  }
 
   if (has("package.json")) {
     let pkg: { dependencies?: Record<string, string>; devDependencies?: Record<string, string>; scripts?: Record<string, string> } = {};
@@ -227,18 +323,8 @@ export async function detectFramework(repo: string, ref: string): Promise<Detect
     return { framework: "Node.js", kind: "worker", install, build, start: "node index.js", port: "", publish: false };
   }
 
-  if (has("requirements.txt") || has("pyproject.toml")) {
-    const req = ((await file(token, repo, "requirements.txt", ref)) ?? "") + ((await file(token, repo, "pyproject.toml", ref)) ?? "");
-    const pyInstall = has("requirements.txt") ? "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" : "python3 -m venv .venv && .venv/bin/pip install .";
-    const entry = has("main.py") ? "main" : has("app.py") ? "app" : "main";
-    if (/fastapi/i.test(req)) return { framework: "FastAPI", kind: "service", install: pyInstall, build: "", start: `.venv/bin/python -m uvicorn ${entry}:app --host 0.0.0.0 --port $PORT`, port: "8000", publish: true };
-    if (/django/i.test(req)) return { framework: "Django", kind: "website", install: pyInstall, build: "", start: ".venv/bin/python manage.py runserver 0.0.0.0:$PORT", port: "8000", publish: true };
-    if (/flask/i.test(req)) return { framework: "Flask", kind: "service", install: `${pyInstall} && .venv/bin/pip install gunicorn`, build: "", start: `.venv/bin/gunicorn -b 0.0.0.0:$PORT ${entry}:app`, port: "8000", publish: true };
-    if (/streamlit/i.test(req)) return { framework: "Streamlit", kind: "website", install: pyInstall, build: "", start: `.venv/bin/streamlit run ${entry}.py --server.port $PORT --server.address 0.0.0.0`, port: "8501", publish: true };
-    return { framework: "Python", kind: "worker", install: pyInstall, build: "", start: `.venv/bin/python ${entry}.py`, port: "", publish: false };
-  }
-
-  if (has("go.mod")) return { framework: "Go", kind: "service", install: "", build: "go build -o app .", start: "./app", port: "8080", publish: true };
+  if (has("docker-compose.yml") || has("docker-compose.yaml") || has("compose.yml") || has("compose.yaml"))
+    return { framework: "Docker Compose", kind: "service", install: "", build: "docker compose build", start: "exec docker compose up", port: "8080", publish: true };
 
   if (has("Dockerfile")) {
     const df = (await file(token, repo, "Dockerfile", ref)) ?? "";

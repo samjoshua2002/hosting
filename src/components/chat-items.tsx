@@ -4,6 +4,7 @@ import { Check, ChevronRight, FileText, Loader2, ShieldAlert, X } from "lucide-r
 import { useState } from "react";
 import type { Item } from "@/lib/assistant-items";
 import { answer, decide } from "./assistant-store";
+import { ArtifactCard } from "./artifact-view";
 import { DiffView, TerminalBlock } from "./chat-blocks";
 import { FlowDiagram } from "./flow-diagram";
 import { Markdown, inline } from "./markdown";
@@ -27,7 +28,21 @@ export function splitSuggestions(text: string): { body: string; suggestions: str
 }
 
 /** A conversation: commands as terminals, other steps grouped, approvals and questions you can act on. */
-export function ChatItems({ sid, items, busy, mentions, compact }: { sid: string; items: Item[]; busy: boolean; mentions: Set<string>; compact?: boolean }) {
+export function ChatItems({
+  sid,
+  items,
+  busy,
+  mentions,
+  compact,
+  onOpenArtifact,
+}: {
+  sid: string;
+  items: Item[];
+  busy: boolean;
+  mentions: Set<string>;
+  compact?: boolean;
+  onOpenArtifact?: (id: string) => void;
+}) {
   const blocks: ({ kind: "steps"; steps: Extract<Item, { kind: "step" }>[]; key: string } | { kind: "one"; item: Item; key: string })[] = [];
   items.forEach((it, idx) => {
     const last = blocks[blocks.length - 1];
@@ -42,7 +57,16 @@ export function ChatItems({ sid, items, busy, mentions, compact }: { sid: string
         b.kind === "steps" ? (
           <StepGroup key={b.key} steps={b.steps} />
         ) : (
-          <Bubble key={b.key} item={b.item} busy={busy} onDecide={(id, ok) => decide(sid, id, ok)} onAnswer={(id, t) => answer(sid, id, t)} sessionId={sid} mentions={mentions} />
+          <Bubble
+            key={b.key}
+            item={b.item}
+            busy={busy}
+            onDecide={(id, ok) => decide(sid, id, ok)}
+            onAnswer={(id, t) => answer(sid, id, t)}
+            sessionId={sid}
+            mentions={mentions}
+            onOpenArtifact={onOpenArtifact}
+          />
         ),
       )}
     </div>
@@ -105,6 +129,7 @@ function Bubble({
   onAnswer,
   sessionId,
   mentions,
+  onOpenArtifact,
 }: {
   item: Item;
   busy: boolean;
@@ -112,6 +137,7 @@ function Bubble({
   onAnswer: (id: string, text: string) => void;
   sessionId: string;
   mentions: Set<string>;
+  onOpenArtifact?: (id: string) => void;
 }) {
   if (item.kind === "user")
     return (
@@ -140,6 +166,7 @@ function Bubble({
   }
   if (item.kind === "step" && item.shell) return <TerminalBlock shell={item.shell} output={item.output} running={item.running} ok={item.ok} />;
   if (item.kind === "diagram") return <FlowDiagram title={item.title} nodes={item.nodes} edges={item.edges} />;
+  if (item.kind === "artifact") return <ArtifactCard a={item} onOpen={() => onOpenArtifact?.(item.id)} />;
   if (item.kind === "question")
     return (
       <div className="rounded-2xl border border-white/[0.1] bg-panel p-5">

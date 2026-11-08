@@ -34,7 +34,11 @@ export type Item =
   | { kind: "step"; id: string; label: string; running: boolean; ok?: boolean; output?: string; shell?: Shell }
   | { kind: "approval"; id: string; label: string; detail: string; diff?: boolean; decision?: boolean }
   | { kind: "question"; id: string; question: string; options: string[]; answer?: string }
-  | { kind: "diagram"; id: string; title: string; nodes: DiagramNode[]; edges: DiagramEdge[] };
+  | { kind: "diagram"; id: string; title: string; nodes: DiagramNode[]; edges: DiagramEdge[] }
+  | { kind: "artifact"; id: string; title: string; type: ArtifactType; language?: string; content: string; version: number };
+
+/** Documents the Assistant makes (reports, scripts, pages, data), shown in a side panel like Claude's. */
+export type ArtifactType = "markdown" | "html" | "code" | "csv" | "json" | "svg" | "text";
 
 /** Events the operator streams. */
 export type OperatorEvent =
@@ -44,6 +48,7 @@ export type OperatorEvent =
   | { type: "approval"; id: string; label: string; detail: string; diff?: boolean }
   | { type: "question"; id: string; question: string; options: string[] }
   | { type: "diagram"; id: string; title: string; nodes: DiagramNode[]; edges: DiagramEdge[] }
+  | { type: "artifact"; id: string; title: string; artType: ArtifactType; language?: string; content: string }
   // transcript is the model-side history (ChatMessage[]), opaque to the UI
   | { type: "done"; transcript: unknown[]; waiting: boolean; paused: boolean };
 
@@ -61,6 +66,12 @@ export function applyEvent(items: Item[], e: OperatorEvent): Item[] {
       return [...items, { kind: "question", id: e.id, question: e.question, options: e.options }];
     case "diagram":
       return [...items, { kind: "diagram", id: e.id, title: e.title, nodes: e.nodes, edges: e.edges }];
+    case "artifact": {
+      // same id again = a new version of that artifact
+      const prev = items.filter((i): i is Extract<Item, { kind: "artifact" }> => i.kind === "artifact" && i.id === e.id);
+      const version = prev.length ? Math.max(...prev.map((p) => p.version)) + 1 : 1;
+      return [...items, { kind: "artifact", id: e.id, title: e.title, type: e.artType, language: e.language, content: e.content, version }];
+    }
     default:
       return items;
   }
@@ -69,4 +80,11 @@ export function applyEvent(items: Item[], e: OperatorEvent): Item[] {
 /** A step that never got its result (stopped, timed out) is no longer running. */
 export function settle(items: Item[]): Item[] {
   return items.map((i) => (i.kind === "step" && i.running ? { ...i, running: false } : i));
+}
+
+/** The newest version of each artifact in a conversation. */
+export function latestArtifacts(items: Item[]): Extract<Item, { kind: "artifact" }>[] {
+  const map = new Map<string, Extract<Item, { kind: "artifact" }>>();
+  for (const i of items) if (i.kind === "artifact") map.set(i.id, i);
+  return [...map.values()];
 }

@@ -63,6 +63,20 @@ export const PRESETS: { label: string; hint: string; values: Partial<FormState> 
     },
   },
   {
+    label: "Java / Spring Boot",
+    hint: "Maven project, runs the built jar",
+    values: {
+      type: "service",
+      install: "command -v mvn >/dev/null || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq default-jdk-headless maven)",
+      build: "mvn -q -B -DskipTests package",
+      start: "exec java -jar \"$(ls target/*.jar | grep -v -e '-sources' -e 'original-' | head -n 1)\" --server.port=$PORT",
+      port: "8080",
+      publish: true,
+      access: "public",
+      env: "",
+    },
+  },
+  {
     label: "AI agent / worker",
     hint: "Background Python process, no web port",
     values: { type: "worker", install: "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt", build: "", start: ".venv/bin/python main.py", port: "", publish: false, access: "private", env: "" },

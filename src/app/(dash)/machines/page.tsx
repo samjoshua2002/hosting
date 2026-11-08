@@ -1,13 +1,31 @@
 "use client";
 
-import { AlertTriangle, Server, ShieldCheck, ShieldAlert } from "lucide-react";
+import { AlertTriangle, Check, Plus, Server, ShieldCheck, ShieldAlert, Trash2 } from "lucide-react";
+import { useState } from "react";
 import { useCluster } from "@/components/cluster";
+import { Drawer } from "@/components/drawer";
 import { PageHero } from "@/components/page-hero";
-import { Badge, Button, Card, SectionTitle, StatusDot } from "@/components/ui";
+import { Badge, Button, Card, Field, SectionTitle, StatusDot, cx, inputCls } from "@/components/ui";
+import { api } from "@/lib/client";
 import { fmtDuration, timeAgo, vmState } from "@/lib/format";
 
 export default function VmsPage() {
-  const { vms, status, checking, refresh, configErrors, agentVersion, hostKeyPinned } = useCluster();
+  const { vms, status, checking, refresh, reloadVms, configErrors, agentVersion, hostKeyPinned } = useCluster();
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+
+  const remove = async (name: string) => {
+    if (!confirm(`Remove ${name} from the dashboard? Projects on it keep running there but are no longer managed.`)) return;
+    setRemoving(name);
+    try {
+      await api("/api/machines", { remove: name });
+      await reloadVms();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setRemoving(null);
+    }
+  };
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-6 px-10 py-8">
@@ -15,7 +33,12 @@ export default function VmsPage() {
         eyebrow="Fleet"
         title="Machines"
         icon={<Server className="size-6" />}
-        desc={<>Every machine listed in the <code className="text-white">VMS</code> environment variable. Add as many as you like; tokens never reach the browser.</>}
+        desc="Every machine the dashboard manages. Add one by pasting its SSH command: it's checked, set up like the others, and shows up everywhere. Tokens never reach the browser."
+        actions={
+          <Button variant="primary" onClick={() => setAdding(true)}>
+            <Plus className="size-4" /> Add machine
+          </Button>
+        }
       />
 
       {configErrors.length > 0 && (
@@ -55,6 +78,7 @@ export default function VmsPage() {
                       <StatusDot state={vmState(s, Boolean(checking[v.name]))} />
                       <span className="font-mono font-semibold text-zinc-200">{v.name}</span>
                       <Badge>{v.kind}</Badge>
+                      {v.added && <Badge tone="blue">added here</Badge>}
                     </div>
                   </td>
                   <td className="px-4 py-3 font-mono text-zinc-400">
@@ -81,9 +105,16 @@ export default function VmsPage() {
                     {s?.ok && <div className="text-zinc-600">{s.ms} ms</div>}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <Button size="sm" onClick={() => refresh([v.name])} loading={checking[v.name]}>
-                      Check
-                    </Button>
+                    <div className="flex justify-end gap-1">
+                      <Button size="sm" onClick={() => refresh([v.name])} loading={checking[v.name]}>
+                        Check
+                      </Button>
+                      {v.added && (
+                        <Button size="sm" variant="ghost" onClick={() => void remove(v.name)} loading={removing === v.name} className="hover:text-[var(--critical-text)]" title="Remove from the dashboard">
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
@@ -94,24 +125,19 @@ export default function VmsPage() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card className="p-5">
-          <SectionTitle>Add a VM</SectionTitle>
+          <SectionTitle>Add a machine</SectionTitle>
           <ol className="list-decimal space-y-2 pl-4 text-sm text-zinc-400">
             <li>
               Create the machine in InstaBox, then <b className="text-zinc-300">Details → SSH → Create token</b>.
             </li>
             <li>
-              Add it to the <code className="text-zinc-300">VMS</code> variable in Vercel (Settings → Environment Variables), comma-separated:
-              <pre className="mt-2 overflow-x-auto rounded-md bg-black/50 p-3 font-mono text-[11px] text-zinc-300">
-                {"box1=ibssh_aaaa,box2=ibssh_bbbb,box6=ibssh_new"}
-              </pre>
-              Locally: add the token to <code className="text-zinc-300">tokens.txt</code> and run{" "}
-              <code className="text-zinc-300">npm run env:sync</code>.
+              Click <b className="text-zinc-300">Add machine</b> and paste the SSH command (or tell the Assistant &quot;add this machine: …&quot;).
             </li>
-            <li>Redeploy on Vercel (env changes apply on the next deployment). The agent installs itself on first contact.</li>
+            <li>It&apos;s checked, gets the agent, tunnels to your databases and the keep-alive task, and appears on Overview, Pipeline and here. New deploys can be placed on it right away.</li>
           </ol>
           <p className="mt-4 text-xs text-zinc-500">
-            Non-InstaBox servers work too: <code className="text-zinc-300">web=deploy@203.0.113.7:22</code> plus an{" "}
-            <code className="text-zinc-300">SSH_PRIVATE_KEY</code> variable.
+            Any Linux server works too: paste <code className="text-zinc-300">user@host:22</code> (it logs in with the dashboard&apos;s SSH key). Machines in the{" "}
+            <code className="text-zinc-300">VMS</code> env var keep working as before.
           </p>
         </Card>
         <Card className="p-5">
@@ -139,6 +165,79 @@ export default function VmsPage() {
           </ul>
         </Card>
       </div>
+      {adding && <AddMachine onClose={() => setAdding(false)} onAdded={() => void reloadVms()} />}
     </div>
+  );
+}
+
+function AddMachine({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+  const [ssh, setSsh] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<{ name: string; summary: string[] } | null>(null);
+
+  const add = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api<{ name: string; summary: string[] }>("/api/machines", { ssh, name: name || undefined });
+      setDone(r);
+      setSsh("");
+      onAdded();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Drawer title="Add a machine" subtitle="Checked, set up like the others, and managed from here on." onClose={onClose}>
+      {done ? (
+        <div className="space-y-4">
+          <p className="flex items-center gap-2 text-lg font-semibold text-white">
+            <Check className="size-5 text-accent-soft" /> {done.name} is ready
+          </p>
+          <ul className="space-y-1.5 text-sm text-ink">
+            {done.summary.map((l) => (
+              <li key={l}>• {l}</li>
+            ))}
+          </ul>
+          <div className="flex justify-end gap-2">
+            <Button onClick={() => setDone(null)}>Add another</Button>
+            <Button variant="primary" onClick={onClose}>
+              Done
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <Field label="SSH command, token or user@host" hint="From InstaBox: Details → SSH → copy the command. The token is encrypted and kept on your storage machine.">
+            <textarea
+              value={ssh}
+              onChange={(e) => setSsh(e.target.value)}
+              rows={3}
+              spellCheck={false}
+              autoComplete="off"
+              placeholder="ssh -p 2222 ibssh_…@ssh.instabox.sh"
+              className={cx(inputCls, "font-mono text-xs")}
+            />
+          </Field>
+          <Field label="Name (optional)" hint="Defaults to the next free boxN.">
+            <input value={name} onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} placeholder="box6" className={inputCls} />
+          </Field>
+          {error && <p className="text-sm text-[var(--critical-text)]">{error}</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={add} loading={busy} disabled={ssh.trim().length < 8}>
+              {busy ? "Connecting and setting up…" : "Add machine"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Drawer>
   );
 }

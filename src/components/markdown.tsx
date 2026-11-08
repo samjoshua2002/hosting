@@ -33,9 +33,43 @@ export function Markdown({ text }: { text: string }) {
           </pre>
         </div>,
       );
-    } else if (/^#{1,4}\s/.test(line)) {
+    } else if (/^\s*\|/.test(line) && /^\s*\|?\s*:?-{2,}/.test(lines[i + 1] ?? "")) {
+      // a table: header | separator | rows
+      const cells = (l: string) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+      const head = cells(line);
+      const rows: string[][] = [];
+      for (i += 2; i < lines.length && /^\s*\|/.test(lines[i]); i++) rows.push(cells(lines[i]));
+      i--;
       blocks.push(
-        <p key={i} className="mt-3 mb-1 font-semibold text-white">
+        <div key={i} className="scroll-thin my-3 overflow-x-auto rounded-xl border border-white/[0.08]">
+          <table className="w-full text-left text-[13px]">
+            <thead className="bg-white/[0.04]">
+              <tr>
+                {head.map((h, k) => (
+                  <th key={k} className="px-3 py-2 font-semibold text-white">
+                    {inline(h)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/[0.05]">
+              {rows.map((r, k) => (
+                <tr key={k}>
+                  {r.map((c, j) => (
+                    <td key={j} className="px-3 py-1.5 text-zinc-200">
+                      {inline(c)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+    } else if (/^#{1,4}\s/.test(line)) {
+      const level = line.match(/^#+/)![0].length;
+      blocks.push(
+        <p key={i} className={level === 1 ? "mt-4 mb-2 text-xl font-bold text-white" : level === 2 ? "mt-4 mb-1.5 text-base font-semibold text-white" : "mt-3 mb-1 font-semibold text-white"}>
           {inline(line.replace(/^#+\s/, ""))}
         </p>,
       );

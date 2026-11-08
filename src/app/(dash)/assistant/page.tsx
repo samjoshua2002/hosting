@@ -1,15 +1,16 @@
 "use client";
 
-import { ArrowUpRight, FileText, Link2, Loader2, MessageSquarePlus, Paperclip, Search, Server, Sparkles, Trash2 } from "lucide-react";
+import { ArrowUpRight, Brain, FileText, Layers, Link2, Loader2, MessageSquarePlus, Paperclip, Search, Server, Sparkles, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { addFiles, currentDoc, hydrate, newSession, openSession, removeSession, send, setReview, setTitle, stop, updateItems, useAssistant } from "@/components/assistant-store";
+import { ArtifactView } from "@/components/artifact-view";
 import { ChatItems } from "@/components/chat-items";
 import { CopyButton } from "@/components/chat-blocks";
 import { useCluster } from "@/components/cluster";
 import { Composer, contextFor, entitiesFrom } from "@/components/composer";
 import { UnsplashLayer, useTheme } from "@/components/theme";
 import { Button, cx } from "@/components/ui";
-import type { Att, Item } from "@/lib/assistant-items";
+import { latestArtifacts, type Att, type Item } from "@/lib/assistant-items";
 import { api } from "@/lib/client";
 import { timeAgo } from "@/lib/format";
 
@@ -38,7 +39,7 @@ function splitSuggestions(text: string): { body: string; suggestions: string[] }
 }
 
 export default function AssistantPage() {
-  const { vms, status, refresh } = useCluster();
+  const { vms, status, refresh, reloadVms } = useCluster();
   const { photo } = useTheme();
   const st = useAssistant();
   const doc = currentDoc(st);
@@ -50,10 +51,17 @@ export default function AssistantPage() {
   const [uploading, setUploading] = useState(false);
   const [configured, setConfigured] = useState(true);
   const [note, setNote] = useState<string | null>(null);
+  const [art, setArt] = useState<string | null>(null);
+  const [memory, setMemory] = useState<{ id: string; text: string }[] | null>(null);
+  const loadMemory = () =>
+    api<{ memory: { id: string; text: string }[] }>("/api/memory")
+      .then((r) => setMemory(r.memory))
+      .catch(() => setMemory([]));
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     hydrate();
+    void loadMemory();
     fetch("/api/ai/models", { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => setConfigured(Boolean(d.configured)))
@@ -68,14 +76,33 @@ export default function AssistantPage() {
   const [wasBusy, setWasBusy] = useState(false);
   if (wasBusy !== busy) {
     setWasBusy(busy);
-    if (!busy) void refresh();
+    if (!busy) {
+      void refresh();
+      void loadMemory();
+    }
   }
 
   const entities = useMemo(() => entitiesFrom(vms, status), [vms, status]);
   const mentionNames = useMemo(() => new Set(entities.map((e) => e.name)), [entities]);
 
-  const submit = (text: string) => {
-    if ((!text && !staged.length) || busy) return;
+  const submit = async (raw: string) => {
+    if ((!raw && !staged.length) || busy) return;
+    // machine tokens never go to the AI: the dashboard adds the machine itself
+    let text = raw;
+    const token = raw.match(/(?:ssh\s+(?:-p\s*\d+\s+)?)?ibssh_[A-Za-z0-9]+(?:@[\w.-]+)?(?:\s+-p\s*\d+)?/);
+    if (token) {
+      setNote("Adding the machine…");
+      try {
+        // the server picks the token and an optional "name box6" / "call it box6" out of the message
+        const r = await api<{ name: string; summary: string[] }>("/api/machines", { ssh: raw });
+        text = raw.replace(token[0], `[machine added as ${r.name}: ${r.summary.join("; ")}]`);
+        setNote(null);
+        void reloadVms();
+      } catch (e) {
+        setNote(`Couldn't add the machine: ${(e as Error).message}`);
+        return;
+      }
+    }
     if (!items.length) setTitle(sid, (text || staged[0]?.name || "New session").slice(0, 70));
     const withFiles = staged.length ? `${text}\n\n${staged.map((f) => `[Attached: ${f.name} (id ${f.id}, ${fmtSize(f.size)})]`).join("\n")}` : text;
     updateItems(sid, (x) => [
@@ -122,6 +149,8 @@ export default function AssistantPage() {
   for (const i of items) if (i.kind === "step") for (const v of vms) if (new RegExp(`\\b${v.name}\\b`).test(i.label + (i.shell?.vms.join(" ") ?? ""))) machineSet.add(v.name);
   const machines = [...machineSet];
   const stepCount = items.filter((i) => i.kind === "step").length;
+  const artifacts = latestArtifacts(items);
+  const artVersions = items.filter((i): i is Extract<Item, { kind: "artifact" }> => i.kind === "artifact" && i.id === art);
   const shown = (st.list ?? []).filter((s) => s.title.toLowerCase().includes(query.toLowerCase()));
 
   const pendingQuestion = items.some((i) => i.kind === "question" && i.answer === undefined);
@@ -187,7 +216,7 @@ export default function AssistantPage() {
                 </p>
                 <div className="mt-8 grid grid-cols-2 gap-2">
                   {STARTERS.map((s) => (
-                    <button key={s} onClick={() => submit(s)} className="rounded-xl border border-white/[0.08] bg-panel px-4 py-3 text-left text-sm text-zinc-200 hover:border-accent/60">
+                    <button key={s} onClick={() => void submit(s)} className="rounded-xl border border-white/[0.08] bg-panel px-4 py-3 text-left text-sm text-zinc-200 hover:border-accent/60">
                       {s}
                     </button>
                   ))}
@@ -195,7 +224,7 @@ export default function AssistantPage() {
               </div>
             )}
 
-            <ChatItems sid={sid} items={items} busy={busy} mentions={mentionNames} />
+            <ChatItems sid={sid} items={items} busy={busy} mentions={mentionNames} onOpenArtifact={setArt} />
 
             {busy && (
               <p className="flex items-center gap-2 text-sm text-muted">
@@ -213,7 +242,7 @@ export default function AssistantPage() {
             {suggestions.length > 0 && (
               <div className="flex flex-wrap gap-2 pt-1">
                 {suggestions.map((s) => (
-                  <button key={s} onClick={() => submit(s)} className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-ink hover:border-accent/60">
+                  <button key={s} onClick={() => void submit(s)} className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-ink hover:border-accent/60">
                     {s}
                   </button>
                 ))}
@@ -232,7 +261,7 @@ export default function AssistantPage() {
             staged={staged}
             review={st.review}
             placeholder={pendingQuestion ? "Type your own answer…" : pendingApproval ? "Approve or decline above, or type to change course…" : "Tell it what to do…  / for commands, @ to tag"}
-            onSend={submit}
+            onSend={(t) => void submit(t)}
             onStop={() => void stop(sid)}
             onAttach={(f) => void upload(f)}
             onUnstage={(id) => setStaged((s) => s.filter((x) => x.id !== id))}
@@ -243,7 +272,11 @@ export default function AssistantPage() {
         </div>
       </main>
 
-      {/* context */}
+      {art && artVersions.length > 0 ? (
+        <aside className="w-[min(760px,48%)] shrink-0 border-l border-white/[0.06] bg-panel/60">
+          <ArtifactView key={`${art}-${artVersions.length}`} versions={artVersions} onClose={() => setArt(null)} />
+        </aside>
+      ) : (
       <aside className="scroll-thin w-80 shrink-0 space-y-6 overflow-y-auto border-l border-white/[0.06] p-5">
         <UnsplashLayer photo={photo} className="rounded-2xl ring-1 ring-white/10">
           <div className="px-4 pt-10 pb-4">
@@ -254,6 +287,18 @@ export default function AssistantPage() {
             </p>
           </div>
         </UnsplashLayer>
+
+        {artifacts.length > 0 && (
+          <Section title="Artifacts" icon={<Layers className="size-3.5" />}>
+            {artifacts.map((x) => (
+              <button key={x.id} onClick={() => setArt(x.id)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-ink hover:bg-white/5">
+                <FileText className="size-3.5 shrink-0 text-muted" />
+                <span className="flex-1 truncate">{x.title}</span>
+                {x.version > 1 && <span className="text-muted">v{x.version}</span>}
+              </button>
+            ))}
+          </Section>
+        )}
 
         <Section title="Links" icon={<Link2 className="size-3.5" />}>
           {links.length === 0 ? (
@@ -285,7 +330,7 @@ export default function AssistantPage() {
 
         <Section title="Suggestions" icon={<Sparkles className="size-3.5" />}>
           {(suggestions.length ? suggestions : items.length ? [] : STARTERS.slice(0, 2)).map((s) => (
-            <button key={s} onClick={() => submit(s)} disabled={busy} className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-ink hover:bg-white/5 disabled:opacity-40">
+            <button key={s} onClick={() => void submit(s)} disabled={busy} className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-ink hover:bg-white/5 disabled:opacity-40">
               {s}
             </button>
           ))}
@@ -305,7 +350,29 @@ export default function AssistantPage() {
             </div>
           )}
         </Section>
+
+        <Section title="Memory" icon={<Brain className="size-3.5" />}>
+          {memory === null ? (
+            <p className="text-xs text-muted">Loading…</p>
+          ) : memory.length === 0 ? (
+            <p className="text-xs text-muted">Tell it a preference (&quot;deploy Java apps on box3&quot;) and it remembers it in every session.</p>
+          ) : (
+            memory.map((m) => (
+              <div key={m.id} className="group flex items-start gap-1.5 rounded-md px-2 py-1 text-xs text-ink hover:bg-white/5">
+                <span className="flex-1">{m.text}</span>
+                <button
+                  onClick={() => void api<{ memory: { id: string; text: string }[] }>("/api/memory", { remove: m.id }).then((r) => setMemory(r.memory))}
+                  className="hidden text-muted hover:text-[var(--critical-text)] group-hover:block"
+                  aria-label="Forget"
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            ))
+          )}
+        </Section>
       </aside>
+      )}
     </div>
   );
 }

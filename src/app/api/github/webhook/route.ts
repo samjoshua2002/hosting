@@ -2,6 +2,7 @@ import { after } from "next/server";
 import { listManifests, startDeploy } from "@/lib/agent";
 import { getVms } from "@/lib/config";
 import { verifyWebhook } from "@/lib/github";
+import { refreshMachines } from "@/lib/machines";
 import { mapLimit, withVm } from "@/lib/ssh";
 
 export const maxDuration = 120;
@@ -40,6 +41,7 @@ export async function POST(req: Request): Promise<Response> {
   const msg = (p.head_commit?.message ?? "").split("\n")[0].slice(0, 60);
 
   after(async () => {
+    await refreshMachines();
     const results = await mapLimit(getVms(), 8, async (vm) => {
       try {
         return await withVm(vm, async (conn) => {

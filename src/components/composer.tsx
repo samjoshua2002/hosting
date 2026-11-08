@@ -59,7 +59,11 @@ export function entitiesFrom(vms: VmInfo[], status: Record<string, VmStatus | un
 
 /** What the Assistant should know about every @name in the message. */
 export function contextFor(text: string, vms: VmInfo[], status: Record<string, VmStatus | undefined>): string {
-  const names = [...new Set([...text.matchAll(/(?<![\w.@])@([a-z0-9][a-z0-9-]*)/g)].map((m) => m[1]))];
+  // @tags, plus plain mentions of any project or machine name ("is watch down?")
+  const known = new Set([...vms.map((v) => v.name), ...vms.flatMap((v) => (status[v.name]?.agent?.projects ?? []).map((p) => p.manifest.name))]);
+  const lower = text.toLowerCase();
+  const bare = [...known].filter((n) => n.length >= 3 && new RegExp(`(^|[^a-z0-9-])${n.replace(/[-]/g, "\\-")}($|[^a-z0-9-])`).test(lower));
+  const names = [...new Set([...[...text.matchAll(/(?<![\w.@])@([a-z0-9][a-z0-9-]*)/g)].map((m) => m[1]), ...bare])];
   const lines: string[] = [];
   for (const n of names) {
     const vm = vms.find((v) => v.name === n);
@@ -320,21 +324,21 @@ export function Composer({
           >
             /
           </button>
-          <div className="ml-1 flex rounded-lg border border-white/[0.08] p-0.5 text-[11.5px]">
+          <div className="ml-1 flex shrink-0 rounded-lg border border-white/[0.08] p-0.5 text-[11.5px]">
             {(["auto", "manual"] as const).map((r) => (
               <button
                 key={r}
                 type="button"
                 onClick={() => onReview(r)}
-                className={cx("rounded-md px-2 py-0.5", review === r ? "bg-white/[0.1] text-white" : "text-muted hover:text-white")}
+                className={cx("rounded-md px-2 py-0.5 whitespace-nowrap", review === r ? "bg-white/[0.1] text-white" : "text-muted hover:text-white")}
                 title={r === "auto" ? "Acts on its own; only destructive steps wait for you" : "Every action waits for your approval (commits show the diff)"}
               >
-                {r === "auto" ? "Auto" : "Review each step"}
+                {r === "auto" ? "Auto" : "Review"}
               </button>
             ))}
           </div>
           <span className="flex-1" />
-          <span className="mr-2 hidden text-[11px] text-muted xl:inline">/ commands · @ to tag</span>
+          <span className="mr-2 hidden text-[11px] whitespace-nowrap text-muted 2xl:inline">/ commands · @ to tag</span>
           {busy ? (
             <Button type="button" variant="danger" size="sm" onClick={onStop}>
               <Square className="size-3.5" /> Stop

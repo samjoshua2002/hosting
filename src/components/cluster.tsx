@@ -35,6 +35,8 @@ interface ClusterCtx {
   history: Record<string, Sample[]>;
   checking: Record<string, boolean>;
   refresh: (names?: string[]) => Promise<void>;
+  /** fetch the machine list again (after adding or removing one) */
+  reloadVms: () => Promise<void>;
   auto: boolean;
   setAuto: (v: boolean) => void;
   inflight: Record<string, Inflight | undefined>;
@@ -148,24 +150,27 @@ export function ClusterProvider({ children }: { children: ReactNode }) {
     await Promise.all(Array.from({ length: Math.min(PARALLEL, targets.length) }, worker));
   }, [log, queueAlert]);
 
-  // Load the VM list once, then probe everything.
-  useEffect(() => {
-    api<{ vms: VmInfo[]; errors: string[]; agentVersion: string; hostKeyPinned: boolean }>("/api/vms")
-      .then((d) => {
-        vmsRef.current = d.vms;
-        setVms(d.vms);
-        setConfigErrors(d.errors);
-        setAgentVersion(d.agentVersion);
-        setHostKeyPinned(d.hostKeyPinned);
-        setLoaded(true);
-        log(null, "info", `control plane connected, ${d.vms.length} VM${d.vms.length === 1 ? "" : "s"} configured`);
-        void refresh();
-      })
-      .catch((e) => {
-        setConfigErrors([(e as Error).message]);
-        setLoaded(true);
-      });
+  // Load the VM list (again after a machine is added or removed), then probe everything.
+  const reloadVms = useCallback(async () => {
+    try {
+      const d = await api<{ vms: VmInfo[]; errors: string[]; agentVersion: string; hostKeyPinned: boolean }>("/api/vms");
+      const isNew = d.vms.filter((v) => !vmsRef.current.some((o) => o.name === v.name)).map((v) => v.name);
+      vmsRef.current = d.vms;
+      setVms(d.vms);
+      setConfigErrors(d.errors);
+      setAgentVersion(d.agentVersion);
+      setHostKeyPinned(d.hostKeyPinned);
+      setLoaded(true);
+      log(null, "info", `control plane connected, ${d.vms.length} VM${d.vms.length === 1 ? "" : "s"} configured`);
+      void refresh(isNew.length && isNew.length < d.vms.length ? isNew : undefined);
+    } catch (e) {
+      setConfigErrors([(e as Error).message]);
+      setLoaded(true);
+    }
   }, [log, refresh]);
+  useEffect(() => {
+    queueMicrotask(() => void reloadVms());
+  }, [reloadVms]);
 
   // Auto refresh while the tab is visible.
   useEffect(() => {
@@ -232,9 +237,10 @@ export function ClusterProvider({ children }: { children: ReactNode }) {
       startJobs,
       events,
       log,
+      reloadVms,
       openJob: setJob,
     }),
-    [vms, configErrors, agentVersion, hostKeyPinned, loaded, status, history, checking, refresh, auto, setAuto, inflight, results, exec, startJobs, events, log],
+    [vms, configErrors, agentVersion, hostKeyPinned, loaded, status, history, checking, refresh, reloadVms, auto, setAuto, inflight, results, exec, startJobs, events, log],
   );
 
   return (
