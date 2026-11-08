@@ -247,7 +247,9 @@ export async function detectFramework(repo: string, ref: string): Promise<Detect
 
   if (has("composer.json") || has("index.php") || has("artisan")) {
     const laravel = has("artisan");
-    const php = "command -v php >/dev/null || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq php-cli php-mbstring php-xml php-curl php-zip php-sqlite3 unzip)";
+    // php plus the MySQL/Postgres drivers (mysqli, pdo_mysql, pdo_pgsql), installed once
+    const php =
+      "php -m 2>/dev/null | grep -qi '^mysqli$' || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq php-cli php-mysql php-pgsql php-sqlite3 php-mbstring php-xml php-curl php-zip php-gd php-intl unzip)";
     const composer = has("composer.json")
       ? ' && (command -v composer >/dev/null || (mkdir -p "$HOME/.local/bin" && curl -sS https://getcomposer.org/installer | php -- --install-dir="$HOME/.local/bin" --filename=composer)) && PATH="$HOME/.local/bin:$PATH" composer install --no-dev --no-interaction'
       : "";

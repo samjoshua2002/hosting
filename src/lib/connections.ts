@@ -67,19 +67,26 @@ function defaultEnv(target: ProjectManifest, engine: Engine | null): string {
   return `${target.name.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_URL`;
 }
 
-/** Change one env key (value null removes it) and the manifest's links, on one machine. */
-async function editApp(vm: VmConfig, app: string, key: string, value: string | null, uses: ProjectManifest["uses"]): Promise<void> {
+/** Set or remove env keys (null removes) and save the manifest's links, on one machine; then restart. */
+async function editApp(vm: VmConfig, app: string, changes: Record<string, string | null>, uses: ProjectManifest["uses"]): Promise<void> {
   await withVm(vm, async (c) => {
     await ensureAgent(c);
-    const line = value === null ? "" : `${key}=${shq(value)}\n`;
-    const r1 = await run(c, `umask 077; f=${P}/${app}.env; touch "$f"; { grep -v '^${key}=' "$f"; cat; } > "$f.tmp" && mv -f "$f.tmp" "$f"`, { stdin: line, timeoutMs: 15_000 });
+    const keys = Object.keys(changes);
+    const drop = keys.map((k) => `-e '^${k}='`).join(" ");
+    const lines = Object.entries(changes)
+      .filter(([, v]) => v !== null)
+      .map(([k, v]) => `${k}=${shq(v!)}\n`)
+      .join("");
+    const r1 = await run(c, `umask 077; f=${P}/${app}.env; touch "$f"; { grep -v ${drop} "$f"; cat; } > "$f.tmp" && mv -f "$f.tmp" "$f"`, { stdin: lines, timeoutMs: 15_000 });
     if (r1.code !== 0) throw new Error(`could not update ${app}'s env on ${vm.name}`);
     const cur = await run(c, `cat ${P}/${app}.json`, { timeoutMs: 15_000 });
     const m = JSON.parse(cur.stdout) as ProjectManifest;
-    const keys = new Set(m.envKeys);
-    if (value === null) keys.delete(key);
-    else keys.add(key);
-    const next: ProjectManifest = { ...m, uses: uses?.length ? uses : undefined, envKeys: [...keys], updatedAt: new Date().toISOString() };
+    const envKeys = new Set(m.envKeys);
+    for (const [k, v] of Object.entries(changes)) {
+      if (v === null) envKeys.delete(k);
+      else envKeys.add(k);
+    }
+    const next: ProjectManifest = { ...m, uses: uses?.length ? uses : undefined, envKeys: [...envKeys], updatedAt: new Date().toISOString() };
     const b64 = Buffer.from(JSON.stringify(next)).toString("base64");
     const r2 = await run(c, `umask 077; echo ${b64} | base64 -d > ${P}/${app}.json.tmp && mv -f ${P}/${app}.json.tmp ${P}/${app}.json`, { timeoutMs: 15_000 });
     if (r2.code !== 0) throw new Error(`could not save ${app} on ${vm.name}`);
@@ -100,17 +107,30 @@ export async function connectProjects(from: string, to: string, envName?: string
 
   // what the app should connect to, per app machine
   let value: (vm: VmConfig) => Promise<string>;
+  // the separate settings PHP/Laravel, Rails, Django and friends read (only for the first SQL database)
+  let parts: Record<string, string> = {};
   if (engine) {
     if (!target.m.port) throw new Error(`${to} has no port`);
     const env = await readEnv(target.vm, to);
     const port = target.m.port;
     const url = {
       postgres: () => `postgresql://${enc(env.POSTGRES_USER || "postgres")}:${enc(env.POSTGRES_PASSWORD ?? "")}@127.0.0.1:${port}/${enc(env.POSTGRES_DB || env.POSTGRES_USER || "postgres")}`,
-      mysql: () => `mysql://root:${enc(env.MYSQL_ROOT_PASSWORD ?? "")}@127.0.0.1:${port}/${enc(env.MYSQL_DATABASE || "mysql")}`,
+      mysql: () => `mysql://root:${enc(env.MYSQL_ROOT_PASSWORD ?? "")}@127.0.0.1:${port}/${enc(env.MYSQL_DATABASE || "app")}`,
       mongo: () => `mongodb://${enc(env.MONGO_INITDB_ROOT_USERNAME || "admin")}:${enc(env.MONGO_INITDB_ROOT_PASSWORD ?? "")}@127.0.0.1:${port}/?authSource=admin`,
       redis: () => (env.REDIS_PASSWORD ? `redis://:${enc(env.REDIS_PASSWORD)}@127.0.0.1:${port}` : `redis://127.0.0.1:${port}`),
     }[engine]();
     value = async () => url;
+    const sqlTaken = (apps[0].m.uses ?? []).some((u) => u.name !== to && u.keys?.includes("DB_HOST"));
+    if ((engine === "mysql" || engine === "postgres") && !sqlTaken)
+      parts = {
+        DB_CONNECTION: engine === "mysql" ? "mysql" : "pgsql",
+        DB_HOST: "127.0.0.1",
+        DB_PORT: String(port),
+        DB_DATABASE: engine === "mysql" ? env.MYSQL_DATABASE || "app" : env.POSTGRES_DB || env.POSTGRES_USER || "postgres",
+        DB_USERNAME: engine === "mysql" ? "root" : env.POSTGRES_USER || "postgres",
+        DB_PASSWORD: engine === "mysql" ? (env.MYSQL_ROOT_PASSWORD ?? "") : (env.POSTGRES_PASSWORD ?? ""),
+      };
+    if (engine === "redis") parts = { REDIS_HOST: "127.0.0.1", REDIS_PORT: String(port), REDIS_PASSWORD: env.REDIS_PASSWORD ?? "" };
     // other machines reach the database through a tunnel on the same port
     for (const a of apps) {
       if (a.vm.name === target.vm.name) continue;
@@ -127,9 +147,26 @@ export async function connectProjects(from: string, to: string, envName?: string
     };
   }
 
-  const uses = [...(apps[0].m.uses ?? []).filter((u) => u.name !== to), { name: to, env: key }];
-  await mapLimit(apps, 8, async (a) => editApp(a.vm, from, key, await value(a.vm), uses));
-  return `Connected ${from} → ${to}: ${key} is set on ${apps.map((a) => a.vm.name).join(", ")} and ${from} restarted.${notes.length ? ` (${notes.join("; ")})` : ""}`;
+  // MySQL starts without an app database: create it so DB_DATABASE works straight away
+  if (engine === "mysql") {
+    const db = parts.DB_DATABASE ?? "app";
+    const container = (target.m.start.match(/--name\s+(\S+)/)?.[1] ?? "").replace(/\$PORT|\$\{PORT\}/g, String(target.m.port));
+    if (/^[A-Za-z0-9_]{1,64}$/.test(db) && /^[A-Za-z0-9_.-]+$/.test(container)) {
+      const r = await withVm(target.vm, (c) =>
+        run(
+          c,
+          `set -a; . ${P}/${to}.env; set +a; export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"; docker exec -i -e MYSQL_PWD ${container} mysql -uroot -e 'CREATE DATABASE IF NOT EXISTS \`${db}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'`,
+          { timeoutMs: 30_000 },
+        ),
+      );
+      notes.push(r.code === 0 ? `database "${db}" ready` : `couldn't create database "${db}": ${r.stderr.trim().slice(0, 120)}`);
+    }
+  }
+
+  const keys = [key, ...Object.keys(parts)];
+  const uses = [...(apps[0].m.uses ?? []).filter((u) => u.name !== to), { name: to, env: key, keys }];
+  await mapLimit(apps, 8, async (a) => editApp(a.vm, from, { [key]: await value(a.vm), ...parts }, uses));
+  return `Connected ${from} → ${to}: set ${keys.join(", ")} on ${apps.map((a) => a.vm.name).join(", ")} and restarted ${from}.${notes.length ? ` (${notes.join("; ")})` : ""}`;
 }
 
 export async function disconnectProjects(from: string, to: string): Promise<string> {
@@ -138,6 +175,7 @@ export async function disconnectProjects(from: string, to: string): Promise<stri
   const link = apps[0].m.uses?.find((u) => u.name === to);
   if (!link) throw new Error(`${from} isn't connected to ${to}`);
   const uses = (apps[0].m.uses ?? []).filter((u) => u.name !== to);
-  await mapLimit(apps, 8, async (a) => editApp(a.vm, from, link.env, null, uses));
-  return `Disconnected ${from} from ${to}: removed ${link.env} and restarted ${from}.`;
+  const keys = link.keys?.length ? link.keys : [link.env];
+  await mapLimit(apps, 8, async (a) => editApp(a.vm, from, Object.fromEntries(keys.map((k) => [k, null])), uses));
+  return `Disconnected ${from} from ${to}: removed ${keys.join(", ")} and restarted ${from}.`;
 }

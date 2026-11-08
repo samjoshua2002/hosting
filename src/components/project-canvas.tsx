@@ -406,6 +406,12 @@ function Inner() {
                 </code>{" "}
                 on {pending.from}, built from {pending.to}&apos;s stored credentials
               </li>
+              {projects.get(pending.to)?.type === "database" && /mysql|postgres/.test(projects.get(pending.to)?.m.start ?? "") && (
+                <li>
+                  • Also sets <code className="text-white">DB_HOST</code>, <code className="text-white">DB_PORT</code>, <code className="text-white">DB_DATABASE</code>,{" "}
+                  <code className="text-white">DB_USERNAME</code>, <code className="text-white">DB_PASSWORD</code> for PHP/Laravel and others
+                </li>
+              )}
               <li>• Opens a private tunnel if they run on different machines</li>
               <li>• Restarts {pending.from} so it picks the setting up</li>
             </ul>

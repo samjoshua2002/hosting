@@ -63,6 +63,21 @@ export const PRESETS: { label: string; hint: string; values: Partial<FormState> 
     },
   },
   {
+    label: "PHP site",
+    hint: "Plain PHP or Laravel, MySQL drivers included",
+    values: {
+      type: "website",
+      install:
+        "php -m 2>/dev/null | grep -qi '^mysqli$' || (sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq php-cli php-mysql php-pgsql php-sqlite3 php-mbstring php-xml php-curl php-zip php-gd php-intl unzip)",
+      build: "",
+      start: "exec php -S 0.0.0.0:$PORT -t \"$([ -d public ] && echo public || echo .)\"",
+      port: "8000",
+      publish: true,
+      access: "public",
+      env: "",
+    },
+  },
+  {
     label: "Java / Spring Boot",
     hint: "Maven project, runs the built jar",
     values: {
@@ -165,6 +180,21 @@ export const PRESETS: { label: string; hint: string; values: Partial<FormState> 
       publish: true,
       access: "private",
       env: "PGADMIN_DEFAULT_EMAIL=admin@hosting.dev\nPGADMIN_DEFAULT_PASSWORD=generate",
+    },
+  },
+  {
+    label: "phpMyAdmin",
+    hint: "Web UI for MySQL; put it on the database machine; private link",
+    values: {
+      type: "tool",
+      repo: "",
+      install: "",
+      build: "docker pull phpmyadmin",
+      start: "docker rm -f pma-$PORT >/dev/null 2>&1; exec docker run --name pma-$PORT --network host -e PMA_HOST=127.0.0.1 -e PMA_PORT=3306 -e APACHE_PORT=$PORT -e UPLOAD_LIMIT=256M phpmyadmin",
+      port: "8081",
+      publish: true,
+      access: "private",
+      env: "",
     },
   },
   {
