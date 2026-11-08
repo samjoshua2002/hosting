@@ -29,7 +29,7 @@
 :root {
   color-scheme: dark;
   transition: --h 0.9s ease;
-  /* neutral black surfaces and text; only the accent (buttons, icons, active states) follows the photo's hue */
+  /* neutral black surfaces and text; with subtle ambient ambient gradient from the photo hue */
   --bg: #09090b;
   --sidebar: #0c0c0e;
   --panel: #111113;
@@ -80,13 +80,16 @@
 
 html,
 body {
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(1000px 500px at 50% -100px, hsl(var(--h) 80% 55% / 0.07), transparent),
+    radial-gradient(800px 400px at 100% 0%, hsl(calc(var(--h) + 40) 80% 55% / 0.04), transparent);
+  background-attachment: fixed;
   color: var(--text);
 }
 
 body {
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
-  background: var(--bg);
 }
 
 ::selection {

@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, ChevronLeft, ChevronRight, LogOut, Plus, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { Bell, ChevronLeft, ChevronRight, LogOut, Plus, RefreshCw, Search, ShieldCheck, Shuffle } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -11,6 +11,7 @@ import { useAssistantBusy } from "./assistant-store";
 import { useCluster } from "./cluster";
 import { CommandPalette } from "./command-palette";
 import { crumbs, NAV } from "./nav";
+import { shuffleTheme, useTheme } from "./theme";
 import { cx } from "./ui";
 
 export function Shell({ children }: { children: ReactNode }) {
@@ -116,6 +117,8 @@ function Nav({ path }: { path: string | null }) {
 function TopBar({ path }: { path: string | null }) {
   const router = useRouter();
   const { vms, status, checking, refresh, auto, setAuto } = useCluster();
+  const { photo } = useTheme();
+  const [shuffling, setShuffling] = useState(false);
   const online = vms.filter((v) => status[v.name]?.ok).length;
   const anyChecking = Object.values(checking).some(Boolean);
   const problems = useMemo(() => findProblems(vms.filter((v) => status[v.name] && !checking[v.name]).map((v) => status[v.name]!)), [vms, status, checking]);
@@ -159,6 +162,21 @@ function TopBar({ path }: { path: string | null }) {
       </button>
       <button onClick={() => refresh()} className="grid size-8 place-items-center rounded-lg border border-[var(--line)] hover:bg-white/5" aria-label="Refresh" title="Refresh now">
         <RefreshCw className={cx("size-4 text-[var(--accent)]", anyChecking && "animate-spin")} />
+      </button>
+      <button
+        onClick={async () => {
+          setShuffling(true);
+          try {
+            await shuffleTheme();
+          } finally {
+            setShuffling(false);
+          }
+        }}
+        className="grid size-8 place-items-center rounded-lg border border-[var(--line)] text-zinc-400 hover:bg-white/5 hover:text-white"
+        aria-label="Shuffle theme"
+        title={photo ? `Theme from ${photo.author} on Unsplash (click to shuffle)` : "Shuffle theme"}
+      >
+        <Shuffle className={cx("size-4 text-[var(--accent)]", shuffling && "animate-spin")} />
       </button>
       <Link href="/" className="relative grid size-8 place-items-center rounded-lg border border-[var(--line)] hover:bg-white/5" aria-label="Alerts" title={problems.length ? `${problems.length} need attention` : "No alerts"}>
         <Bell className="size-4 text-[var(--accent)]" />
