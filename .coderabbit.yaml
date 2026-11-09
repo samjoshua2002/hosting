@@ -1,0 +1,21 @@
+# CodeRabbit reviews every pull request (install the CodeRabbit GitHub app on samjoshua2002/hosting).
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!src/lib/agent-script.generated.ts"
+    - "!package-lock.json"
+  path_instructions:
+    - path: "src/app/api/**"
+      instructions: "Every route must call requireAuth (except /api/auth/*, /api/banner, /api/cron/* which checks CRON_SECRET, and /api/github/webhook which verifies the HMAC). Flag secrets reaching responses, logs or the AI."
+    - path: "src/agent/hostctl.sh"
+      instructions: "Runs on user machines over SSH: check quoting, injection via names/paths, and that secrets are written with umask 077."
+    - path: "src/lib/**"
+      instructions: "Server-only code. Flag shell command strings built from unvalidated input."
+chat:
+  auto_reply: true

@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Lint
+        run: npx eslint src
+      - name: Build
+        run: npm run build
+        env:
+          # the build needs no real secrets; these only satisfy config parsing
+          SESSION_SECRET: ci-only-session-secret-0000000000
+          ADMIN_PASSWORD: ci-only
+          VMS: ""
+      - name: No secrets committed
+        run: |
+          if git grep -nE 'ibssh_[A-Za-z0-9]{20}|ghp_[A-Za-z0-9]{30}' -- ':!*.md'; then
+            echo "A token is committed" && exit 1
+          fi
