@@ -19,6 +19,14 @@ const STARTERS = [
   "List the tables in my databases with row counts",
   "Show my GitHub repos that aren't deployed yet",
 ];
+/** Quick mask for the chat bubble: KEY=value lines and well-known credential shapes. */
+function hideSecrets(t: string): string {
+  return t
+    .replace(/^(\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*).{3,}$/gm, "$1••••")
+    .replace(/\b(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20,}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,})/g, "••••")
+    .replace(/(:\/\/[^\s:@/]+:)[^\s@/]+@/g, "$1••••@");
+}
+
 const fmtSize = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
 const URL_RE = /https?:\/\/[^\s)<>"'`\]]+/g;
 
@@ -125,7 +133,8 @@ export default function AssistantPage() {
     const withFiles = staged.length ? `${text}\n\n${staged.map((f) => `[Attached: ${f.name} (id ${f.id}, ${fmtSize(f.size)})]`).join("\n")}` : text;
     updateItems(sid, (x) => [
       ...x.map((i) => (i.kind === "approval" && i.decision === undefined ? { ...i, decision: false } : i.kind === "question" && i.answer === undefined ? { ...i, answer: text } : i)),
-      { kind: "user", text, files: staged.length ? staged : undefined },
+      // secrets never show, even for the moment before the server answers
+      { kind: "user", text: hideSecrets(text), files: staged.length ? staged : undefined },
     ]);
     setStaged([]);
     void send(sid, { message: withFiles + contextFor(text, vms, status), display: text, staged });

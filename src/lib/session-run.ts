@@ -3,6 +3,7 @@
 import type { ChatMessage } from "./ai";
 import { applyEvent, settle, type Att, type Item, type OperatorEvent } from "./assistant-items";
 import { maskTokens } from "./machines";
+import { displayMasked, vaultText } from "./vault";
 import { runOperator } from "./operator";
 import { titleFor } from "./session-title";
 import { listSessions, saveSessionDoc, sessionPath, updateIndex, type SessionDoc } from "./sessions";
@@ -30,8 +31,9 @@ export class BusyError extends Error {}
 /** Load the session and apply the request. Throws BusyError if a run is already going on. */
 export async function prepareRun(r: RunRequest): Promise<{ doc: SessionDoc; history: ChatMessage[] }> {
   // machine tokens never reach a model or the saved chat, whichever page sent them
-  if (r.message) r.message = maskTokens(r.message);
-  if (r.display) r.display = maskTokens(r.display);
+  if (r.message) r.message = await vaultText(maskTokens(r.message));
+  // the chat shows "••••(NAME, saved)" where a secret was
+  if (r.display) r.display = displayMasked(await vaultText(maskTokens(r.display)));
   const prev = await storeGetJson<SessionDoc>(sessionPath(r.sessionId)); // missing → null; SSH trouble → error, never a silent reset
   if (prev?.running && Date.now() - prev.updatedAt < 6 * 60_000) throw new BusyError("This session is still working. Wait for it or press Stop.");
   let items: Item[] = prev?.items ?? [];
