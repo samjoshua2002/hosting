@@ -155,10 +155,13 @@ function TopBar({ path }: { path: string | null }) {
       </span>
       <button
         onClick={() => setAuto(!auto)}
-        className={cx("rounded-lg border px-2.5 py-1 text-xs", auto ? "border-[var(--line)] text-zinc-300" : "border-[var(--line)] text-muted line-through")}
+        role="switch"
+        aria-checked={auto}
+        className="flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-2.5 py-1 text-xs text-zinc-300 hover:bg-white/5"
         title={auto ? "Refreshing every 30 s (click to pause)" : "Auto-refresh paused (click to resume)"}
       >
-        Live
+        <span className={cx("size-1.5 rounded-full", auto ? "animate-pulse-dot bg-[var(--accent)]" : "bg-zinc-600")} />
+        {auto ? "Live" : "Paused"}
       </button>
       <button onClick={() => refresh()} className="grid size-8 place-items-center rounded-lg border border-[var(--line)] hover:bg-white/5" aria-label="Refresh" title="Refresh now">
         <RefreshCw className={cx("size-4 text-[var(--accent)]", anyChecking && "animate-spin")} />

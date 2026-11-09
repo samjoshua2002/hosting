@@ -96,6 +96,24 @@ body {
   background: hsl(var(--h) 95% 73% / 0.35);
 }
 
+/* the browser's own parts, themed: focus, caret, form controls */
+:where(a, button, input, select, textarea, [role="switch"], [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+input,
+textarea {
+  caret-color: var(--accent);
+}
+select {
+  color-scheme: dark;
+  background-color: var(--panel);
+}
+a {
+  text-underline-offset: 3px;
+}
+
 .scroll-thin {
   scrollbar-width: thin;
   scrollbar-color: var(--line-strong) transparent;

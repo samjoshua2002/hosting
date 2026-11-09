@@ -109,11 +109,11 @@ export default function OverviewPage() {
               href="/projects"
               footer="View projects"
             />
-            <StatCard icon={MemoryStick} title="Memory" sub={`of ${fmtKb(t.memTotal)} · up to ${fmtKb(t.memFreeMax)} free on one`} value={fmtKb(t.memUsed)} badge={`${pct(t.memUsed, t.memTotal)}% used`} good={pct(t.memUsed, t.memTotal) < 80} href="#usage" footer="See usage" />
+            <StatCard icon={MemoryStick} title="Memory" sub={`of ${fmtKb(t.memTotal)} in total`} value={fmtKb(t.memUsed)} badge={`${pct(t.memUsed, t.memTotal)}% used`} good={pct(t.memUsed, t.memTotal) < 80} href="#usage" footer="See usage" />
             <StatCard
               icon={HardDrive}
               title="Storage"
-              sub={`of ${fmtKb(t.diskTotal)} · up to ${fmtKb(t.diskFreeMax)} free on one`}
+              sub={`of ${fmtKb(t.diskTotal)} in total`}
               value={fmtKb(t.diskUsed)}
               badge={`${pct(t.diskUsed, t.diskTotal)}% used`}
               good={pct(t.diskUsed, t.diskTotal) < 80}
@@ -150,7 +150,7 @@ export default function OverviewPage() {
                         </span>
                         <span className="font-mono text-sm font-medium text-white">{v.name}</span>
                         <span className="flex-1" />
-                        <Link href={`/run?vm=${v.name}`} className="text-zinc-500 hover:text-white" title={`Open a shell on ${v.name}`}>
+                        <Link href={`/run?vm=${v.name}`} className="text-zinc-500 hover:text-white" title={`Open a shell on ${v.name}`} aria-label={`Open a shell on ${v.name}`}>
                           <SquareTerminal className="size-4" />
                         </Link>
                       </div>
@@ -167,7 +167,7 @@ export default function OverviewPage() {
               </div>
             </Card>
 
-            <Card id="usage" className="p-5">
+            <Card id="usage" className="flex flex-col p-5">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm text-muted">{NOUN[metric]} · fleet average</p>
@@ -176,7 +176,10 @@ export default function OverviewPage() {
                 </div>
                 <Segmented value={metric} options={METRICS} onChange={setMetric} size="sm" />
               </div>
-              <div className="mt-4">{now > 0 ? <ColumnChart buckets={buckets} height={230} emptyText="History builds up while this page is open" /> : <div className="h-[254px]" />}</div>
+              {/* the chart takes the card's full height, so the row has no dead space next to the machines */}
+              <div className="mt-4 flex min-h-[260px] flex-1 flex-col">
+                {now > 0 ? <ColumnChart buckets={buckets} height="fill" emptyText="History builds up while this page is open" /> : <div className="flex-1" />}
+              </div>
             </Card>
           </div>
 

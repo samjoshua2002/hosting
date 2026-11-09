@@ -28,7 +28,8 @@ export function ColumnChart({
 }: {
   buckets: Bucket[];
   unit?: string;
-  height?: number;
+  /** pixels, or "fill" to take the parent's height */
+  height?: number | "fill";
   emptyText: string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
@@ -38,8 +39,8 @@ export function ColumnChart({
   const hasData = buckets.some((b) => b.value !== null);
 
   return (
-    <div>
-      <div className="relative flex gap-3" style={{ height }}>
+    <div className={height === "fill" ? "flex flex-1 flex-col" : undefined}>
+      <div className={cx("relative flex gap-3", height === "fill" && "min-h-0 flex-1")} style={height === "fill" ? undefined : { height }}>
         <div className="flex w-9 shrink-0 flex-col justify-between py-0 text-right text-[10px] tabular-nums text-muted">
           {ticks.map((t) => (
             <span key={t} className="-translate-y-1/2 first:translate-y-0 last:translate-y-0">
