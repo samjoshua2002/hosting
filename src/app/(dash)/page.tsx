@@ -233,11 +233,12 @@ function StatCard({
             <p className="truncate text-xs text-muted">{sub}</p>
           </div>
         </div>
-        <div className="mt-4 flex items-center gap-2">
+        <div className="mt-4 flex items-baseline justify-between gap-2">
           <p className="text-[26px] font-semibold tracking-tight text-white tabular-nums">{value}</p>
           {badge && (
-            <span className={cx("rounded-full border px-2 py-0.5 text-[11px]", good ? "border-[var(--good)]/30 text-[var(--good-text)]" : "border-[var(--warning)]/30 text-[var(--warning)]")}>
-              {badge}
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-[var(--line-strong)] bg-[var(--panel-2)] px-2 py-0.5 text-[11px] font-medium text-muted">
+              <span className={cx("size-1.5 rounded-full shrink-0", good ? "bg-[var(--good)]" : "bg-[var(--warning)]")} />
+              <span className="tabular-nums">{badge}</span>
             </span>
           )}
         </div>
@@ -313,7 +314,21 @@ function RecentActivity() {
                       <span className="grid size-7 shrink-0 place-items-center rounded-md border border-[var(--line)] bg-[var(--panel-2)]">
                         {j.meta.kind === "deploy" ? <Rocket className="size-3.5 text-[var(--accent)]" /> : <SquareTerminal className="size-3.5 text-[var(--accent)]" />}
                       </span>
-                      <span className="truncate text-white">{j.meta.label}</span>
+                      {(() => {
+                        const parts = j.meta.label.split(" · ");
+                        const main = parts[0];
+                        const trigger = parts.slice(1).join(" · ");
+                        return (
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span className="truncate text-white font-medium">{main}</span>
+                            {trigger && (
+                              <span className="shrink-0 rounded border border-[var(--line-strong)] bg-[var(--panel-2)] px-1.5 py-0.5 font-mono text-[10px] text-muted">
+                                {trigger}
+                              </span>
+                            )}
+                          </span>
+                        );
+                      })()}
                     </span>
                   </td>
                   <td className="px-3 py-3 font-mono text-xs text-zinc-400">{vm}</td>

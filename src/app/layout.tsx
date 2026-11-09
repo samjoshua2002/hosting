@@ -18,7 +18,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`} suppressHydrationWarning>
       <head>
-        <script dangerouslySetInnerHTML={{ __html: HUE_BOOT + MODE_BOOT }} />
+        <script id="hosting-theme-boot" dangerouslySetInnerHTML={{ __html: HUE_BOOT + MODE_BOOT }} />
       </head>
       <body className="min-h-full min-w-[1024px] lg:min-w-0">
         {children}

@@ -92,7 +92,7 @@ export function useTheme(): ThemeState {
 }
 
 /** Inline script for <head>: re-applies the last hue before first paint, so a refresh never flashes another colour. */
-export const HUE_BOOT = `try{var h=localStorage.getItem("hosting.hue");if(h&&/^\\d{1,3}$/.test(h))document.documentElement.style.setProperty("--h",h)}catch(e){}`;
+export const HUE_BOOT = `;(function(){try{var h=localStorage.getItem("hosting.hue");if(h&&/^\\d{1,3}$/.test(h))document.documentElement.style.setProperty("--h",h);}catch(e){}})();`;
 
 export function bannerSrc(photo: BannerPhoto | null, width = 1800): string | null {
   if (!photo) return null;
@@ -138,18 +138,27 @@ export type Mode = "dark" | "light" | "system";
 const MODE_KEY = "hosting.mode";
 
 /** Runs before paint (layout <head>): sets data-theme so there's no flash of the wrong theme. */
-export const MODE_BOOT = `try{var m=localStorage.getItem("${MODE_KEY}")||"dark";var l=m==="light"||(m==="system"&&matchMedia("(prefers-color-scheme: light)").matches);document.documentElement.dataset.theme=l?"light":"dark"}catch(e){document.documentElement.dataset.theme="dark"}`;
+export const MODE_BOOT = `;(function(){try{var m=localStorage.getItem("${MODE_KEY}");if(!m){var ck=document.cookie.match(/(?:^|; )${MODE_KEY}=([^;]+)/);if(ck)m=decodeURIComponent(ck[1]);}var l=m==="light"||(m==="system"&&window.matchMedia&&window.matchMedia("(prefers-color-scheme: light)").matches);document.documentElement.dataset.theme=l?"light":"dark";}catch(e){}})();`;
 
 function applyMode(m: Mode) {
-  const light = m === "light" || (m === "system" && window.matchMedia("(prefers-color-scheme: light)").matches);
+  if (typeof window === "undefined") return;
+  const light = m === "light" || (m === "system" && window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches);
   document.documentElement.dataset.theme = light ? "light" : "dark";
+  try {
+    document.cookie = `${MODE_KEY}=${m}; path=/; max-age=31536000; SameSite=Lax`;
+  } catch {
+    /* cookie blocked */
+  }
 }
 
 let modeListeners: (() => void)[] = [];
 export function getMode(): Mode {
   try {
     const m = localStorage.getItem(MODE_KEY);
-    return m === "light" || m === "system" ? m : "dark";
+    if (m === "light" || m === "system" || m === "dark") return m;
+    const ck = typeof document !== "undefined" ? document.cookie.match(/(?:^|; )hosting\.mode=([^;]+)/) : null;
+    if (ck && (ck[1] === "light" || ck[1] === "system" || ck[1] === "dark")) return ck[1] as Mode;
+    return "dark";
   } catch {
     return "dark";
   }
@@ -158,20 +167,31 @@ export function setMode(m: Mode) {
   try {
     localStorage.setItem(MODE_KEY, m);
   } catch {
-    /* private mode */
+    /* storage unavailable */
+  }
+  try {
+    document.cookie = `${MODE_KEY}=${m}; path=/; max-age=31536000; SameSite=Lax`;
+  } catch {
+    /* cookie blocked */
   }
   applyMode(m);
   for (const l of modeListeners) l();
 }
 /** The chosen mode, kept in sync (and following the OS while on "system"). */
 export function useMode(): Mode {
-  const [m, setM] = useState<Mode>("dark");
+  const [m, setM] = useState<Mode>(() => (typeof window !== "undefined" ? getMode() : "dark"));
   useEffect(() => {
-    const sync = () => setM(getMode());
+    const sync = () => {
+      const cur = getMode();
+      setM(cur);
+      applyMode(cur);
+    };
     sync();
     modeListeners.push(sync);
     const mq = window.matchMedia("(prefers-color-scheme: light)");
-    const onOs = () => getMode() === "system" && applyMode("system");
+    const onOs = () => {
+      if (getMode() === "system") applyMode("system");
+    };
     mq.addEventListener("change", onOs);
     return () => {
       modeListeners = modeListeners.filter((x) => x !== sync);

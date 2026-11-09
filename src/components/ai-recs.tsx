@@ -86,49 +86,89 @@ export function Suggestions() {
 
   return (
     <Card className="flex flex-col p-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-[17px] font-semibold text-white">Suggestions</h2>
+      <div className="flex items-center justify-between border-b border-[var(--line)] pb-4">
+        <div className="flex items-center gap-2.5">
+          <h2 className="text-base font-semibold tracking-tight text-[var(--text)]">Fleet Diagnostics</h2>
+          {data && data.recs.length > 0 && (
+            <span className="rounded-md border border-[var(--line-strong)] bg-[var(--panel-2)] px-2 py-0.5 font-mono text-[10px] font-medium text-muted tabular-nums">
+              {data.recs.length} notice{data.recs.length === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
         <button
           onClick={() => void load()}
           disabled={busy || !ready}
-          className="rounded-full p-1.5 text-muted hover:bg-white/5 hover:text-white disabled:opacity-40"
-          aria-label="Refresh suggestions"
+          className="rounded-lg border border-[var(--line)] p-1.5 text-muted hover:border-[var(--line-strong)] hover:text-[var(--text)] disabled:opacity-40 transition-colors"
+          aria-label="Refresh diagnostics"
+          title="Refresh diagnostics"
         >
           <RefreshCw className={cx("size-3.5", busy && "animate-spin")} />
         </button>
       </div>
-      {error && <p className="mt-3 text-sm text-[var(--critical-text)]">{error}</p>}
-      {!data && !error && <p className="mt-3 text-sm text-muted">{ready ? "Looking at your machines…" : "Waiting for machines to report…"}</p>}
-      {data && (
-        <ul className={cx("mt-3 flex-1 divide-y divide-white/[0.06]", busy && "opacity-60")}>
-          {data.recs.map((r) => (
-            <li key={r.title} className="py-3 first:pt-1">
-              <p className="flex items-start gap-2 text-sm font-medium text-white">
-                <span
-                  className={cx(
-                    "mt-1.5 size-1.5 shrink-0 rounded-full",
-                    r.severity === "critical" ? "bg-[var(--critical)]" : r.severity === "warning" ? "bg-[var(--warning)]" : "bg-accent",
-                  )}
-                />
-                {r.title}
-              </p>
-              <p className="mt-0.5 pl-3.5 text-xs text-muted">{r.detail}</p>
-              {r.command && (
-                <Link
-                  href={`/run?${new URLSearchParams({ ...(r.vm ? { vm: r.vm } : {}), cmd: r.command })}`}
-                  className="mt-1.5 ml-3.5 inline-flex max-w-[calc(100%-0.875rem)] items-center gap-1.5 rounded-md bg-black/30 px-2 py-1 font-mono text-[11px] text-ink hover:bg-black/50"
-                  title="Opens in Run; nothing runs until you press Run"
-                >
-                  <span className="truncate">$ {r.command}</span>
-                  <ArrowUpRight className="size-3 shrink-0" />
-                </Link>
-              )}
-            </li>
-          ))}
-        </ul>
+
+      {error && <p className="mt-3 text-xs text-[var(--critical-text)]">{error}</p>}
+      {!data && !error && (
+        <p className="mt-4 text-xs text-muted">
+          {ready ? "Analyzing fleet telemetry and logs…" : "Waiting for machines to report…"}
+        </p>
       )}
-      <Link href="/assistant" className="mt-3 flex items-center gap-1 text-xs font-semibold text-accent-soft hover:text-white">
-        Ask a question about your servers <ArrowUpRight className="size-3.5" />
+
+      {data && (
+        <div className={cx("mt-3 flex-1 space-y-3.5", busy && "opacity-60")}>
+          {data.recs.map((r, idx) => {
+            const isCrit = r.severity === "critical";
+            const isWarn = r.severity === "warning";
+            const tagLabel = isCrit ? "CRITICAL" : isWarn ? "ADVISORY" : "NOTICE";
+            const tagCls = isCrit
+              ? "border-[var(--critical)]/40 bg-[var(--critical)]/10 text-[var(--critical-text)]"
+              : isWarn
+              ? "border-[var(--warning)]/40 bg-[var(--warning)]/10 text-[var(--warning)]"
+              : "border-[var(--line-strong)] bg-[var(--panel-2)] text-muted";
+
+            return (
+              <div key={idx} className="rounded-xl border border-[var(--line)] bg-[var(--panel-2)]/50 p-3.5 transition-colors hover:border-[var(--line-strong)]">
+                <div className="flex items-center justify-between gap-2">
+                  <span className={cx("rounded px-1.5 py-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase border", tagCls)}>
+                    {tagLabel}
+                  </span>
+                  {r.vm && (
+                    <span className="rounded border border-[var(--line)] bg-[var(--panel)] px-1.5 py-0.5 font-mono text-[10px] text-muted">
+                      {r.vm}
+                    </span>
+                  )}
+                </div>
+
+                <p className="mt-2 text-xs font-medium text-[var(--text)] leading-snug">
+                  {r.title}
+                </p>
+                <p className="mt-1 text-[11px] leading-relaxed text-muted">
+                  {r.detail}
+                </p>
+
+                {r.command && (
+                  <Link
+                    href={`/run?${new URLSearchParams({ ...(r.vm ? { vm: r.vm } : {}), cmd: r.command })}`}
+                    className="mt-2.5 flex items-center justify-between rounded-lg border border-[var(--line)] bg-[var(--panel)] px-2.5 py-1.5 font-mono text-[11px] text-zinc-300 hover:border-[var(--accent)] hover:text-white transition-colors group"
+                    title="Opens command in Run console"
+                  >
+                    <span className="truncate pr-2">$ {r.command}</span>
+                    <span className="flex shrink-0 items-center gap-1 text-[10px] text-muted group-hover:text-[var(--accent)]">
+                      Run <ArrowUpRight className="size-3" />
+                    </span>
+                  </Link>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <Link
+        href="/assistant"
+        className="mt-4 flex items-center justify-between rounded-xl border border-[var(--line)] bg-[var(--panel-2)]/60 px-3.5 py-2.5 text-xs font-medium text-zinc-300 hover:border-[var(--line-strong)] hover:text-white transition-colors group"
+      >
+        <span>Investigate fleet issues in Assistant</span>
+        <ArrowUpRight className="size-3.5 text-[var(--accent)] group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
       </Link>
     </Card>
   );
