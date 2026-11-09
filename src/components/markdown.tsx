@@ -16,7 +16,7 @@ export function Markdown({ text }: { text: string }) {
       const src = code.join("\n");
       const shell = /^(bash|sh|shell|zsh|console|terminal)$/.test(lang);
       blocks.push(
-        <div key={i} className={`group relative my-2 overflow-hidden rounded-xl border ${shell ? "border-white/[0.08] bg-[#07080d]" : "border-white/[0.06] bg-black/40"}`}>
+        <div key={i} className={`group relative my-2 overflow-hidden rounded-xl border ${shell ? "border-white/[0.08] bg-term" : "border-white/[0.06] bg-black/40"}`}>
           <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-1">
             <span className="font-mono text-[10.5px] text-muted">{lang || "text"}</span>
             <CopyButton text={src} label="Copy" />

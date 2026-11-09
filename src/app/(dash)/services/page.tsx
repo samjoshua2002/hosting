@@ -190,7 +190,7 @@ export default function ServicesPage() {
             <button
               key={c}
               onClick={() => setCat(c)}
-              className={cx("rounded-full border px-3 py-1 text-xs transition-colors", cat === c ? "border-white bg-white font-medium text-[#0b0e1c]" : "border-line-strong text-ink hover:border-white/30")}
+              className={cx("rounded-full border px-3 py-1 text-xs transition-colors", cat === c ? "border-white bg-white font-medium text-black" : "border-line-strong text-ink hover:border-white/30")}
             >
               {c}
             </button>
@@ -255,7 +255,7 @@ export default function ServicesPage() {
                     {have.length ? (
                       <>
                         {link && (
-                          <a href={link} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-[#0b0e1c] hover:bg-white/90">
+                          <a href={link} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-xs font-medium text-black hover:bg-white/90">
                             Open <ExternalLink className="size-3" />
                           </a>
                         )}
@@ -350,18 +350,19 @@ function ServiceCard({ x, open: initiallyOpen }: { x: Installed; open: boolean }
       </div>
 
       {url && (
-        <div className="mt-4 flex items-center gap-2">
-          <a href={shortLink(m.name)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-[#0b0e1c] hover:bg-white/90">
-            Open {x.t.name.split(" (")[0]} <ExternalLink className="size-3.5" />
+        <div className="mt-4 flex min-w-0 items-center gap-2">
+          <a href={shortLink(m.name)} target="_blank" rel="noreferrer" className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-[13px] font-medium whitespace-nowrap text-black hover:bg-white/90" title={`Open ${x.t.name}`}>
+            Open <ExternalLink className="size-3.5" />
           </a>
           {url.includes("_token=") && (
-            <span className="flex items-center gap-1 text-[11px] text-muted">
-              <Lock className="size-3" /> private link
+            <span className="flex shrink-0 items-center gap-1 rounded-md bg-white/[0.05] px-1.5 py-0.5 text-[11px] whitespace-nowrap text-zinc-400" title="Only you can open it (signed-in link)">
+              <Lock className="size-3" /> Private
             </span>
           )}
-          <span className="flex-1" />
-          <span className="truncate text-xs text-zinc-500">{shortLabel(m.name)}</span>
-          <CopyButton text={shortLink(m.name)} label="Copy link" />
+          <span className="min-w-0 flex-1 truncate text-right text-xs text-zinc-500" title={shortLink(m.name)}>
+            {shortLabel(m.name)}
+          </span>
+          <CopyButton text={shortLink(m.name)} label="Copy" />
         </div>
       )}
 
@@ -505,7 +506,7 @@ function OllamaTry({ name, url }: { name: string; url: string | null }) {
           </div>
         )}
       </div>
-      <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#07080d]">
+      <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-term">
         <div className="flex items-center gap-1 border-b border-white/[0.06] px-2 py-1">
           {(["curl", "python", "js"] as const).map((t) => (
             <button key={t} onClick={() => setTab(t)} className={cx("rounded-md px-2 py-0.5 text-[11px]", tab === t ? "bg-white/[0.1] text-white" : "text-muted hover:text-white")}>

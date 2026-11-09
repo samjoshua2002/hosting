@@ -451,7 +451,7 @@ export function Composer({
   return (
     <div className="relative">
       {open && menu && (
-        <div className="absolute right-0 bottom-full left-0 z-30 mb-2 overflow-hidden rounded-xl border border-white/[0.09] bg-[#1c1c1f] shadow-2xl shadow-black/60">
+        <div className="absolute right-0 bottom-full left-0 z-30 mb-2 overflow-hidden rounded-xl border border-white/[0.09] bg-pop shadow-2xl shadow-black/60">
           <div className="scroll-thin max-h-80 overflow-y-auto py-1.5">
             {menu.kind === "commands"
               ? menu.items.map((c, i) => {
@@ -533,7 +533,7 @@ export function Composer({
           ))}
         </div>
       )}
-      <div className="rounded-2xl border border-white/[0.09] bg-[#1b1b1e] shadow-lg shadow-black/20 transition-colors focus-within:border-white/[0.18]">
+      <div className="rounded-2xl border border-white/[0.09] bg-pop shadow-lg shadow-black/20 transition-colors focus-within:border-white/[0.18]">
         <div className="flex items-end gap-1 px-2 py-2">
           <input ref={fileInput} type="file" multiple hidden onChange={(e) => onAttach(e.target.files)} />
           <button
@@ -616,7 +616,7 @@ function MachineChip({ machines, target, onTarget }: { machines: { name: string;
       {open && (
         <>
           <button type="button" aria-label="Close" className="fixed inset-0 z-30 cursor-default" onClick={() => setOpen(false)} />
-          <div className="absolute bottom-9 left-0 z-40 w-64 overflow-hidden rounded-xl border border-white/[0.09] bg-[#1c1c1f] py-1.5 shadow-2xl shadow-black/60">
+          <div className="absolute bottom-9 left-0 z-40 w-64 overflow-hidden rounded-xl border border-white/[0.09] bg-pop py-1.5 shadow-2xl shadow-black/60">
             <p className="px-3.5 pt-1 pb-1.5 text-[11.5px] text-zinc-500">Environment</p>
             {[{ name: "", ok: true }, ...machines].map((m) => (
               <button

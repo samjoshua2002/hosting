@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, LogOut, Plus, RefreshCw, Search, ShieldCheck, Shuffle } from "lucide-react";
+import { Bell, LogOut, Monitor, Moon, Plus, RefreshCw, Search, ShieldCheck, Shuffle, Sun } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -13,7 +13,7 @@ import { useCluster } from "./cluster";
 import { CommandPalette } from "./command-palette";
 import { StorageBanner } from "./storage-banner";
 import { crumbs, NAV } from "./nav";
-import { shuffleTheme, UnsplashLayer, useTheme } from "./theme";
+import { setMode, shuffleTheme, UnsplashLayer, useMode, useTheme, type Mode } from "./theme";
 import { cx } from "./ui";
 
 export function Shell({ children }: { children: ReactNode }) {
@@ -96,8 +96,9 @@ function Sidebar({ path, onSearch }: { path: string | null; onSearch: () => void
 function Cover() {
   const path = usePathname();
   const { photo } = useTheme();
-  if (path?.startsWith("/assistant") || path?.startsWith("/settings")) return null;
-  return <UnsplashLayer photo={photo} className="page-cover" />;
+  // work surfaces (Assistant, Settings) get a softer, shorter wash so the photo never fights the content
+  const soft = Boolean(path?.startsWith("/assistant") || path?.startsWith("/settings"));
+  return <UnsplashLayer photo={photo} className={soft ? "page-cover page-cover--soft" : "page-cover"} />;
 }
 
 function TopBarWithPath() {
@@ -189,6 +190,7 @@ function TopBar({ path }: { path: string | null }) {
         </span>
         {!auto && <span className="text-zinc-600">· paused</span>}
       </button>
+      <ModeButton />
       <IconButton label="Refresh now" onClick={() => refresh()}>
         <RefreshCw className={cx("size-4", anyChecking && "animate-spin")} />
       </IconButton>
@@ -210,6 +212,18 @@ function TopBar({ path }: { path: string | null }) {
         <Plus className="size-3.5" /> Deploy
       </Link>
     </header>
+  );
+}
+
+/** Dark → Light → System. */
+function ModeButton() {
+  const mode = useMode();
+  const next: Record<Mode, Mode> = { dark: "light", light: "system", system: "dark" };
+  const Icon = mode === "light" ? Sun : mode === "system" ? Monitor : Moon;
+  return (
+    <IconButton label={`Theme: ${mode} (click for ${next[mode]})`} onClick={() => setMode(next[mode])}>
+      <Icon className="size-4" />
+    </IconButton>
   );
 }
 

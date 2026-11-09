@@ -111,7 +111,7 @@ export default function LoginPage() {
               <button
                 onClick={withPasskey}
                 disabled={busy !== null}
-                className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-white text-sm font-semibold text-[#0b0e1c] transition-colors hover:bg-white/85 disabled:opacity-60"
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-white text-sm font-semibold text-black transition-colors hover:bg-white/85 disabled:opacity-60"
               >
                 {busy === "passkey" ? <Loader2 className="size-4 animate-spin" /> : <Fingerprint className="size-4" />}
                 Sign in with passkey
@@ -143,7 +143,7 @@ export default function LoginPage() {
                 <button
                   disabled={busy !== null || !password}
                   className={`flex h-12 w-full items-center justify-center gap-2 rounded-full text-sm font-semibold transition-colors disabled:opacity-50 ${
-                    methods?.passkey ? "border border-white/15 text-white hover:bg-white/5" : "bg-white text-[#0b0e1c] hover:bg-white/85"
+                    methods?.passkey ? "border border-white/15 text-white hover:bg-white/5" : "bg-white text-black hover:bg-white/85"
                   }`}
                 >
                   {busy === "password" && <Loader2 className="size-4 animate-spin" />}

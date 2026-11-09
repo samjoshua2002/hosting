@@ -1,5 +1,7 @@
 "use client";
 
+import { useResolvedTheme } from "./theme";
+
 import {
   Background,
   BackgroundVariant,
@@ -159,7 +161,7 @@ function RelView({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targe
         <EdgeLabelRenderer>
           <div
             style={{ transform: `translate(-50%, -50%) translate(${lx}px, ${ly}px)` }}
-            className={cx("nodrag nopan pointer-events-none absolute rounded-md px-1.5 py-0.5 font-mono text-[10px] ring-1", selected ? "bg-accent text-[#0b0e1c] ring-accent" : "bg-panel text-ink ring-accent/40")}
+            className={cx("nodrag nopan pointer-events-none absolute rounded-md px-1.5 py-0.5 font-mono text-[10px] ring-1", selected ? "bg-accent text-black ring-accent" : "bg-panel text-ink ring-accent/40")}
           >
             {data.label}
           </div>
@@ -272,6 +274,7 @@ export function ProjectCanvas() {
 type Sel = { kind: "proj"; name: string } | { kind: "uses"; from: string; to: string } | { kind: "repo"; repo: string } | null;
 
 function Inner() {
+  const themeMode = useResolvedTheme();
   const { vms, status, refresh, openJob } = useCluster();
   const { fitView } = useReactFlow();
   const [sel, setSel] = useState<Sel>(null);
@@ -400,7 +403,7 @@ function Inner() {
           } else setSel({ kind: "proj", name: e.target.slice(2) });
         }}
         onPaneClick={() => setSel(null)}
-        colorMode="dark"
+        colorMode={themeMode}
         proOptions={{ hideAttribution: true }}
         connectionLineStyle={{ stroke: "var(--accent)", strokeWidth: 2 }}
         style={{ background: "transparent" }}

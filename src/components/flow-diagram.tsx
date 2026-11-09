@@ -1,5 +1,7 @@
 "use client";
 
+import { useResolvedTheme } from "./theme";
+
 import { graphlib, layout as dagreLayout } from "@dagrejs/dagre";
 import { Handle, Position, ReactFlow, ReactFlowProvider, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -46,6 +48,7 @@ const nodeTypes = { box: BoxNode };
 
 /** A read-only left-to-right diagram the Assistant draws in chat. */
 export function FlowDiagram({ title, nodes, edges }: { title: string; nodes: DiagramNode[]; edges: DiagramEdge[] }) {
+  const themeMode = useResolvedTheme();
   const { rfNodes, rfEdges, height, vertical } = useMemo(() => {
     const build = (rankdir: "LR" | "TB") => {
       const g = new graphlib.Graph();
@@ -89,7 +92,7 @@ export function FlowDiagram({ title, nodes, edges }: { title: string; nodes: Dia
   }, [nodes, edges]);
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-white/[0.08] bg-[#07080d]">
+    <div className="overflow-hidden rounded-2xl border border-white/[0.08] bg-term">
       <p className="border-b border-white/[0.06] px-4 py-2 text-sm font-medium text-white" data-vertical={vertical || undefined}>
         {title}
       </p>
@@ -109,7 +112,7 @@ export function FlowDiagram({ title, nodes, edges }: { title: string; nodes: Dia
             panOnDrag
             minZoom={0.3}
             maxZoom={1.4}
-            colorMode="dark"
+            colorMode={themeMode}
             proOptions={{ hideAttribution: true }}
             style={{ background: "transparent" }}
           />

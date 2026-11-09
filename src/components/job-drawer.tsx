@@ -133,7 +133,7 @@ export function JobDrawer({ job, onClose }: { job: { vm: string; id: string; tit
             <div className="flex items-center gap-3 rounded-xl border border-accent/30 bg-accent/10 p-3">
               <Check className="size-4 text-accent-soft" />
               <p className="flex-1 text-sm text-white">{project} is live.</p>
-              <Link href={`/projects/${project}`} onClick={onClose} className="rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-[#0b0e1c] hover:bg-white/90">
+              <Link href={`/projects/${project}`} onClick={onClose} className="rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-black hover:bg-white/90">
                 View project
               </Link>
             </div>

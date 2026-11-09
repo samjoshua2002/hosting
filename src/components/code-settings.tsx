@@ -113,7 +113,7 @@ export function CodeSettings() {
         <Seg value={detail} options={[["normal", "Normal"], ["verbose", "Verbose"]]} onChange={setDetail} />
       </Row>
       <Row title="Reply style" desc="How it writes its answers.">
-        <select value={p.replyStyle} onChange={(e) => void save({ replyStyle: e.target.value as Prefs["replyStyle"] })} className="w-48 rounded-lg border border-white/10 bg-[#141416] px-3 py-1.5 text-[13px] text-white">
+        <select value={p.replyStyle} onChange={(e) => void save({ replyStyle: e.target.value as Prefs["replyStyle"] })} className="w-48 rounded-lg border border-white/10 bg-panel-2 px-3 py-1.5 text-[13px] text-white">
           <option value="default">Default</option>
           <option value="concise">Concise</option>
           <option value="detailed">Detailed</option>

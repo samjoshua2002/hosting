@@ -22,12 +22,19 @@ interface State {
 export function Logo({ def, size = 44 }: { def: Pick<ConnectorDef, "name" | "logo">; size?: number }) {
   const [broken, setBroken] = useState(false);
   return (
-    <span className="grid shrink-0 place-items-center rounded-xl border border-white/[0.08] bg-[#18181b]" style={{ width: size, height: size }}>
+    <span className="grid shrink-0 place-items-center rounded-xl border border-white/[0.08] bg-panel-2" style={{ width: size, height: size }}>
       {broken ? (
         <span className="text-[15px] font-semibold text-zinc-300">{def.name[0]}</span>
       ) : (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={`https://cdn.simpleicons.org/${def.logo.slug}/${def.logo.color}`} alt="" width={size * 0.5} height={size * 0.5} onError={() => setBroken(true)} />
+        <img
+          src={`https://cdn.simpleicons.org/${def.logo.slug}/${def.logo.color}`}
+          alt=""
+          width={size * 0.5}
+          height={size * 0.5}
+          onError={() => setBroken(true)}
+          className={def.logo.color.toLowerCase() === "ffffff" ? "logo-mono" : undefined}
+        />
       )}
     </span>
   );
@@ -88,7 +95,7 @@ export function Customize() {
           {addOpen && (
             <>
               <button className="fixed inset-0 z-30 cursor-default" aria-label="Close" onClick={() => setAddOpen(false)} />
-              <div className="absolute top-10 right-0 z-40 w-60 overflow-hidden rounded-xl border border-white/[0.09] bg-[#1c1c1f] py-1.5 shadow-2xl shadow-black/60">
+              <div className="absolute top-10 right-0 z-40 w-60 overflow-hidden rounded-xl border border-white/[0.09] bg-pop py-1.5 shadow-2xl shadow-black/60">
                 {(
                   [
                     ["Connector from the catalog", () => (setTab("connectors"), setScope("discover"))],
@@ -185,7 +192,7 @@ function ConnectorsView({ scope, q, onDiscover }: { scope: "yours" | "discover";
           {list.map((d) => {
             const s = byId.get(d.id);
             return (
-              <div key={d.id} className="group flex gap-3.5 rounded-xl border border-white/[0.06] bg-[#111113] p-4 transition-colors hover:border-white/[0.12]">
+              <div key={d.id} className="group flex gap-3.5 rounded-xl border border-white/[0.06] bg-panel p-4 transition-colors hover:border-white/[0.12]">
                 <Logo def={d} />
                 <div className="min-w-0 flex-1">
                   <p className="flex items-center gap-1.5 text-[14.5px] font-medium text-white">
@@ -246,7 +253,7 @@ function ConnectorAction({ def, s, busy, onConnect, onDisconnect }: { def: Conne
         {menu && (
           <>
             <button className="fixed inset-0 z-30 cursor-default" aria-label="Close" onClick={() => setMenu(false)} />
-            <div className="absolute top-9 right-0 z-40 w-40 overflow-hidden rounded-lg border border-white/[0.09] bg-[#1c1c1f] py-1 shadow-xl">
+            <div className="absolute top-9 right-0 z-40 w-40 overflow-hidden rounded-lg border border-white/[0.09] bg-pop py-1 shadow-xl">
               {def.kind === "token" && (
                 <button
                   onClick={() => {
@@ -296,7 +303,7 @@ function ConnectDialog({ def, onClose, onDone }: { def: ConnectorDef; onClose: (
   };
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 backdrop-blur-[2px]" onMouseDown={onClose}>
-      <div className="w-[480px] max-w-[92vw] rounded-2xl border border-white/[0.09] bg-[#1a1a1d] p-6 shadow-2xl shadow-black/70" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="w-[480px] max-w-[92vw] rounded-2xl border border-white/[0.09] bg-pop p-6 shadow-2xl shadow-black/70" onMouseDown={(e) => e.stopPropagation()}>
         <div className="flex items-start gap-3.5">
           <Logo def={def} />
           <div className="min-w-0 flex-1">
@@ -403,7 +410,7 @@ function SkillsView({ scope, q }: { scope: "yours" | "discover"; q: string }) {
           <p className="mb-3 text-[15px] font-medium text-white">
             Built in <span className="ml-1 rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11.5px] text-zinc-400">{mine.builtIn.length}</span>
           </p>
-          <div className="divide-y divide-white/[0.05] rounded-xl border border-white/[0.06] bg-[#111113]">
+          <div className="divide-y divide-white/[0.05] rounded-xl border border-white/[0.06] bg-panel">
             {mine.builtIn
               .filter((b) => m(b.title))
               .map((b) => (
@@ -421,7 +428,7 @@ function SkillsView({ scope, q }: { scope: "yours" | "discover"; q: string }) {
           {mine.installed.length === 0 ? (
             <p className="text-sm text-zinc-500">None yet. Use Discover to add one, or the Assistant installs them when a task needs one (you approve).</p>
           ) : (
-            <div className="divide-y divide-white/[0.05] rounded-xl border border-white/[0.06] bg-[#111113]">
+            <div className="divide-y divide-white/[0.05] rounded-xl border border-white/[0.06] bg-panel">
               {mine.installed
                 .filter((h) => m(`${h.name} ${h.description}`))
                 .map((h) => (
@@ -448,7 +455,7 @@ function SkillsView({ scope, q }: { scope: "yours" | "discover"; q: string }) {
 
   return (
     <div>
-      <div className="mb-6 overflow-hidden rounded-2xl border border-white/[0.06] bg-gradient-to-br from-[#14251c] to-[#0f1512] p-6">
+      <div className="mb-6 overflow-hidden rounded-2xl border border-white/[0.06] bg-gradient-to-br from-[var(--hero-a)] to-[var(--hero-b)] p-6">
         <p className="text-[12px] text-emerald-300/70">From skills-hub.ai</p>
         <p className="mt-1 text-[22px] font-semibold tracking-tight text-white">Teach the Assistant new tricks</p>
         <p className="mt-1.5 max-w-xl text-[13.5px] leading-relaxed text-zinc-400">Playbooks for frameworks, platforms and audits, written by the community. Added skills are guidance only: they can&apos;t change approvals or reveal secrets.</p>
@@ -464,8 +471,8 @@ function SkillsView({ scope, q }: { scope: "yours" | "discover"; q: string }) {
       ) : (
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           {hub.map((h) => (
-            <div key={h.slug} className="flex gap-3.5 rounded-xl border border-white/[0.06] bg-[#111113] p-4 transition-colors hover:border-white/[0.12]">
-              <span className="grid size-11 shrink-0 place-items-center rounded-xl border border-white/[0.08] bg-[#18181b] font-mono text-[13px] text-zinc-400">{"{ }"}</span>
+            <div key={h.slug} className="flex gap-3.5 rounded-xl border border-white/[0.06] bg-panel p-4 transition-colors hover:border-white/[0.12]">
+              <span className="grid size-11 shrink-0 place-items-center rounded-xl border border-white/[0.08] bg-panel-2 font-mono text-[13px] text-zinc-400">{"{ }"}</span>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[14.5px] font-medium text-white">{h.name}</p>
                 <p className="mt-0.5 line-clamp-2 text-[12.5px] leading-snug text-zinc-400">{h.description}</p>

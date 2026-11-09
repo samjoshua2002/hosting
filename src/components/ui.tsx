@@ -26,7 +26,7 @@ export function Button({
         "inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]",
         size === "sm" ? "h-7 px-2.5 text-xs" : "h-9 px-3.5 text-sm",
         variant === "primary" && "rounded-lg bg-[var(--accent)] text-[var(--accent-ink)] hover:brightness-110 shadow-sm [&_svg]:text-[var(--accent-ink)]",
-        variant === "default" && "rounded-lg border border-[var(--line-strong)] bg-[var(--panel-2)] text-zinc-200 hover:bg-[#1f1f23] [&_svg]:text-[var(--accent)]",
+        variant === "default" && "rounded-lg border border-[var(--line-strong)] bg-[var(--panel-2)] text-zinc-200 hover:bg-pop [&_svg]:text-[var(--accent)]",
         variant === "ghost" && "rounded-lg text-muted hover:bg-white/5 hover:text-zinc-100",
         variant === "danger" && "rounded-lg border border-rose-900/70 bg-rose-950/40 text-rose-300 hover:bg-rose-900/40",
         className,

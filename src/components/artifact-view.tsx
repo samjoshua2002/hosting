@@ -172,7 +172,7 @@ export function ArtifactView({ versions, onClose }: { versions: Artifact[]; onCl
           </div>
         ) : a.type === "html" || a.type === "svg" ? (
           // sandboxed: scripts run, but it can't touch the dashboard or its cookies
-          <div className={cx("h-full min-h-[480px]", width && "bg-[#0c0c0e] px-4 py-5")}>
+          <div className={cx("h-full min-h-[480px]", width && "bg-[var(--sidebar)] px-4 py-5")}>
             <iframe
               title={a.title}
               sandbox="allow-scripts allow-popups"

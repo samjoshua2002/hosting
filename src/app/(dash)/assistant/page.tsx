@@ -422,7 +422,7 @@ export default function AssistantPage() {
             {infoOpen && (
               <>
                 <button className="fixed inset-0 z-30 cursor-default" aria-label="Close" onClick={() => setInfoOpen(false)} />
-                <div className="absolute top-10 right-0 z-40 w-80 rounded-xl border border-white/[0.08] bg-[#141416] p-3 shadow-2xl shadow-black/60">
+                <div className="absolute top-10 right-0 z-40 w-80 rounded-xl border border-white/[0.08] bg-panel-2 p-3 shadow-2xl shadow-black/60">
                   <p className="px-1 pb-1.5 text-[11px] font-medium text-zinc-500">Environment</p>
                   <InfoRow icon={Cpu} label="Model" value={st.model || "default (best available)"} />
                   <InfoRow icon={ShieldCheck} label="Review" value={st.review === "manual" ? "you approve every step" : "auto · risky steps ask first"} />
@@ -543,7 +543,7 @@ export default function AssistantPage() {
           <ArtifactView key={`${art}-${artVersions.length}`} versions={artVersions} onClose={() => setArt(null)} />
         </aside>
       ) : panel ? (
-      <aside className="flex w-[360px] shrink-0 flex-col border-l border-white/[0.06] bg-[#0b0b0d]">
+      <aside className="flex w-[360px] shrink-0 flex-col border-l border-white/[0.06] bg-[var(--sidebar)]">
         <div className="flex h-11 items-center gap-2 border-b border-white/[0.06] px-4">
           <p className="flex-1 text-[13px] font-medium text-white">{PANELS.find((x) => x[0] === panel)?.[1]}</p>
           <button onClick={() => setPanel(null)} className="rounded-md p-1 text-zinc-500 hover:bg-white/[0.06] hover:text-white" aria-label="Close panel">

@@ -1,5 +1,7 @@
 "use client";
 
+import { useResolvedTheme } from "./theme";
+
 import { graphlib, layout as dagreLayout } from "@dagrejs/dagre";
 import {
   Background,
@@ -222,6 +224,7 @@ export function ClusterCanvas() {
 }
 
 function CanvasInner() {
+  const themeMode = useResolvedTheme();
   const { vms, status, checking, inflight, results, exec, startJobs, openJob } = useCluster();
   const [selected, setSelected] = useState<string[]>([]);
   const [command, setCommand] = useState("");
@@ -359,7 +362,7 @@ function CanvasInner() {
           setSelected((s) => (e.shiftKey || e.metaKey || e.ctrlKey ? (s.includes(name) ? s.filter((x) => x !== name) : [...s, name]) : [name]));
         }}
         onPaneClick={() => setSelected([])}
-        colorMode="dark"
+        colorMode={themeMode}
         proOptions={{ hideAttribution: true }}
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="var(--line)" />

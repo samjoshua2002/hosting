@@ -18,7 +18,7 @@ export function CopyButton({ text, label, className }: { text: string; label?: s
           setTimeout(() => setDone(false), 1400);
         });
       }}
-      className={cx("inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted hover:bg-white/[0.08] hover:text-white", className)}
+      className={cx("inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] whitespace-nowrap text-muted hover:bg-white/[0.08] hover:text-white", className)}
       title={label ?? "Copy"}
     >
       {done ? <Check className="size-3.5 text-accent-soft" /> : <Copy className="size-3.5" />}
@@ -83,7 +83,7 @@ export function TerminalBlock({ shell, output, running, ok }: { shell: Shell; ou
   const long = lines > 18;
   const failed = !running && ok === false;
   return (
-    <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#07080d] font-mono text-[12px] leading-relaxed shadow-lg shadow-black/30">
+    <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-term font-mono text-[12px] leading-relaxed shadow-lg shadow-black/30">
       <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-1.5">
         <span className="flex gap-1">
           {[0, 1, 2].map((i) => (
@@ -123,7 +123,7 @@ export function TerminalBlock({ shell, output, running, ok }: { shell: Shell; ou
 /** Unified diff with colours; the first line can be a "Branch x" header. */
 export function DiffView({ text }: { text: string }) {
   return (
-    <div className="scroll-thin max-h-[480px] overflow-auto rounded-lg border border-white/[0.08] bg-[#07080d] py-2 font-mono text-[11.5px] leading-[1.55]">
+    <div className="scroll-thin max-h-[480px] overflow-auto rounded-lg border border-white/[0.08] bg-term py-2 font-mono text-[11.5px] leading-[1.55]">
       {text.split("\n").map((l, i) => {
         const cls = l.startsWith("+++") || l.startsWith("---")
           ? "text-white font-semibold mt-2"

@@ -131,3 +131,65 @@ export function PhotoCredit({ photo }: { photo: BannerPhoto | null }) {
     </span>
   );
 }
+
+/* ---------- light / dark / system ---------- */
+
+export type Mode = "dark" | "light" | "system";
+const MODE_KEY = "hosting.mode";
+
+/** Runs before paint (layout <head>): sets data-theme so there's no flash of the wrong theme. */
+export const MODE_BOOT = `try{var m=localStorage.getItem("${MODE_KEY}")||"dark";var l=m==="light"||(m==="system"&&matchMedia("(prefers-color-scheme: light)").matches);document.documentElement.dataset.theme=l?"light":"dark"}catch(e){document.documentElement.dataset.theme="dark"}`;
+
+function applyMode(m: Mode) {
+  const light = m === "light" || (m === "system" && window.matchMedia("(prefers-color-scheme: light)").matches);
+  document.documentElement.dataset.theme = light ? "light" : "dark";
+}
+
+let modeListeners: (() => void)[] = [];
+export function getMode(): Mode {
+  try {
+    const m = localStorage.getItem(MODE_KEY);
+    return m === "light" || m === "system" ? m : "dark";
+  } catch {
+    return "dark";
+  }
+}
+export function setMode(m: Mode) {
+  try {
+    localStorage.setItem(MODE_KEY, m);
+  } catch {
+    /* private mode */
+  }
+  applyMode(m);
+  for (const l of modeListeners) l();
+}
+/** The chosen mode, kept in sync (and following the OS while on "system"). */
+export function useMode(): Mode {
+  const [m, setM] = useState<Mode>("dark");
+  useEffect(() => {
+    const sync = () => setM(getMode());
+    sync();
+    modeListeners.push(sync);
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const onOs = () => getMode() === "system" && applyMode("system");
+    mq.addEventListener("change", onOs);
+    return () => {
+      modeListeners = modeListeners.filter((x) => x !== sync);
+      mq.removeEventListener("change", onOs);
+    };
+  }, []);
+  return m;
+}
+
+/** The theme actually showing ("system" resolved), for libraries that need to be told (React Flow). */
+export function useResolvedTheme(): "dark" | "light" {
+  return useSyncExternalStore(
+    (cb) => {
+      const o = new MutationObserver(cb);
+      o.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+      return () => o.disconnect();
+    },
+    () => (document.documentElement.dataset.theme === "light" ? "light" : "dark"),
+    () => "dark",
+  );
+}

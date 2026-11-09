@@ -24,6 +24,8 @@
   --color-ink: var(--accent-text);
   --color-chip: var(--chip);
   --color-track: var(--track);
+  --color-pop: var(--pop);
+  --color-term: var(--term);
 }
 
 :root {
@@ -48,6 +50,11 @@
   --track: #232328;
   --tint: hsl(var(--h) 75% 50%);
   --glow: hsl(var(--h) 58% 64% / 0.3);
+  --pop: #1c1c1f;
+  --term: #08080a;
+  --warn-bg: #1a1408f2;
+  --hero-a: #14251c;
+  --hero-b: #0f1512;
   --story-a: #18181b;
   --story-b: #111113;
   --others: #52525b;
@@ -199,8 +206,12 @@ a {
   mask-image: linear-gradient(180deg, #000 40%, transparent 100%);
 }
 .page-cover .ub-shade {
-  /* fade the photo into the plain black page */
-  background: linear-gradient(180deg, rgb(9 9 11 / 0.25) 0%, rgb(9 9 11 / 0.65) 55%, var(--bg) 100%);
+  /* fade the photo into the plain page (dark or light) */
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg) 25%, transparent) 0%, color-mix(in srgb, var(--bg) 65%, transparent) 55%, var(--bg) 100%);
+}
+.page-cover--soft {
+  height: 220px;
+  opacity: 0.55;
 }
 
 /* React Flow, matched to the theme */
@@ -229,4 +240,67 @@ a {
   :root {
     transition: none;
   }
+}
+
+/*
+ * Light theme. The UI is written with Tailwind's neutral palette (text-white, zinc-*, white/[x] overlays), so the
+ * light theme flips that palette: white ↔ near-black, zinc-50 ↔ zinc-950 … and swaps the surface tokens. Status
+ * colours and the photo accent keep their meaning; the accent darkens for contrast on white.
+ */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f7f7f8;
+  --sidebar: #f1f1f3;
+  --panel: #ffffff;
+  --panel-2: #f4f4f5;
+  --pop: #ffffff;
+  --term: #f6f6f7;
+  --line: #e7e7ea;
+  --line-strong: #d6d6db;
+  --text: #18181b;
+  --muted: #6b6b73;
+  --accent: hsl(var(--h) 62% 42%);
+  --accent-soft: hsl(var(--h) 66% 36%);
+  --accent-text: #27272a;
+  --accent-deep: hsl(var(--h) 75% 40%);
+  --accent-ink: #ffffff;
+  --chip: #f1f1f3;
+  --track: #e7e7ea;
+  --warn-bg: #fff8e6f2;
+  --hero-a: #e9f7ef;
+  --hero-b: #f6fbf8;
+  --story-a: #f4f4f5;
+  --story-b: #ffffff;
+  --others: #a1a1aa;
+  --heat-0: hsl(var(--h) 40% 92%);
+  --heat-1: hsl(var(--h) 50% 84%);
+  --heat-2: hsl(var(--h) 58% 74%);
+  --heat-3: hsl(var(--h) 62% 62%);
+  --heat-4: hsl(var(--h) 66% 50%);
+  --heat-5: hsl(var(--h) 72% 40%);
+  /* Tailwind's palette, flipped */
+  --color-white: #111113;
+  --color-black: #ffffff;
+  --color-zinc-50: oklch(14.1% 0.005 285.823);
+  --color-zinc-100: oklch(21% 0.006 285.885);
+  --color-zinc-200: oklch(27.4% 0.006 286.033);
+  --color-zinc-300: oklch(37% 0.013 285.805);
+  --color-zinc-400: oklch(44.2% 0.017 285.786);
+  --color-zinc-500: oklch(52% 0.016 285.938);
+  --color-zinc-600: oklch(70.5% 0.015 286.067);
+  --color-zinc-700: oklch(87.1% 0.006 286.286);
+  --color-zinc-800: oklch(92% 0.004 286.32);
+  --color-zinc-900: oklch(96.7% 0.001 286.375);
+  --color-zinc-950: oklch(98.5% 0 0);
+}
+:root[data-theme="light"] .shadow-black\/20,
+:root[data-theme="light"] .shadow-black\/30,
+:root[data-theme="light"] .shadow-black\/40,
+:root[data-theme="light"] .shadow-black\/60,
+:root[data-theme="light"] .shadow-black\/70 {
+  --tw-shadow-color: rgb(24 24 27 / 0.12);
+}
+/* single-colour brand marks drawn white for dark mode: draw them dark on light */
+:root[data-theme="light"] .logo-mono {
+  filter: invert(1);
 }

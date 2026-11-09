@@ -51,7 +51,7 @@ function Thumb({ a }: { a: ArtifactEntry }) {
     );
   const Icon = TYPE_ICON[a.type] ?? FileText;
   return (
-    <div className="relative h-full w-full overflow-hidden bg-[#131316] p-3">
+    <div className="relative h-full w-full overflow-hidden bg-panel-2 p-3">
       <pre className="font-mono text-[9px] leading-[1.45] whitespace-pre-wrap text-zinc-500">{a.preview.slice(0, 700)}</pre>
       <span className="absolute right-2 bottom-2 grid size-7 place-items-center rounded-md bg-black/60 text-zinc-300">
         <Icon className="size-3.5" />
@@ -103,7 +103,7 @@ export function ArtifactsGallery({ onOpen }: { onOpen: (a: ArtifactEntry) => voi
           {shown.map((a) => {
             const Icon = TYPE_ICON[a.type] ?? FileText;
             return (
-              <button key={`${a.session}-${a.id}`} onClick={() => onOpen(a)} className="group overflow-hidden rounded-xl border border-white/[0.07] bg-[#111113] text-left transition-colors hover:border-white/[0.18]">
+              <button key={`${a.session}-${a.id}`} onClick={() => onOpen(a)} className="group overflow-hidden rounded-xl border border-white/[0.07] bg-panel text-left transition-colors hover:border-white/[0.18]">
                 <div className="aspect-[16/10] border-b border-white/[0.06]">
                   <Thumb a={a} />
                 </div>
@@ -155,7 +155,7 @@ export function SearchDialog({ sessions, onClose, onSession, onArtifact }: { ses
   };
   return (
     <div className="fixed inset-0 z-50 grid place-items-start justify-center bg-black/50 pt-[12vh] backdrop-blur-[2px]" onMouseDown={onClose}>
-      <div className="w-[640px] max-w-[92vw] overflow-hidden rounded-2xl border border-white/[0.09] bg-[#1c1c1f] shadow-2xl shadow-black/70" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="w-[640px] max-w-[92vw] overflow-hidden rounded-2xl border border-white/[0.09] bg-pop shadow-2xl shadow-black/70" onMouseDown={(e) => e.stopPropagation()}>
         <div className="flex items-center gap-3 px-5 pt-4">
           <Search className="size-4 text-zinc-500" />
           <input

@@ -96,7 +96,7 @@ function GeneralSummary({ go }: { go: (t: Tab) => void }) {
           ["Capabilities", "Every tool it can use.", "capabilities"],
         ] as [string, string, Tab][]
       ).map(([t, d, id]) => (
-        <button key={id} onClick={() => go(id)} className="rounded-xl border border-white/[0.06] bg-[#111113] p-4 text-left transition-colors hover:border-white/[0.14]">
+        <button key={id} onClick={() => go(id)} className="rounded-xl border border-white/[0.06] bg-panel p-4 text-left transition-colors hover:border-white/[0.14]">
           <p className="text-[14px] font-medium text-white">{t}</p>
           <p className="mt-1 text-[12.5px] leading-relaxed text-zinc-400">{d}</p>
         </button>

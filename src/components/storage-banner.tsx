@@ -62,7 +62,7 @@ export function StorageBanner() {
   };
 
   return (
-    <div className="sticky top-12 z-20 flex items-start gap-3 border-b border-[var(--warning)]/30 bg-[#1a1408]/95 px-5 py-3 text-sm backdrop-blur">
+    <div className="sticky top-12 z-20 flex items-start gap-3 border-b border-[var(--warning)]/30 bg-[var(--warn-bg)] px-5 py-3 text-sm backdrop-blur">
       <DatabaseBackup className="mt-0.5 size-4 shrink-0 text-[var(--warning)]" />
       <div className="min-w-0 flex-1">
         <p className="text-white">

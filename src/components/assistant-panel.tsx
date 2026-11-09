@@ -619,9 +619,9 @@ export function TerminalPanel() {
   };
 
   return (
-    <div className="-m-4 flex h-[calc(100%+2rem)] flex-col bg-[#0a0a0b]">
+    <div className="-m-4 flex h-[calc(100%+2rem)] flex-col bg-term">
       <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2">
-        <select value={target} onChange={(e) => setVm(e.target.value)} className="h-7 rounded-md border border-white/10 bg-[#141416] px-2 font-mono text-[12px] text-zinc-200">
+        <select value={target} onChange={(e) => setVm(e.target.value)} className="h-7 rounded-md border border-white/10 bg-panel-2 px-2 font-mono text-[12px] text-zinc-200">
           {vms.map((v) => (
             <option key={v.name} value={v.name} disabled={!status[v.name]?.ok}>
               {v.name}
