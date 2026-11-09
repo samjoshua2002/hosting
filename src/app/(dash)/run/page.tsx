@@ -33,7 +33,8 @@ export default function RunPage() {
   const vmParam = useSearchParam("vm");
   const cmdParam = useSearchParam("cmd");
   const [picked, setPicked] = useState<string[] | null>(null);
-  const targets = picked ?? (vmParam ? [vmParam] : vms[0] ? [vms[0].name] : []);
+  const firstUp = vms.find((v) => status[v.name]?.ok)?.name ?? vms[0]?.name;
+  const targets = picked ?? (vmParam ? [vmParam] : firstUp ? [firstUp] : []);
   const [typed, setTyped] = useState<string | null>(null);
   const input = typed ?? cmdParam ?? "";
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -93,10 +94,20 @@ export default function RunPage() {
       return push({ id: nextId++, kind: "note", targets, command: raw, tone: "dim", text: "cancelled" });
     }
 
+    // machines that are resting (cooling down / unreachable) are skipped instead of failing loudly
+    const resting = targets.filter((t) => status[t] && !status[t]!.ok && !checking[t]);
+    const run = targets.filter((t) => !resting.includes(t));
+    const skipped = () =>
+      resting.length &&
+      push({ id: nextId++, kind: "note", targets: resting, command: "", tone: "dim", text: `${resting.join(", ")} ${resting.length > 1 ? "are" : "is"} resting right now (cooling down), skipped${run.length ? "" : ". Try again in a few minutes"}` });
+    if (!run.length) {
+      push({ id: nextId++, kind: "note", targets, command: raw, tone: "dim", text: "" });
+      return void skipped();
+    }
     const id = nextId++;
-    const run = [...targets];
     if (background) {
       push({ id, kind: "job", targets: run, command: raw, jobs: null });
+      skipped();
       try {
         const jobs = await startJobs(run, command);
         setEntries((list) => list.map((e) => (e.id === id && e.kind === "job" ? { ...e, jobs } : e)));
@@ -106,6 +117,7 @@ export default function RunPage() {
       return;
     }
     push({ id, kind: "exec", targets: run, command: raw, results: Object.fromEntries(run.map((t) => [t, "pending" as const])) });
+    skipped();
     await exec(run, command, (r) =>
       setEntries((list) => list.map((e) => (e.id === id && e.kind === "exec" ? { ...e, results: { ...e.results, [r.vm]: r } } : e))),
     );
@@ -198,7 +210,7 @@ export default function RunPage() {
 
           {entries.map((e) => (
             <div key={e.id} className="mt-2">
-              <Prompt host={e.targets.length === 1 ? e.targets[0] : e.targets.length === names.length ? `all(${e.targets.length})` : `{${e.targets.join(",")}}`} />
+              {!(e.kind === "note" && !e.command && e.text) && <Prompt host={e.targets.length === 1 ? e.targets[0] : e.targets.length === names.length ? `all(${e.targets.length})` : `{${e.targets.join(",")}}`} />}
               <span className="break-all whitespace-pre-wrap text-white">{e.command}</span>
               {e.kind === "note" && e.text && (
                 <pre className={cx("whitespace-pre-wrap", e.tone === "error" ? "text-[var(--critical-text)]" : "text-muted")}>{e.text}</pre>

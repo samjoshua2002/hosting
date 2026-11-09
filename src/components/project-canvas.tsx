@@ -172,42 +172,87 @@ const nodeTypes = { repo: RepoView, proj: ProjView };
 const edgeTypes = { rel: RelView };
 
 /**
- * Lanes, left to right: GitHub repos → apps → databases. Each lane wraps after a few cards; apps are
- * ordered by their repo, databases by the first app that uses them, so lines stay short and rarely cross.
+ * Auto-arranged every time the graph changes. Connected things flow left to right in columns: repos, then each
+ * app one column after whatever feeds it, each database one column after the apps using it, so every line spans
+ * a single gap and never runs behind a card. Each card sits level with what it connects to. Everything not
+ * connected to anything sits in a tidy grid underneath, apps first, then databases.
  */
 function layout(nodes: AnyNode[], edges: RelEdge[]): AnyNode[] {
-  const PER_COL = 5;
-  const GAP_Y = 26;
-  const GAP_X = 70;
-  const LANE_GAP = 150;
-  const repos = nodes.filter((n) => n.type === "repo");
-  const apps = nodes.filter((n): n is ProjNode => n.type === "proj" && n.data.type !== "database");
-  const dbs = nodes.filter((n): n is ProjNode => n.type === "proj" && n.data.type === "database");
-  const repoIdx = new Map(repos.map((r, i) => [r.id, i]));
-  const firstSource = (id: string) => {
-    const e = edges.find((x) => x.target === id);
-    return e ? (repoIdx.get(e.source) ?? 99) : 999;
-  };
-  apps.sort((a, b) => firstSource(a.id) - firstSource(b.id) || a.data.name.localeCompare(b.data.name));
-  const appIdx = new Map(apps.map((a, i) => [a.id, i]));
-  const firstUser = (id: string) => Math.min(999, ...edges.filter((x) => x.target === id).map((x) => appIdx.get(x.source) ?? 999));
-  dbs.sort((a, b) => firstUser(a.id) - firstUser(b.id) || a.data.name.localeCompare(b.data.name));
+  const GAP_Y = 36;
+  const GAP_X = 130;
+  const GRID_GAP = 40;
+  const linked = new Set(edges.flatMap((e) => [e.source, e.target]));
+  const flow = nodes.filter((n) => linked.has(n.id));
+  const byId = new Map(flow.map((n) => [n.id, n]));
+  const preds = new Map<string, string[]>();
+  const succs = new Map<string, string[]>();
+  for (const e of edges) {
+    if (!byId.has(e.source) || !byId.has(e.target)) continue;
+    preds.set(e.target, [...(preds.get(e.target) ?? []), e.source]);
+    succs.set(e.source, [...(succs.get(e.source) ?? []), e.target]);
+  }
+  const h = (id: string) => SIZE[byId.get(id)!.type].h;
+  const name = (id: string) => id.replace(/^\w+:/, "");
 
-  const lanes = [repos, apps, dbs].filter((l) => l.length);
-  const height = (l: AnyNode[]) => {
-    const rows = Math.min(l.length, PER_COL);
-    return rows * (SIZE[l[0].type].h + GAP_Y) - GAP_Y;
+  // column = longest path from the left (repos are 0, projects start at 1); bounded so a cycle can't loop forever
+  const col = new Map(flow.map((n) => [n.id, n.type === "repo" ? 0 : 1]));
+  for (let round = 0; round < flow.length; round++) {
+    let moved = false;
+    for (const [t, ps] of preds) {
+      const want = Math.max(...ps.map((p) => col.get(p)! + 1));
+      if (want > col.get(t)!) {
+        col.set(t, want);
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  const columns: string[][] = [];
+  for (const n of flow) (columns[col.get(n.id)!] ??= []).push(n.id);
+
+  const y = new Map<string, number>();
+  const center = (id: string) => y.get(id)! + h(id) / 2;
+  const stack = (ids: string[], want: (id: string) => number) => {
+    const order = [...ids].sort((a, b) => want(a) - want(b) || name(a).localeCompare(name(b)));
+    let next = -Infinity;
+    for (const id of order) {
+      const w = want(id);
+      const top = Math.max(Number.isFinite(w) ? w - h(id) / 2 : next, next === -Infinity ? 0 : next);
+      y.set(id, Number.isFinite(top) ? top : 0);
+      next = y.get(id)! + h(id) + GAP_Y;
+    }
   };
-  const tallest = Math.max(...lanes.map(height), 0);
+  const mean = (ids: string[] | undefined) => (ids?.length ? ids.reduce((s, id) => s + (y.has(id) ? center(id) : 0), 0) / ids.length : Infinity);
+  // left to right: line up with what feeds you; then right to left: things nothing feeds line up with what they feed
+  for (const c of columns) if (c) stack(c, (id) => mean(preds.get(id)?.filter((p) => y.has(p))));
+  for (let i = columns.length - 1; i >= 0; i--) {
+    const c = columns[i];
+    if (c) stack(c, (id) => (preds.get(id)?.length ? center(id) : mean(succs.get(id)?.filter((s) => y.has(s)))));
+  }
+
   const pos = new Map<string, { x: number; y: number }>();
   let x = 0;
-  for (const lane of lanes) {
-    const { w, h } = SIZE[lane[0].type];
-    const cols = Math.ceil(lane.length / PER_COL);
-    const top = (tallest - height(lane)) / 2;
-    lane.forEach((n, i) => pos.set(n.id, { x: x + Math.floor(i / PER_COL) * (w + GAP_X), y: top + (i % PER_COL) * (h + GAP_Y) }));
-    x += cols * (w + GAP_X) - GAP_X + LANE_GAP;
+  let bottom = 0;
+  const minY = Math.min(0, ...[...y.values()]);
+  for (const c of columns) {
+    if (!c) continue;
+    const w = Math.max(...c.map((id) => SIZE[byId.get(id)!.type].w));
+    for (const id of c) {
+      pos.set(id, { x: x + (w - SIZE[byId.get(id)!.type].w), y: y.get(id)! - minY });
+      bottom = Math.max(bottom, y.get(id)! - minY + h(id));
+    }
+    x += w + GAP_X;
   }
+  const width = Math.max(0, x - GAP_X);
+
+  const rest = nodes
+    .filter((n): n is ProjNode => !linked.has(n.id) && n.type === "proj")
+    .sort((a, b) => Number(a.data.type === "database") - Number(b.data.type === "database") || a.data.name.localeCompare(b.data.name));
+  const { w, h: rh } = SIZE.proj;
+  const cols = Math.max(3, Math.min(5, Math.floor((width + GRID_GAP) / (w + GRID_GAP)) || 4));
+  const top = flow.length ? bottom + 110 : 0;
+  rest.forEach((n, i) => pos.set(n.id, { x: (i % cols) * (w + GRID_GAP), y: top + Math.floor(i / cols) * (rh + GRID_GAP) }));
+
   return nodes.map((n) => ({ ...n, position: pos.get(n.id) ?? { x: 0, y: 0 } }) as AnyNode);
 }
 
