@@ -140,8 +140,41 @@ export async function callConnector(id: string, method: string, path: string, bo
   const { url, init } = request(def, token, method.toUpperCase(), path, body);
   const r = await fetch(url, init);
   const text = await r.text();
+  const sanitized = text.split(token).join("••••");
+
+  // Compact large JSON payloads (like Vercel /v9/projects or GitHub repos) so they fit cleanly without getting chopped mid-stream
+  let outputText = sanitized;
+  try {
+    const parsed = JSON.parse(sanitized);
+    if (parsed && typeof parsed === "object") {
+      if (Array.isArray(parsed.projects)) {
+        // Vercel projects response: strip massive env/targets blobs while preserving all project identity
+        const pruned = {
+          projects: parsed.projects.map((p: Record<string, unknown>) => ({
+            id: p.id,
+            name: p.name,
+            framework: p.framework,
+            updatedAt: p.updatedAt,
+            createdAt: p.createdAt,
+            link: p.link && typeof p.link === "object" ? `${(p.link as Record<string, unknown>).type}/${(p.link as Record<string, unknown>).repo}` : undefined,
+            targets: (p.targets as Record<string, { url?: string }> | undefined)?.production?.url ? { production: { url: (p.targets as Record<string, { url?: string }>).production.url } } : undefined,
+            latestDeployment: Array.isArray(p.latestDeployments) && p.latestDeployments[0] ? {
+              id: p.latestDeployments[0].id,
+              url: p.latestDeployments[0].url,
+              readyState: p.latestDeployments[0].readyState,
+            } : undefined,
+          })),
+          pagination: parsed.pagination,
+        };
+        outputText = JSON.stringify(pruned, null, 2);
+      }
+    }
+  } catch {
+    /* not JSON or failed to parse, fallback to raw text */
+  }
+
   // never hand the token back, even if a service echoes it
-  return { status: r.status, text: text.split(token).join("••••").slice(0, 30_000) };
+  return { status: r.status, text: outputText.slice(0, 30_000) };
 }
 
 /** For the system prompt: what's connected and what it can do. */
