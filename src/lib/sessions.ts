@@ -42,6 +42,8 @@ export async function listSessions(): Promise<SessionMeta[]> {
   if (!metas.length) {
     const old = (await storeGetJson<SessionMeta[]>(INDEX)) ?? [];
     for (const m of old) await storePut(metaPath(m.id), JSON.stringify(m));
+    // once only: otherwise deleting the last session would bring the old list back
+    if (old.length) await storeDelete(INDEX).catch(() => {});
     metas = old;
   }
   // a run that stopped saving long ago crashed or timed out

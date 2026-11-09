@@ -40,6 +40,8 @@ export const POST = handle(async (req: NextRequest) => {
   }
   const title = (typeof b.title === "string" ? b.title : "Untitled").slice(0, 120);
   const updatedAt = Date.now();
+  const cur = await storeGetJson<{ running?: boolean; updatedAt?: number }>(sessionPath(b.id));
+  if (cur?.running && Date.now() - (cur.updatedAt ?? 0) < 6 * 60_000) throw new HttpError(409, "This session is working right now; its progress is saved by the run itself.");
   await storePut(sessionPath(b.id), JSON.stringify({ id: b.id, title, updatedAt, items: b.items ?? [], transcript: b.transcript ?? [], attachments: b.attachments ?? [] }));
   await updateIndex({ id: b.id, title, updatedAt });
   return Response.json({ ok: true, updatedAt });

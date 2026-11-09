@@ -22,7 +22,7 @@ export async function storePut(path: string, data: Buffer | string): Promise<voi
   const p = check(path);
   const b64 = (typeof data === "string" ? Buffer.from(data, "utf8") : data).toString("base64");
   await withVm(storeVm(), async (c) => {
-    const r = await run(c, `umask 077; mkdir -p "$(dirname ${p})" && base64 -d > ${p}.tmp && mv -f ${p}.tmp ${p}`, { stdin: b64, timeoutMs: 40_000 });
+    const r = await run(c, `umask 077; mkdir -p "$(dirname ${p})" && t=${p}.tmp.$$; base64 -d > "$t" && mv -f "$t" ${p} || { rm -f "$t"; exit 1; }`, { stdin: b64, timeoutMs: 40_000 });
     if (r.code !== 0) throw new Error(r.stderr.trim() || "store write failed");
   });
 }
@@ -33,6 +33,7 @@ export async function storeGet(path: string, maxBytes = 8 * 1024 * 1024): Promis
     const r = await run(c, `[ -f ${p} ] && base64 -w0 < ${p} || echo __MISSING__`, { timeoutMs: 40_000, maxBytes: Math.ceil(maxBytes * 1.4) });
     const out = r.stdout.trim();
     if (out === "__MISSING__") return null;
+    if (r.truncated) throw new Error(`${path} is larger than ${Math.round(maxBytes / 1048576)} MB`);
     return Buffer.from(out, "base64");
   });
 }
@@ -43,7 +44,8 @@ export async function storeGetJson<T>(path: string): Promise<T | null> {
   try {
     return JSON.parse(b.toString("utf8")) as T;
   } catch {
-    return null;
+    // a damaged file must not read as "empty": callers would overwrite it and lose the data
+    throw new Error(`${path} on the storage machine is damaged (not valid JSON)`);
   }
 }
 
@@ -80,7 +82,7 @@ export async function storePutAndTakeFlag(path: string, data: string, flag: stri
   const b64 = Buffer.from(data, "utf8").toString("base64");
   return withVm(storeVm(), async (c) => {
     const take = clearFlag ? `rm -f ${f}` : `if [ -f ${f} ]; then rm -f ${f}; echo __FLAG__; fi`;
-    const r = await run(c, `umask 077; mkdir -p "$(dirname ${p})" && base64 -d > ${p}.tmp && mv -f ${p}.tmp ${p} && ${take}`, { stdin: b64, timeoutMs: 40_000 });
+    const r = await run(c, `umask 077; mkdir -p "$(dirname ${p})" && t=${p}.tmp.$$; { base64 -d > "$t" && mv -f "$t" ${p}; } || { rm -f "$t"; exit 1; }; ${take}`, { stdin: b64, timeoutMs: 40_000 });
     if (r.code !== 0) throw new Error(r.stderr.trim() || "store write failed");
     return r.stdout.includes("__FLAG__");
   });

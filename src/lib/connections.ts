@@ -1,7 +1,7 @@
 // Relationships between projects ("watch uses postgres"). Connecting sets the right env var on the app
 // (built from the database's stored credentials, which never leave the machines and this server),
 // opens a tunnel when they run on different machines, records the link, and restarts the app.
-import { ensureAgent, listManifests } from "./agent";
+import { ENV_KEY_RE, ensureAgent, listManifests } from "./agent";
 import { getVms, type VmConfig } from "./config";
 import { projectType } from "./project-type";
 import { mapLimit, run, shq, withVm } from "./ssh";
@@ -71,8 +71,8 @@ function defaultEnv(target: ProjectManifest, engine: Engine | null): string {
 async function editApp(vm: VmConfig, app: string, changes: Record<string, string | null>, uses: ProjectManifest["uses"]): Promise<void> {
   await withVm(vm, async (c) => {
     await ensureAgent(c);
-    const keys = Object.keys(changes);
-    const drop = keys.map((k) => `-e '^${k}='`).join(" ");
+    const keys = Object.keys(changes).filter((k) => ENV_KEY_RE.test(k));
+    const drop = keys.length ? keys.map((k) => `-e ${shq(`^${k}=`)}`).join(" ") : "-e '^$'";
     const lines = Object.entries(changes)
       .filter(([, v]) => v !== null)
       .map(([k, v]) => `${k}=${shq(v!)}\n`)

@@ -332,12 +332,31 @@ const SQL_WRITE = /\b(insert|update|delete|drop|alter|truncate|create|grant|revo
 const MONGO_WRITE = /\b(insert\w*|update\w*|delete\w*|remove|drop\w*|replace\w*|create\w*|rename\w*|bulkWrite|findOneAnd\w+|\$out|\$merge)\b/i;
 const REDIS_READ = /^(get|mget|keys|scan|hget|hgetall|hkeys|hlen|hscan|lrange|llen|smembers|scard|sscan|zrange|zcard|zscore|zscan|type|ttl|pttl|exists|strlen|info|dbsize|ping|config get|memory usage|xrange|xlen)\b/i;
 
+/**
+ * Whether a db_query needs approval. Anything not clearly a single read counts as a write; reads that do
+ * run are also executed in a read-only session (see execute), so a mistake here can't change data.
+ */
 function dbQueryIsWrite(query: string): boolean {
-  const q = query.trim();
-  if (/^\\(d|l|dt|di|dn|du|dv|df)\b/.test(q)) return false; // psql meta commands
-  if (/^(db\.|show\b|use\b|printjson|JSON\.)/.test(q) || /\bdb\.\w+\./.test(q)) return MONGO_WRITE.test(q);
-  if (/^[a-z]+(\s|$)/i.test(q) && !/^(select|show|describe|desc|explain|with|table|values)\b/i.test(q)) return !REDIS_READ.test(q);
-  return SQL_WRITE.test(q.replace(/'[^']*'/g, "''"));
+  const q = query.trim().replace(/;\s*$/, "");
+  if (!q) return true;
+  if (/^\\(d|l|dt|di|dn|du|dv|df)[+]?(\s+[\w.*]+)?$/.test(q)) return false; // psql meta commands
+  // MongoDB: only these read methods, one statement
+  if (/^(db\.|show\b|use\b)/.test(q)) {
+    if (q.includes(";") || MONGO_WRITE.test(q)) return true;
+    return !/^(show (dbs|databases|collections)|db\.(getCollectionNames|getCollectionInfos|stats)\(\)|db\.\w+\.(find|findOne|countDocuments|estimatedDocumentCount|distinct|aggregate|getIndexes|stats)\([\s\S]*\)(\.(limit|sort|skip|toArray|count|pretty|projection)\([\s\S]*\))*)$/.test(q);
+  }
+  // Redis: one command from the read list
+  if (/^[a-z]+(\s|$)/i.test(q) && !/^(select|show|describe|desc|explain|with|table|values)\b/i.test(q)) return !REDIS_READ.test(q) || q.includes("\n");
+  // SQL: drop comments and quoted text, then it must be one read statement with no writing keyword
+  const bare = q
+    .replace(/--[^\n]*/g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\$([A-Za-z_]*)\$[\s\S]*?\$\1\$/g, "''")
+    .replace(/'(?:[^']|'')*'/g, "''")
+    .replace(/"(?:[^"]|"")*"/g, '""');
+  if (bare.includes(";") || /\/\*|\$\$/.test(bare)) return true;
+  if (!/^\s*(select|show|describe|desc|explain|with|table|values)\b/i.test(bare)) return true;
+  return SQL_WRITE.test(bare) || /\b(into|do|call|set|setval|nextval|pg_\w+|lo_\w+|dblink\w*|copy)\b/i.test(bare);
 }
 
 export function describe(call: ToolCall, review: "auto" | "manual" = "auto"): { label: string; needsApproval: boolean; detail: string; shell?: Shell } {
@@ -434,9 +453,9 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
     case "forget":
       return { label: `Forgot ${clip(str(a.what), 60)}`, needsApproval: false, detail: "" };
     case "add_machine":
-      return { label: `Added machine ${str(a.name) || "(new)"}`, needsApproval: false, detail: "" };
+      return { label: `Added machine ${str(a.name) || "(new)"}`, needsApproval: true, detail: "A new machine joins the fleet: it gets the agent, database tunnels and the keep-alive task, and new deploys can run on it." };
     case "rename_machine":
-      return { label: `Renamed machine ${str(a.from)} → ${str(a.to)}`, needsApproval: false, detail: "" };
+      return { label: `Renamed machine ${str(a.from)} → ${str(a.to)}`, needsApproval: true, detail: "" };
     case "remove_machine":
       return { label: `Removed machine ${str(a.name)}`, needsApproval: true, detail: `${str(a.name)} stops being managed by the dashboard` };
     case "connect_projects":
@@ -676,9 +695,11 @@ async function execute(call: ToolCall, ctx: { sessionId?: string }): Promise<{ o
         if (!/^[A-Za-z0-9_.-]+$/.test(container)) return { ok: false, output: `can't tell ${name}'s container from its start command` };
         const db = str(a.db).replace(/[^A-Za-z0-9_.-]/g, "");
         const engine = /postgres/.test(found.start) ? "pg" : /mysql|mariadb/.test(found.start) ? "mysql" : /mongo/.test(found.start) ? "mongo" : /redis/.test(found.start) ? "redis" : "";
+        // approved writes run as given; everything else runs in a read-only session, whatever the text says
+        const ro = !dbQueryIsWrite(query);
         const cmd: Record<string, string> = {
-          pg: `docker exec -i ${container} psql -U "\${POSTGRES_USER:-postgres}" ${db ? `-d ${db}` : ""} -v ON_ERROR_STOP=1 -P pager=off -c "$Q"`,
-          mysql: `export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"; docker exec -i -e MYSQL_PWD ${container} mysql -uroot --table ${db} -e "$Q"`,
+          pg: `docker exec -i ${ro ? "-e PGOPTIONS='-c default_transaction_read_only=on' " : ""}${container} psql -U "\${POSTGRES_USER:-postgres}" ${db ? `-d ${db}` : ""} -v ON_ERROR_STOP=1 -P pager=off -c "$Q"`,
+          mysql: `export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"; docker exec -i -e MYSQL_PWD ${container} mysql -uroot --table ${db} -e "${ro ? "SET SESSION TRANSACTION READ ONLY; " : ""}$Q"`,
           mongo: `docker exec -i ${container} mongosh --quiet -u "\${MONGO_INITDB_ROOT_USERNAME:-admin}" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin ${db || "test"} --eval "$Q"`,
           redis: `docker exec -i ${container} redis-cli \${REDIS_PASSWORD:+-a "$REDIS_PASSWORD" --no-auth-warning} $Q`,
         };

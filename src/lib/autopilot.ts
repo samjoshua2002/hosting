@@ -76,7 +76,7 @@ export async function runAutopilot(opts: { force?: boolean } = {}): Promise<Auto
       }
     }
     // dropped database tunnels
-    for (const t of a.tunnels.filter((x) => x.active !== "active")) {
+    for (const t of a.tunnels.filter((x) => x.active !== "active" && /^[a-z0-9][a-z0-9-]{0,31}$/.test(x.to))) {
       await withVm(vm, (c) => run(c, `systemctl --user restart hosting-tunnel-${t.to}.service`, { timeoutMs: 20_000 })).catch(() => null);
       actions.push(`restarted the database tunnel ${s.name} → ${t.to}`);
     }
@@ -129,7 +129,9 @@ export async function runAutopilot(opts: { force?: boolean } = {}): Promise<Auto
       "Autopilot checked your machines.",
       [...actions.map((t) => ({ tone: "good" as const, title: "Fixed", detail: t })), ...real.map((t) => ({ tone: "warning" as const, title: "Needs attention", detail: t }))],
     ).catch(() => false);
-  const next: AutopilotState = { ...state, lastRun: Date.now(), lastSummary: summary, lastActions: actions, sessionId: sessionId ?? state.sessionId };
+  // re-read: the user may have switched it off during this pass
+  const now = await getAutopilot().catch(() => state);
+  const next: AutopilotState = { ...now, lastRun: Date.now(), lastSummary: summary, lastActions: actions, sessionId: sessionId ?? now.sessionId };
   await save(next);
   return next;
 }

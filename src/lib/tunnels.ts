@@ -10,7 +10,21 @@ const GATEWAY_KNOWN_HOSTS = "[ssh.instabox.sh]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1
 const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
 
 /** Returns the ports now forwarded and the ones skipped because something on the app machine already uses them. */
-export async function linkTunnel(app: VmConfig, db: VmConfig, wanted: number[]): Promise<{ forwarded: number[]; skipped: number[] }> {
+const tunnelLocks = new Map<string, Promise<unknown>>();
+
+/** Add ports to the tunnel app → db. Calls for the same pair run one after another, so none drops another's port. */
+export function linkTunnel(app: VmConfig, db: VmConfig, wanted: number[]): Promise<{ forwarded: number[]; skipped: number[] }> {
+  const key = `${app.name}>${db.name}`;
+  const prev = tunnelLocks.get(key) ?? Promise.resolve();
+  const next = prev.then(
+    () => linkTunnelNow(app, db, wanted),
+    () => linkTunnelNow(app, db, wanted),
+  );
+  tunnelLocks.set(key, next.catch(() => undefined));
+  return next;
+}
+
+async function linkTunnelNow(app: VmConfig, db: VmConfig, wanted: number[]): Promise<{ forwarded: number[]; skipped: number[] }> {
   if (app.kind !== "instabox" || db.kind !== "instabox") throw new Error("tunnels work between InstaBox machines");
   if (app.name === db.name) throw new Error("same machine: use localhost directly");
   // keep what the tunnel already forwards (adding a port must never drop another app's database),

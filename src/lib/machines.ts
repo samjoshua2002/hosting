@@ -18,6 +18,14 @@ interface Entry {
 }
 
 let loadedAt = 0;
+
+// registry changes run one at a time in this server, re-reading the file inside the lock
+let registryLock: Promise<unknown> = Promise.resolve();
+function locked<T>(fn: () => Promise<T>): Promise<T> {
+  const next = registryLock.then(fn, fn);
+  registryLock = next.catch(() => undefined);
+  return next;
+}
 let loading: Promise<void> | null = null;
 
 async function load(): Promise<void> {
@@ -99,10 +107,12 @@ export async function addMachine(text: string, wanted?: string): Promise<{ name:
   if (!st.ok) throw new Error(`Couldn't reach it: ${st.error}`);
   const summary = [`${name} is online (${st.agent?.os ?? "Linux"}, ${st.agent?.cores ?? "?"} CPU, ${Math.round((st.agent?.memTotalKb ?? 0) / 1048576)} GB RAM); agent installed`];
 
-  // 2. remember it
-  const list = ((await storeGetJson<Entry[]>(PATH)) ?? []).filter((e) => e.name !== name);
-  list.push({ name, value: seal(parsed.value, PURPOSE), addedAt: new Date().toISOString() });
-  await storePut(PATH, JSON.stringify(list));
+  // 2. remember it (read right before writing, inside the lock)
+  await locked(async () => {
+    const list = ((await storeGetJson<Entry[]>(PATH)) ?? []).filter((e) => e.name !== name);
+    list.push({ name, value: seal(parsed.value, PURPOSE), addedAt: new Date().toISOString() });
+    await storePut(PATH, JSON.stringify(list));
+  });
   await refreshMachines(true);
 
   // 3. set it up like the others: database tunnels, and the keep-alive tasks every machine runs
@@ -144,18 +154,22 @@ export async function renameMachine(from: string, to: string): Promise<void> {
   if (!NAME_RE.test(next)) throw new Error("name: lowercase letters, digits and dashes");
   if (envVms().some((v) => v.name === from)) throw new Error(`${from} comes from the VMS env var; rename it there`);
   if (getVms().some((v) => v.name === next)) throw new Error(`${next} is already taken`);
-  const list = (await storeGetJson<Entry[]>(PATH)) ?? [];
-  const e = list.find((x) => x.name === from);
-  if (!e) throw new Error(`no added machine called ${from}`);
-  e.name = next;
-  await storePut(PATH, JSON.stringify(list));
+  await locked(async () => {
+    const list = (await storeGetJson<Entry[]>(PATH)) ?? [];
+    const e = list.find((x) => x.name === from);
+    if (!e) throw new Error(`no added machine called ${from}`);
+    e.name = next;
+    await storePut(PATH, JSON.stringify(list));
+  });
   await refreshMachines(true);
 }
 
 export async function removeMachine(name: string): Promise<void> {
   if (envVms().some((v) => v.name === name)) throw new Error(`${name} comes from the VMS env var; remove it there`);
-  const list = (await storeGetJson<Entry[]>(PATH)) ?? [];
-  if (!list.some((e) => e.name === name)) throw new Error(`no added machine called ${name}`);
-  await storePut(PATH, JSON.stringify(list.filter((e) => e.name !== name)));
+  await locked(async () => {
+    const list = (await storeGetJson<Entry[]>(PATH)) ?? [];
+    if (!list.some((e) => e.name === name)) throw new Error(`no added machine called ${name}`);
+    await storePut(PATH, JSON.stringify(list.filter((e) => e.name !== name)));
+  });
   await refreshMachines(true);
 }
