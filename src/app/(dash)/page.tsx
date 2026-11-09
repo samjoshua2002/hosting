@@ -43,10 +43,10 @@ export default function OverviewPage() {
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-6 px-10 py-8">
-      <header className="flex items-end justify-between gap-4">
+      <header className="flex min-h-[150px] items-end justify-between gap-4 pt-16 [text-shadow:0_1px_12px_rgb(0_0_0/0.6)]">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-white">Overview</h1>
-          <p className="mt-1 text-sm text-muted">Here is the summary of your fleet</p>
+          <h1 className="text-3xl font-semibold tracking-tight text-white">Overview</h1>
+          <p className="mt-1.5 text-sm text-zinc-300">Here is the summary of your fleet</p>
         </div>
         <div className="flex items-center gap-2">
           <Segmented value={range} options={RANGES.map((x) => ({ id: x.id, label: x.label }))} onChange={setRange} size="sm" />

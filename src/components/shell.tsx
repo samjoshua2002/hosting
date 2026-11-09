@@ -11,7 +11,7 @@ import { useAssistantBusy } from "./assistant-store";
 import { useCluster } from "./cluster";
 import { CommandPalette } from "./command-palette";
 import { crumbs, NAV } from "./nav";
-import { shuffleTheme, useTheme } from "./theme";
+import { shuffleTheme, UnsplashLayer, useTheme } from "./theme";
 import { cx } from "./ui";
 
 export function Shell({ children }: { children: ReactNode }) {
@@ -58,7 +58,12 @@ export function Shell({ children }: { children: ReactNode }) {
         <Suspense fallback={<TopBar path={null} />}>
           <TopBarWithPath />
         </Suspense>
-        <main className="relative isolate min-w-0 flex-1">{children}</main>
+        <main className="relative isolate min-w-0 flex-1">
+          <Suspense fallback={null}>
+            <Cover />
+          </Suspense>
+          {children}
+        </main>
       </div>
       <CommandPalette open={palette} onClose={() => setPalette(false)} />
     </div>
@@ -69,6 +74,14 @@ export function Shell({ children }: { children: ReactNode }) {
 function NavWithPath() {
   return <Nav path={usePathname()} />;
 }
+/** The day's Unsplash photo as a full-width cover fading into the top of each page (not behind the Assistant's columns). */
+function Cover() {
+  const path = usePathname();
+  const { photo } = useTheme();
+  if (path?.startsWith("/assistant")) return null;
+  return <UnsplashLayer photo={photo} className="page-cover" />;
+}
+
 function TopBarWithPath() {
   return <TopBar path={usePathname()} />;
 }

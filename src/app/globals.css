@@ -187,14 +187,15 @@ a {
 .page-cover {
   position: absolute !important;
   inset: 0 0 auto 0;
-  height: 420px;
+  height: 340px;
   z-index: -1;
   pointer-events: none;
   -webkit-mask-image: linear-gradient(180deg, #000 40%, transparent 100%);
   mask-image: linear-gradient(180deg, #000 40%, transparent 100%);
 }
 .page-cover .ub-shade {
-  background: linear-gradient(180deg, hsl(var(--h) 45% 6% / 0.35) 0%, hsl(var(--h) 45% 6% / 0.6) 60%, hsl(var(--h) 45% 6% / 0.95) 100%);
+  /* fade the photo into the plain black page */
+  background: linear-gradient(180deg, rgb(9 9 11 / 0.25) 0%, rgb(9 9 11 / 0.65) 55%, var(--bg) 100%);
 }
 
 /* React Flow, matched to the theme */
