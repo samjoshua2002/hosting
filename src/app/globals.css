@@ -38,8 +38,8 @@
   --line-strong: #2a2a2f;
   --text: #fafafa;
   --muted: #8b8b94;
-  --accent: hsl(var(--h) 88% 66%);
-  --accent-soft: hsl(var(--h) 92% 78%);
+  --accent: hsl(var(--h) 58% 64%);
+  --accent-soft: hsl(var(--h) 62% 76%);
   --accent-text: #e4e4e7;
   --accent-deep: hsl(var(--h) 80% 56%);
   --accent-alt: hsl(calc(var(--h) + 40) 85% 66%);
@@ -47,7 +47,7 @@
   --chip: #1b1b1f;
   --track: #232328;
   --tint: hsl(var(--h) 75% 50%);
-  --glow: hsl(var(--h) 88% 66% / 0.35);
+  --glow: hsl(var(--h) 58% 64% / 0.3);
   --story-a: #18181b;
   --story-b: #111113;
   --others: #52525b;

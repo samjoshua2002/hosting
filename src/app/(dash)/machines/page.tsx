@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { useCluster } from "@/components/cluster";
 import { Drawer } from "@/components/drawer";
 import { PageHero } from "@/components/page-hero";
-import { Badge, Button, Card, Field, SectionTitle, StatusDot, cx, inputCls } from "@/components/ui";
+import { Button, Card, Field, SectionTitle, StatusDot, cx, inputCls } from "@/components/ui";
 import { api } from "@/lib/client";
 import { fmtDuration, timeAgo, vmState } from "@/lib/format";
 
@@ -72,12 +72,11 @@ export default function VmsPage() {
       )}
 
       <Card className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-left text-xs">
-          <thead className="border-b border-[var(--line)] text-zinc-500">
+        <table className="w-full min-w-[760px] text-left text-sm">
+          <thead className="border-b border-[var(--line)] text-xs text-zinc-500">
             <tr>
               <th className="px-4 py-2.5 font-medium">Name</th>
-              <th className="px-4 py-2.5 font-medium">Endpoint</th>
-              <th className="px-4 py-2.5 font-medium">Machine</th>
+              <th className="px-4 py-2.5 font-medium">System</th>
               <th className="px-4 py-2.5 font-medium">Agent</th>
               <th className="px-4 py-2.5 font-medium">Uptime</th>
               <th className="px-4 py-2.5 font-medium">Checked</th>
@@ -93,33 +92,35 @@ export default function VmsPage() {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       <StatusDot state={vmState(s, Boolean(checking[v.name]))} />
-                      <span className="font-mono font-semibold text-zinc-200">{v.name}</span>
-                      <Badge>{v.kind}</Badge>
-                      {v.added && <Badge tone="blue">added here</Badge>}
+                      <span className="font-medium whitespace-nowrap text-white">{v.name}</span>
+                      {v.added && <span className="text-xs whitespace-nowrap text-zinc-500">added here</span>}
                     </div>
-                  </td>
-                  <td className="px-4 py-3 font-mono text-zinc-400">
-                    {v.userHint}@{v.host}:{v.port}
                   </td>
                   <td className="px-4 py-3 text-zinc-400">
                     {a ? (
                       <>
-                        <div className="text-zinc-300">{a.hostname}</div>
-                        <div className="text-zinc-500">
-                          {a.os} · {a.cores} vCPU
+                        <div className="whitespace-nowrap text-zinc-300">
+                          {a.cores} vCPU · {Math.round(a.memTotalKb / 1048576)} GB RAM
                         </div>
+                        <div className="text-xs whitespace-nowrap text-zinc-500">{a.os.replace(/ GNU\/Linux/, "")} · {v.host}</div>
                       </>
                     ) : (
                       <span className={s && !s.ok ? "text-rose-300" : "text-zinc-600"}>{s?.error ?? "—"}</span>
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    {a ? <Badge tone={a.v === agentVersion ? "green" : "amber"}>{a.v === agentVersion ? "up to date" : a.v}</Badge> : "—"}
+                    {a ? (
+                      <span className={cx("text-xs whitespace-nowrap", a.v === agentVersion ? "text-zinc-400" : "text-[var(--warning)]")}>
+                        {a.v === agentVersion ? "Up to date" : "Updating…"}
+                      </span>
+                    ) : (
+                      "—"
+                    )}
                   </td>
-                  <td className="px-4 py-3 text-zinc-400">{a ? fmtDuration(a.uptimeSec) : "—"}</td>
-                  <td className="px-4 py-3 text-zinc-500">
+                  <td className="px-4 py-3 whitespace-nowrap text-zinc-400">{a ? fmtDuration(a.uptimeSec) : "—"}</td>
+                  <td className="px-4 py-3 text-xs whitespace-nowrap text-zinc-500">
                     {timeAgo(s?.checkedAt)}
-                    {s?.ok && <div className="text-zinc-600">{s.ms} ms</div>}
+                    {s?.ok && <span className="text-zinc-600"> · {s.ms} ms</span>}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex justify-end gap-1">
