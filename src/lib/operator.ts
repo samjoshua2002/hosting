@@ -121,6 +121,18 @@ Working on code (GitHub)
 - Before the first change in a session, call ask_user to pick the branch unless the user already said: offer the default branch (pushes there redeploy projects with auto-deploy) and a new branch like "assistant/<short-topic>" with a pull request. Read the files you change first; keep edits minimal and in the repo's style. After committing, give the commit link; if a project auto-deploys from that branch, follow its deploy (fleet_status shows running deploy jobs) and report the result.
 - Review mode is chosen by the user: in manual mode every action waits for approval (commits show the diff first); in auto mode only destructive actions wait. Either way, never commit secrets.
 
+When things go wrong (decide like a senior SRE: pick the safest option that gets the user what they want, do it, then say in one line what you chose and why; only ask_user when the choice really is theirs)
+- Low disk (under ~1.5 GB free, or "No space left on device"): measure first (df -h ~ /; du -xh --max-depth=2 ~ | sort -h | tail; docker system df). Free the safe things yourself: docker image/builder prune (unused only), ~/.cache/pip, ~/.npm/_cacache, ~/.cache/ms-playwright and other caches, sudo journalctl --vacuum-size=100M, sudo apt-get clean, old *.log and finished job logs in ~/.hosting/jobs. Never delete ~/data, project code or anything you can't recreate without approval. If still short: move the next deploy to a machine with room, or propose moving a big project elsewhere (ask_user), or adding a machine.
+- Every machine full: clean the one with the most reclaimable space; if that's not enough, tell the user exactly what is using the space (artifact table) and offer choices (remove X, move Y, add a machine).
+- Machine resting / cooling down / unreachable: it's InstaBox's free-plan rest, not a fault. Don't retry in a loop. If the work can run elsewhere, do it there; if a project only runs on that machine, say it is down until the machine is back and offer a second copy on another machine (replicas) so it survives rests. Things that must stay up (databases, the storage machine box5) belong on machines that are used often.
+- Low memory / OOM (exit 137, "Killed", build dies): use a smaller build (npm ci --omit=dev, NODE_OPTIONS=--max-old-space-size=1536, mvn -T1, pip --no-cache-dir, fewer gunicorn workers), stop idle projects on that machine only with approval, or place it on the machine with the most free RAM.
+- Port already in use: pick a free port (ss -ltn), never kill someone else's process without approval.
+- Build or start fails: read the real error in job_log/project logs, fix the cause (missing runtime, wrong start command, wrong port, missing env) and redeploy; after 3 failed attempts stop and explain the error and what you tried.
+- Crash loops after a change: roll back (redeploy the previous commit/settings) first, then investigate.
+- Database unreachable from an app: check the tunnel (fleet_status tunnels; link_databases) and the env (connect_projects), not the app code.
+- GitHub token expired / 401: ask the user to reconnect GitHub on the Projects page; never ask for the token in chat.
+- Tool errors are information: read them and choose the next best step. Never claim success you didn't verify (curl the link, check the service state).
+
 Links and output
 - Always give full https URLs (the UI adds open and copy buttons). Put commands the user may want to run themselves in \`\`\`bash blocks.
 - Every project with a link also has a short, readable one: \${SITE}/go/<project-name> (e.g. \${SITE}/go/sidis). It always forwards to the running copy, survives redeploys and machine moves, and private ones ask for sign-in. Whenever you give the user a project's link, give this short link, not the raw *.instabox.tech address (only show that if they ask for it). "A new/better/meaningful/simple link" means this short link: just give it; don't redeploy or republish to get a new address. Never offer 0.0.0.0 or 127.0.0.1 addresses as links.
@@ -574,18 +586,41 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
       case "deploy_project": {
         let vms: VmConfig[];
         let placed = "";
-        if (Array.isArray(a.vms) && a.vms.length) vms = vmsFrom(a.vms);
-        else {
+        // what every machine has free right now: placement and the fit check below both use it
+        const all = getVms();
+        const st = Object.fromEntries((await mapLimit(all, 12, (vm) => probe(vm, 9_999_999_999))).map((x) => [x.name, x]));
+        const asked = str(a.type) || str(a.category);
+        const kind = asked === "database" || asked === "tool" || asked === "website" || asked === "service" || asked === "worker" ? asked : "app";
+        const ranked = rankMachines(all.map((v) => v.name), st, kind, process.env.STORE_VM || "box5");
+        const freeGb = (n: string) => {
+          const ag = st[n]?.agent;
+          return ag ? (ag.diskTotalKb - ag.diskUsedKb) / 1048576 : 0;
+        };
+        const memGb = (n: string) => (st[n]?.agent?.memAvailKb ?? 0) / 1048576;
+        const fleet = () => ranked.map((n) => `${n}: ${freeGb(n).toFixed(1)} GB disk, ${memGb(n).toFixed(1)} GB RAM free`).join("; ") || "no machine reachable";
+        // builds (node_modules, Maven, venvs, images) need room: below this a deploy will likely fail half way
+        const NEED_GB = 1.5;
+        if (Array.isArray(a.vms) && a.vms.length) {
+          vms = vmsFrom(a.vms);
+          const down = vms.filter((v) => !st[v.name]?.ok).map((v) => v.name);
+          const full = vms.filter((v) => st[v.name]?.ok && freeGb(v.name) < NEED_GB).map((v) => `${v.name} (${freeGb(v.name).toFixed(1)} GB free)`);
+          if (down.length || full.length)
+            return {
+              ok: false,
+              output: `Not deployed. ${down.length ? `${down.join(", ")} ${down.length > 1 ? "are" : "is"} resting/unreachable. ` : ""}${full.length ? `Too little disk on ${full.join(", ")}. ` : ""}Fleet now: ${fleet()}. Decide: free space on the named machine (caches, logs, unused Docker images; ask before deleting user data) and retry, or if the user didn't insist on that machine, deploy to the best one with room and tell them why.`,
+            };
+        } else {
           // the user didn't name machines: pick the best ones ourselves
-          const all = getVms();
-          const st = Object.fromEntries((await mapLimit(all, 12, (vm) => probe(vm, 9_999_999_999))).map((x) => [x.name, x]));
-          const t = str(a.type) || str(a.category);
-          const kind = t === "database" || t === "tool" || t === "website" || t === "service" || t === "worker" ? t : "app";
-          const ranked = rankMachines(all.map((v) => v.name), st, kind, process.env.STORE_VM || "box5");
-          const n = Math.min(Math.max(Number(a.replicas) || 1, 1), ranked.length);
-          if (!ranked.length) return { ok: false, output: "no machine is reachable right now; try again in a minute" };
-          vms = ranked.slice(0, n).map((x) => getVm(x)!);
-          placed = `Placed automatically on ${vms.map((v) => v.name).join(", ")} (most free memory/disk${kind === "database" ? ", with the other databases" : ""}).\n`;
+          const roomy = ranked.filter((n) => freeGb(n) >= NEED_GB);
+          const n = Math.min(Math.max(Number(a.replicas) || 1, 1), Math.max(roomy.length, 1));
+          if (!ranked.length) return { ok: false, output: "Not deployed: no machine is reachable right now (resting/cooling down). Say when they come back (fleet_status), or ask the user to add a machine." };
+          if (!roomy.length)
+            return {
+              ok: false,
+              output: `Not deployed: every reachable machine is nearly full. Fleet now: ${fleet()}. Free space on ${ranked[0]} first (apt/pip/npm caches, journal, old logs, unused Docker images and build caches, finished job logs), then retry. Ask before removing projects or data; suggest adding a machine if it is still not enough.`,
+            };
+          vms = roomy.slice(0, n).map((x) => getVm(x)!);
+          placed = `Placed automatically on ${vms.map((v) => v.name).join(", ")} (${vms.map((v) => `${freeGb(v.name).toFixed(1)} GB disk, ${memGb(v.name).toFixed(1)} GB RAM free`).join("; ")}${kind === "database" ? ", with the other databases" : ""}).\n`;
         }
         const name = str(a.name).toLowerCase();
         if (!PROJECT_NAME_RE.test(name)) return { ok: false, output: "name must be lowercase letters, digits and dashes" };
