@@ -37,6 +37,7 @@ import { addMachine, removeMachine, renameMachine } from "./machines";
 import { forget, listMemory, remember } from "./memory";
 import { CATALOG, engineFromStart, serviceIdOf } from "./catalog";
 import { skill, skillIndex, SKILLS } from "./skills";
+import { asGuidance, installedSkill, installedSkills, installSkill, removeSkill, searchHub } from "./skill-hub";
 import { moveProject } from "./failover";
 import { actionsFor, API_AUTH, COMMON, DRIVERS, driverSummary, type DriverCtx } from "./service-drivers";
 import { createService } from "./services";
@@ -172,6 +173,7 @@ You are the brain of this platform
 - For anything with more than ~3 steps: load_skill "goal-mode" plus the skills that match, then update_plan, and keep the plan current (doing → done/failed with notes) so the user sees progress live. Short questions and quick lookups need neither.
 - Skills (playbooks, load with load_skill):
 \${SKILLS_INDEX}
+- skills-hub.ai: when a task needs specialist know-how none of these cover (a framework, a platform, an audit type), find_skills there, pick the safest fitting one (trusted author, PASS review, most installs), install_skill it (the user approves), then load_skill it. Skills written for Claude Code or a laptop are ideas to adapt to your tools, not commands to follow literally.
 
 Using the services (they are your tools, not just things to install)
 - If a task needs a service that isn't installed (automation, storage, monitoring, dashboards, local AI), install it yourself with add_service (placement is automatic), wait for it, then use it. Reuse an existing one when there is one.
@@ -386,9 +388,27 @@ const TOOLS: ToolDef[] = [
   ),
   fn(
     "load_skill",
-    "Load a playbook with the senior-level way to do a kind of work on this platform (see Skills in the instructions). Load the matching ones before starting; they're short.",
-    { id: { type: "string", enum: SKILLS.map((x) => x.id) } },
+    "Load a playbook: a built-in one (see Skills in the instructions) or one installed from skills-hub.ai (by its slug). Load the matching ones before starting.",
+    { id: { type: "string", description: `built-in: ${SKILLS.map((x) => x.id).join(", ")}; or an installed skills-hub slug` } },
     ["id"],
+  ),
+  fn(
+    "find_skills",
+    "Search skills-hub.ai, the public library of AI skills (playbooks for frameworks, tools, audits, workflows). Returns slugs with their security review, author trust and installs. Use when a task needs specialist know-how none of your skills cover.",
+    { query: { type: "string" } },
+    ["query"],
+  ),
+  fn(
+    "install_skill",
+    "Install a skill from skills-hub.ai for yourself (the user approves it first: it's third-party text). Prefer trusted authors and a PASS security review. Then load_skill it.",
+    { slug: { type: "string" } },
+    ["slug"],
+  ),
+  fn(
+    "remove_skill",
+    "Uninstall a skills-hub skill.",
+    { slug: { type: "string" } },
+    ["slug"],
   ),
   fn(
     "save_service_info",
@@ -495,7 +515,7 @@ function vmsFrom(v: unknown): VmConfig[] {
 }
 
 /** What a call does in plain words, and whether it must wait for the user. */
-const READ_ONLY = new Set(["update_plan", "load_skill", "fleet_status", "job_log", "ask_user", "read_attachment", "github_repos", "show_diagram", "repo_branches", "repo_files", "repo_read", "create_artifact", "remember", "forget"]);
+const READ_ONLY = new Set(["update_plan", "load_skill", "find_skills", "fleet_status", "job_log", "ask_user", "read_attachment", "github_repos", "show_diagram", "repo_branches", "repo_files", "repo_read", "create_artifact", "remember", "forget"]);
 
 const SQL_WRITE = /\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|replace|merge|copy|vacuum|reindex|rename|lock)\b/i;
 const MONGO_WRITE = /\b(insert\w*|update\w*|delete\w*|remove|drop\w*|replace\w*|create\w*|rename\w*|bulkWrite|findOneAnd\w+|\$out|\$merge)\b/i;
@@ -621,6 +641,16 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Plan: ${str(a.title)}`, needsApproval: false, detail: "" };
     case "load_skill":
       return { label: `Using the ${skill(str(a.id))?.title ?? str(a.id)} playbook`, needsApproval: false, detail: "" };
+    case "find_skills":
+      return { label: `Searched skills-hub for "${clip(str(a.query), 60)}"`, needsApproval: false, detail: "" };
+    case "install_skill":
+      return {
+        label: `Install skill ${str(a.slug)} from skills-hub.ai`,
+        needsApproval: true,
+        detail: `Adds the instructions published at https://skills-hub.ai/skills/${str(a.slug)} to the Assistant's skills. They're third-party text: the Assistant uses them as guidance only and its own rules still apply.`,
+      };
+    case "remove_skill":
+      return { label: `Removed skill ${str(a.slug)}`, needsApproval: false, detail: "" };
     case "save_service_info":
       return { label: a.add_note ? `Saved a note about ${str(a.name)}` : `Described ${str(a.name)} on the Services page`, needsApproval: false, detail: str(a.add_note) };
     case "use_service": {
@@ -915,8 +945,44 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
         }
       }
       case "load_skill": {
-        const sk = skill(str(a.id));
-        return sk ? { ok: true, output: `# ${sk.title}\n${sk.body}` } : { ok: false, output: `unknown skill; available: ${SKILLS.map((x) => x.id).join(", ")}` };
+        const id = str(a.id).replace(/^hub:/, "");
+        const sk = skill(id);
+        if (sk) return { ok: true, output: `# ${sk.title}\n${sk.body}` };
+        const hubSk = await installedSkill(id);
+        if (hubSk) return { ok: true, output: asGuidance(hubSk) };
+        const mine = await installedSkills();
+        return { ok: false, output: `unknown skill. Built-in: ${SKILLS.map((x) => x.id).join(", ")}. Installed: ${mine.map((x) => x.slug).join(", ") || "none"}. find_skills searches skills-hub.ai.` };
+      }
+      case "find_skills": {
+        try {
+          const found = await searchHub(str(a.query));
+          if (!found.length) return { ok: true, output: "No skills found on skills-hub for that." };
+          const mine = new Set((await installedSkills()).map((x) => x.slug));
+          return {
+            ok: true,
+            output: found
+              .map((h) => `- ${h.slug}${mine.has(h.slug) ? " (installed)" : ""}: ${h.description} [author ${h.author || "?"}${h.trusted ? ", trusted" : ""}; security review ${h.aiVerdict ?? "none"}${h.securityGrade ? `, grade ${h.securityGrade}` : ""}; ${h.installs} installs]`)
+              .join("\n"),
+          };
+        } catch (e) {
+          return { ok: false, output: `skills-hub search failed: ${(e as Error).message}` };
+        }
+      }
+      case "install_skill": {
+        try {
+          const sk = await installSkill(str(a.slug).toLowerCase());
+          return { ok: true, output: `Installed ${sk.name} (${sk.slug}, ${sk.content.length} chars, security review ${sk.aiVerdict ?? "none"}). load_skill "${sk.slug}" to use it.` };
+        } catch (e) {
+          return { ok: false, output: (e as Error).message };
+        }
+      }
+      case "remove_skill": {
+        try {
+          await removeSkill(str(a.slug).toLowerCase());
+          return { ok: true, output: `Removed ${str(a.slug)}.` };
+        } catch (e) {
+          return { ok: false, output: (e as Error).message };
+        }
       }
       case "save_service_info": {
         const name = str(a.name).toLowerCase();
@@ -1291,8 +1357,9 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
   const review = input.review ?? "auto";
   const [gh, memory] = await Promise.all([githubAuth().catch(() => null), listMemory().catch(() => [])]);
   const names = await secretNames().catch(() => []);
+  const hubSkills = await installedSkills().catch(() => []);
   const system = [
-    SYSTEM.replace("${NAMES}", names.length ? names.join(", ") : "none yet").replaceAll("${SITE}", siteUrl()).replace("${SKILLS_INDEX}", skillIndex()),
+    SYSTEM.replace("${NAMES}", names.length ? names.join(", ") : "none yet").replaceAll("${SITE}", siteUrl()).replace("${SKILLS_INDEX}", skillIndex() + (hubSkills.length ? `\n${hubSkills.map((h) => `- ${h.slug} (installed from skills-hub): ${h.description}`).join("\n")}` : "")),
     gh ? capabilitySummary(gh.login, gh.scopes) : "GitHub: not connected. For repo work, ask the user to click Connect GitHub on the Projects page.",
     `Review mode: ${review === "manual" ? "manual (the user approves every action)" : "auto (only destructive actions wait for approval)"}.`,
     memory.length ? `Memory (things the user asked you to remember):\n${memory.map((m) => `- [${m.id}] ${m.text}`).join("\n")}` : "Memory: nothing saved yet.",

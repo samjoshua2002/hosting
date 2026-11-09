@@ -2,7 +2,7 @@
 
 import { LOCAL_URL, useNiceLink } from "@/components/nice-links";
 
-import { ArrowUpRight, Brain, FileText, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
+import { ArrowUpRight, Brain, FileText, GraduationCap, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { addFiles, currentDoc, editSession, hydrate, loadList, newSession, openSession, removeSession, send, setModel, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
 import { ArtifactView } from "@/components/artifact-view";
@@ -47,6 +47,11 @@ function splitSuggestions(text: string): { body: string; suggestions: string[] }
   return { body, suggestions };
 }
 
+type SkillList = {
+  builtIn: { id: string; title: string }[];
+  installed: { slug: string; name: string; description: string; author: string; aiVerdict: string | null; installedAt: number }[];
+};
+
 export default function AssistantPage() {
   const { vms, status, refresh, reloadVms } = useCluster();
   const st = useAssistant();
@@ -74,11 +79,17 @@ export default function AssistantPage() {
     api<{ memory: { id: string; text: string }[] }>("/api/memory")
       .then((r) => setMemory(r.memory))
       .catch(() => setMemory([]));
+  const [skills, setSkills] = useState<SkillList | null>(null);
+  const loadSkills = () =>
+    api<SkillList>("/api/skills")
+      .then(setSkills)
+      .catch(() => setSkills({ builtIn: [], installed: [] }));
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     hydrate();
     void loadMemory();
+    void loadSkills();
     void loadAutopilot();
     fetch("/api/ai/models", { cache: "no-store" })
       .then((r) => r.json())
@@ -107,6 +118,7 @@ export default function AssistantPage() {
     if (!busy) {
       void refresh();
       void loadMemory();
+      void loadSkills();
     }
   }
 
@@ -434,6 +446,34 @@ export default function AssistantPage() {
                   </button>
                 )}
               </div>
+            </div>
+          )}
+        </Section>
+
+        <Section title="Skills" icon={<GraduationCap className="size-3.5" />}>
+          {skills === null ? (
+            <p className="text-xs text-muted">Loading…</p>
+          ) : (
+            <div className="space-y-2">
+              <p className="px-2 text-xs leading-relaxed text-muted">
+                {skills.builtIn.length} built in: {skills.builtIn.map((b) => b.title.split(/[:(]/)[0].trim()).join(", ")}.
+              </p>
+              {skills.installed.map((h) => (
+                <div key={h.slug} className="group flex items-start gap-1.5 rounded-md px-2 py-1 text-xs hover:bg-white/5" title={h.description}>
+                  <a href={`https://skills-hub.ai/skills/${h.slug}`} target="_blank" rel="noreferrer" className="min-w-0 flex-1 text-ink hover:underline">
+                    <span className="block truncate">{h.name}</span>
+                    <span className="block truncate text-[11px] text-muted">skills-hub · {h.author || "unknown"}{h.aiVerdict ? ` · review ${h.aiVerdict}` : ""}</span>
+                  </a>
+                  <button
+                    onClick={() => void api<SkillList>("/api/skills", { remove: h.slug }).then(setSkills)}
+                    className="hidden text-muted hover:text-[var(--critical-text)] group-hover:block"
+                    aria-label="Remove skill"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              ))}
+              <p className="px-2 text-[11px] text-muted">Ask for anything specialised and it finds a skill on skills-hub.ai (you approve installs).</p>
             </div>
           )}
         </Section>
