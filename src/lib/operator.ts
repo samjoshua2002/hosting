@@ -96,6 +96,45 @@ function containerOf(m: ProjectManifest): string {
   return /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name) ? name : m.name;
 }
 
+/**
+ * What every conversation starts knowing: each machine's health and everything installed on it (projects,
+ * services, databases with ports, links, what they connect to), the tunnels and scheduled tasks. Cached
+ * briefly so a burst of messages doesn't probe every machine each time; fleet_status gives full detail.
+ */
+let snapshotCache: { at: number; text: Promise<string> } | null = null;
+function fleetSnapshot(): Promise<string> {
+  if (snapshotCache && Date.now() - snapshotCache.at < 45_000) return snapshotCache.text;
+  const text = mapLimit(getVms(), 12, (vm) => probe(vm, 9_999_999_999))
+    .then((fleet) =>
+      fleet
+        .map((s) => {
+          const a = s.agent;
+          if (!s.ok || !a) return `- ${s.name}: unreachable${s.error?.match(/cooling down until ([\dT:.-]+Z)/) ? ` (resting until ${s.error.match(/cooling down until ([\dT:.-]+Z)/)![1]})` : ""}`;
+          const projects = a.projects
+            .map((p) => {
+              const svc = serviceIdOf(p.manifest) ?? (p.manifest.service ? `custom: ${p.manifest.service.title}` : null);
+              const bits = [
+                typeOfProject(p.manifest),
+                svc && svc !== p.manifest.name ? svc : "",
+                p.active,
+                p.manifest.port ? `port ${p.manifest.port}` : "",
+                p.url ? (p.url.includes("_token=") ? "private link" : "public link") : "",
+                p.manifest.github ? `github ${p.manifest.github.repo}` : "",
+                p.manifest.uses?.length ? `uses ${p.manifest.uses.map((u) => u.name).join("+")}` : "",
+              ].filter(Boolean);
+              return `${p.manifest.name} (${bits.join(", ")})`;
+            })
+            .join("; ");
+          const extra = [a.tunnels.length ? `tunnels to ${a.tunnels.map((t) => t.to).join(", ")}` : "", a.cron.length ? `${a.cron.length} scheduled task${a.cron.length > 1 ? "s" : ""}` : ""].filter(Boolean).join("; ");
+          return `- ${s.name}: CPU ${Math.round(a.cpuPct)}%, ${(a.memAvailKb / 1048576).toFixed(1)} GB RAM free, ${((a.diskTotalKb - a.diskUsedKb) / 1048576).toFixed(1)} GB disk free${a.docker ? "" : ", no docker"}. Installed: ${projects || "nothing"}${extra ? `. ${extra}` : ""}`;
+        })
+        .join("\n"),
+    )
+    .catch(() => "(couldn't reach the machines just now; use fleet_status)");
+  snapshotCache = { at: Date.now(), text };
+  return text;
+}
+
 /** This dashboard's public address, for short links in replies. */
 function siteUrl(): string {
   const base = process.env.APP_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "https://hosting-teal-nine.vercel.app");
@@ -1464,17 +1503,7 @@ async function runLocal(input: OperatorInput, emit: (e: OperatorEvent) => void):
     emit({ type: "done", transcript: input.transcript, waiting: false, paused: false });
     return;
   }
-  const [fleet, memory] = await Promise.all([mapLimit(getVms(), 12, (vm) => probe(vm, 9_999_999_999)), listMemory().catch(() => [])]);
-  const snapshot = fleet
-    .map((s) => {
-      const a = s.agent;
-      if (!s.ok || !a) return `- ${s.name}: unreachable`;
-      const projects = a.projects
-        .map((p) => `${p.manifest.name} (${typeOfProject(p.manifest)}, ${p.active}${p.manifest.port ? `, port ${p.manifest.port}` : ""}${p.url ? `, ${p.url.includes("_token=") ? "private link" : p.url.replace(/^https:\/\//, "").split("/")[0]}` : ""})`)
-        .join("; ");
-      return `- ${s.name}: CPU ${Math.round(a.cpuPct)}%, ${(a.memAvailKb / 1048576).toFixed(1)} GB RAM free, ${((a.diskTotalKb - a.diskUsedKb) / 1048576).toFixed(1)} GB disk free. Projects: ${projects || "none"}`;
-    })
-    .join("\n");
+  const [snapshot, memory] = await Promise.all([fleetSnapshot(), listMemory().catch(() => [])]);
   const system = [
     `You are the assistant of the user's hosting dashboard, running as the local model ${model} on their own machine.`,
     "In this mode you can't run commands or change anything. Answer from the fleet snapshot below and general knowledge, briefly and accurately. Don't invent facts that aren't in the snapshot.",
@@ -1500,11 +1529,12 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
   const names = await secretNames().catch(() => []);
   const hubSkills = await installedSkills().catch(() => []);
   const standing = await getInstructions().catch(() => "");
-  const mcp = await mcpSummary().catch(() => "");
+  const [mcp, fleetNow] = await Promise.all([mcpSummary().catch(() => ""), fleetSnapshot()]);
   const system = [
     SYSTEM.replace("${NAMES}", names.length ? names.join(", ") : "none yet").replaceAll("${SITE}", siteUrl()).replace("${SKILLS_INDEX}", skillIndex() + (hubSkills.length ? `\n${hubSkills.map((h) => `- ${h.slug} (installed from skills-hub): ${h.description}`).join("\n")}` : "")),
     gh ? capabilitySummary(gh.login, gh.scopes) : "GitHub: not connected. For repo work, ask the user to click Connect GitHub on the Projects page.",
     `Review mode: ${review === "manual" ? "manual (the user approves every action)" : "auto (only destructive actions wait for approval)"}.`,
+    `Your fleet right now (live; every machine and everything installed on it; call fleet_status for full detail, logs and jobs):\n${fleetNow}`,
     mcp,
     standing ? `The user's standing instructions (follow them in every conversation unless they conflict with safety rules):\n${standing}` : "",
     memory.length ? `Memory (things the user asked you to remember):\n${memory.map((m) => `- [${m.id}] ${m.text}`).join("\n")}` : "Memory: nothing saved yet.",
