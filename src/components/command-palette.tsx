@@ -4,7 +4,7 @@ import { Boxes, CornerDownLeft, FolderGit2, MessagesSquare, Plus, Search, Server
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { serviceIdOf } from "@/lib/catalog";
+import { isService } from "@/lib/catalog";
 import { useCluster } from "./cluster";
 import { NAV } from "./nav";
 import { cx } from "./ui";
@@ -28,7 +28,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     const projects = new Map<string, { vm: string[]; service: boolean }>();
     for (const v of vms)
       for (const p of status[v.name]?.agent?.projects ?? []) {
-        const e = projects.get(p.manifest.name) ?? { vm: [], service: Boolean(serviceIdOf(p.manifest)) };
+        const e = projects.get(p.manifest.name) ?? { vm: [], service: isService(p.manifest) };
         e.vm.push(v.name);
         projects.set(p.manifest.name, e);
       }

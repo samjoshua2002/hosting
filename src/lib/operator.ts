@@ -3,7 +3,7 @@
 // to the database machine. Only destructive actions pause for the user's approval; then it carries on.
 import { chat, type ChatMessage, type ToolCall, type ToolDef } from "./ai";
 import type { ArtifactType, DiagramEdge, DiagramNode, OperatorEvent, Shell } from "./assistant-items";
-import type { ProjectManifest } from "./types";
+import type { CustomServiceInfo, ProjectManifest } from "./types";
 import { cronAction, ensureAgent, fillGenerated, jobLog, listManifests, newJobId, probe, projectAction, saveProject, startDeploy, startJob, PROJECT_NAME_RE, ENV_KEY_RE } from "./agent";
 import { getVm, getVms, type VmConfig } from "./config";
 import { isDestructive } from "./safety";
@@ -65,6 +65,22 @@ async function findProjectAnywhere(name: string): Promise<{ vm: VmConfig; manife
     if (m) return { vm, manifest: m };
   }
   return null;
+}
+
+/** Keep only the known, sensible fields of a custom service description. */
+function cleanServiceInfo(o: Record<string, unknown>): CustomServiceInfo {
+  const t = (v: unknown, n: number) => (typeof v === "string" ? v.trim().slice(0, n) : "");
+  const login = o.login && typeof o.login === "object" ? (o.login as Record<string, unknown>) : null;
+  const envKey = (v: unknown) => (typeof v === "string" && ENV_KEY_RE.test(v) ? v : undefined);
+  return {
+    title: t(o.title, 60) || "Service",
+    category: t(o.category, 30) || "Other",
+    desc: t(o.desc, 240),
+    ...(login ? { login: { user: t(login.user, 80) || undefined, userEnv: envKey(login.userEnv), passEnv: envKey(login.passEnv), note: t(login.note, 200) || undefined } } : {}),
+    ...(Array.isArray(o.usage) ? { usage: o.usage.map((x) => t(x, 300)).filter(Boolean).slice(0, 8) } : {}),
+    ...(typeof o.docs === "string" && /^https:\/\/\S+$/.test(o.docs) ? { docs: o.docs.slice(0, 300) } : {}),
+    ...(Array.isArray(o.notes) ? { notes: o.notes.map((x) => t(x, 400)).filter(Boolean).slice(-30) } : {}),
+  };
 }
 
 /** The Docker container a project runs in: its start command's --name (with $PORT filled in), else the project name. */
@@ -154,7 +170,7 @@ Using the services (they are your tools, not just things to install)
 - n8n: build and run automations with the n8n tool: write the workflow JSON yourself (Webhook, Schedule Trigger, HTTP Request, Code, IF, Set, MongoDB/Postgres, email, Slack… nodes), import it, add credentials (secrets as {{secret:NAME}}), activate it, test it (run, or curl its webhook), and give the user the workflow name and its webhook URL. n8n webhooks live at <n8n link>/webhook/<path>; set WEBHOOK_URL in n8n's env to its real link if webhooks show localhost.
 - Every other service: use_service. It knows each one's real actions and signs in with its stored admin login on the machine, so you never handle passwords: backups/restores and new databases (postgres, mysql, mariadb, mongodb, redis), buckets and files (minio), monitors and alerts (uptime-kuma: run setup first on a fresh install), dashboards and data sources (grafana), questions and dashboards on the user's databases (metabase: setup, add_database, create_question), local models (ollama: pull, ask), editor extensions (code-server), containers (portainer). status/logs/restart/api work on every project, including ones you deploy yourself. If an action you need isn't listed, use action api with the service's HTTP API, or run_command with docker exec <service> <its CLI>.
 - Typical combos, done end to end without being asked twice: "watch my sites" → add uptime-kuma, setup, add_monitor for each project link, add_notification if the user gives a channel; "dashboards on my data" → add metabase, setup, add_database, create_question for the useful views; "store files" → add minio, create_bucket, upload; "nightly backups" → schedule_task running the backup action's command, plus a first backup now; "local AI" → add ollama, pull a model that fits the machine's RAM, ask to test.
-- Anything not in the catalog (any open-source tool or Docker image): deploy it yourself with deploy_project the same way (Docker, port on 127.0.0.1, data in ~/data/<name>, passwords "generate", link private unless it's meant to be public, type "tool" or "service"), and connect it with connect_projects.
+- Anything not in the catalog (any open-source tool or Docker image): always pass deploy_project's service field (title, category, desc, login with the env keys that hold the admin user/password or a first-visit note, 3-5 usage steps, docs link) so it appears on the Services page like a catalog service. When you learn how to drive it (an API call or CLI command that works, a setting it needs, a fix), save it with save_service_info add_note; those notes come back every time you use it. Deploy it (Docker, port on 127.0.0.1, data in ~/data/<name>, passwords "generate", link private unless it's meant to be public, type "tool" or "service"), and connect it with connect_projects.
 
 Moving an app off Render, Vercel, Heroku, Netlify or Railway (the user wants everything on their own machines)
 - Read the repo first (README, package.json/requirements, .env.example, vercel.json/render.yaml/Procfile). A repo with a backend at the root and a frontend in a folder (frontend/, client/, web/) becomes two projects: <repo>-api (service) and <repo>-web (website), each with its own install/build/start and root folder (cd frontend && …).
@@ -224,6 +240,19 @@ const TOOLS: ToolDef[] = [
       framework: { type: "string", description: 'for display, e.g. "Next.js"' },
       github_repo: { type: "string", description: "owner/name of a GitHub repo (instead of repo)" },
       github_auto_deploy: { type: "boolean", description: "redeploy on every push to the branch (GitHub repos)" },
+      service: {
+        type: "object",
+        description: "third-party software (not the user's own code): how it shows on the Services page",
+        properties: {
+          title: { type: "string", description: "product name, e.g. Plausible Analytics" },
+          category: { type: "string", enum: ["Databases", "Database tools", "Storage", "Monitoring", "Automation", "Analytics", "AI", "Developer tools", "Other"] },
+          desc: { type: "string", description: "one sentence: what it does for the user" },
+          login: { type: "object", properties: { user: { type: "string" }, userEnv: { type: "string" }, passEnv: { type: "string" }, note: { type: "string" } }, description: "literal user or the env key holding it, the env key holding the password, or a note (e.g. 'create the admin account on first visit')" },
+          usage: { type: "array", items: { type: "string" }, description: "3-5 short steps to start using it" },
+          docs: { type: "string", description: "https link to its documentation" },
+        },
+        required: ["title", "category", "desc"],
+      },
       env: { type: "object", additionalProperties: { type: "string" }, description: 'environment variables; omit to keep the current ones. Use "generate" for passwords.' },
     },
     ["name", "start"],
@@ -327,6 +356,28 @@ const TOOLS: ToolDef[] = [
     "Call any GitHub REST API endpoint the connected token allows, e.g. GET /repos/o/r/issues, POST /repos/o/r/issues, GET /repos/o/r/actions/runs, POST /gists. Returns status and JSON (trimmed).",
     { method: { type: "string", enum: ["GET", "POST", "PATCH", "PUT", "DELETE"] }, path: { type: "string" }, body: { type: "object" } },
     ["method", "path"],
+  ),
+  fn(
+    "save_service_info",
+    "Update what the Services page and you know about a custom service (third-party software you installed that isn't in the catalog): title, category, desc, login, usage steps, docs, and add_note to remember something you learned (an API call that works, a setting, a gotcha). Notes come back to you every time you use_service it.",
+    {
+      name: { type: "string", description: "the project name" },
+      info: {
+        type: "object",
+        description: "third-party software (not the user's own code): how it shows on the Services page",
+        properties: {
+          title: { type: "string", description: "product name, e.g. Plausible Analytics" },
+          category: { type: "string", enum: ["Databases", "Database tools", "Storage", "Monitoring", "Automation", "Analytics", "AI", "Developer tools", "Other"] },
+          desc: { type: "string", description: "one sentence: what it does for the user" },
+          login: { type: "object", properties: { user: { type: "string" }, userEnv: { type: "string" }, passEnv: { type: "string" }, note: { type: "string" } }, description: "literal user or the env key holding it, the env key holding the password, or a note (e.g. 'create the admin account on first visit')" },
+          usage: { type: "array", items: { type: "string" }, description: "3-5 short steps to start using it" },
+          docs: { type: "string", description: "https link to its documentation" },
+        },
+        
+      },
+      add_note: { type: "string" },
+    },
+    ["name"],
   ),
   fn(
     "use_service",
@@ -531,6 +582,8 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Copied attachment ${str(a.id)} to ~/${str(a.path)} on ${on(a.vms)}`, needsApproval: false, detail: "" };
     case "add_service":
       return { label: `Added ${str(a.name) || str(a.template)} from the catalog`, needsApproval: false, detail: "" };
+    case "save_service_info":
+      return { label: a.add_note ? `Saved a note about ${str(a.name)}` : `Described ${str(a.name)} on the Services page`, needsApproval: false, detail: str(a.add_note) };
     case "use_service": {
       const act = str(a.action);
       const method = str((a.params as { method?: unknown } | undefined)?.method);
@@ -607,6 +660,7 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
                   port: p.manifest.port,
                   url: p.url ?? null,
                   github: p.manifest.github ?? undefined,
+                  service: serviceIdOf(p.manifest) ?? (p.manifest.service ? `custom: ${p.manifest.service.title}${p.manifest.service.notes?.length ? ` (${p.manifest.service.notes.length} saved notes)` : ""}` : undefined),
                   commit: p.commit ? `${p.commit.sha.slice(0, 7)} ${p.commit.message}` : undefined,
                 })),
                 jobsRunning: g.jobs.filter((j) => j.state === "running").map((j) => ({ id: j.id, label: j.meta.label })),
@@ -742,6 +796,7 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
           access: (link === "private" ? "private" : "public") as "public" | "private",
           ...(t ? typeFields(t) : { category: "app" as const }),
           framework: str(a.framework) || undefined,
+          ...(a.service && typeof a.service === "object" ? { service: cleanServiceInfo(a.service as Record<string, unknown>) } : {}),
           github,
           env: fillGenerated(env),
         };
@@ -807,6 +862,23 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
         });
         return { ok: res.every((r) => r.ok), output: clip(res.map((r) => r.line).join("\n\n"), 5000) };
       }
+      case "save_service_info": {
+        const name = str(a.name).toLowerCase();
+        if (!PROJECT_NAME_RE.test(name)) return { ok: false, output: "name must be a project name" };
+        const located = await findProjectAnywhere(name);
+        if (!located) return { ok: false, output: `no project named ${name}` };
+        if (serviceIdOf(located.manifest)) return { ok: false, output: `${name} is a catalog service; its page is already complete. Use remember for facts about it.` };
+        const prev = located.manifest.service;
+        const patch = a.info && typeof a.info === "object" ? cleanServiceInfo({ ...(prev ?? {}), ...(a.info as Record<string, unknown>) }) : prev;
+        const note = clip(str(a.add_note).trim(), 400);
+        const next = { ...(patch ?? { title: name, category: "Other", desc: "" }), notes: [...(prev?.notes ?? []), ...(note ? [note] : [])].slice(-30) };
+        // every machine running a copy keeps the same description
+        const copies = (await Promise.all(getVms().map(async (vm) => ((await manifestsOf(vm)).some((m) => m.name === name) ? vm : null)))).filter((v): v is VmConfig => Boolean(v));
+        const py = `import json,os,sys\np=os.path.expanduser('~/.hosting/projects/${name}.json')\nd=json.load(open(p))\nd['service']=json.loads(sys.argv[1])\nt=p+'.tmp'\nopen(t,'w').write(json.dumps(d,separators=(',',':')))\nos.replace(t,p)\nprint('saved')`;
+        const results = await Promise.all(copies.map((vm) => withVm(vm, (c) => run(c, `python3 -c ${shq(py)} ${shq(JSON.stringify(next))}`, { timeoutMs: 20_000 })).then((r) => `${vm.name}: ${r.code === 0 ? "saved" : r.stderr.trim()}`)));
+        manifestCache.clear();
+        return { ok: true, output: `${name}: ${results.join("; ")}. It shows on the Services page as "${next.title}".` };
+      }
       case "use_service": {
         const want = str(a.service).toLowerCase();
         const act = str(a.action);
@@ -817,7 +889,10 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
         if (id === "n8n" && !(act in COMMON)) return { ok: false, output: "use the n8n tool for workflows" };
         const actions = actionsFor(id);
         const action = actions[act];
-        if (!action) return { ok: false, output: `${want} (${id ?? "custom project"}) can: ${Object.entries(actions).map(([k, v]) => `${k} (${v.about})`).join("; ")}` };
+        if (!action) {
+          const notes = located.manifest.service?.notes ?? [];
+          return { ok: false, output: `${want} (${id ?? located.manifest.service?.title ?? "custom project"}) can: ${Object.entries(actions).map(([k, v]) => `${k} (${v.about})`).join("; ")}${notes.length ? `\nYour saved notes:\n${notes.slice(-8).map((n) => `- ${n}`).join("\n")}` : ""}` };
+        }
         const params = a.params && typeof a.params === "object" ? (a.params as Record<string, unknown>) : {};
         const envOf = async (vm: VmConfig, name: string) => {
           const r = await withVm(vm, (c) => run(c, `cat "$HOME/.hosting/projects/${name}.env" 2>/dev/null || true`, { timeoutMs: 15_000 }));
@@ -840,7 +915,9 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
         const secrets = Object.values({ ...(await envOf(located.vm, want).catch(() => ({}))), ...(peer?.env ?? {}) }).filter((v) => v.length >= 6);
         let out = `${r.stdout}\n${r.stderr}`.trim();
         for (const v of secrets.sort((x, y) => y.length - x.length)) out = out.split(v).join("••••");
-        return { ok: r.code === 0, output: clip(`${want} on ${located.vm.name}: ${act}\n${out || "done"}`, 8000) };
+        const notes = located.manifest.service?.notes?.slice(-8) ?? [];
+        const memo = notes.length ? `\n\nYour saved notes on ${want}:\n${notes.map((n) => `- ${n}`).join("\n")}` : "";
+        return { ok: r.code === 0, output: clip(`${want} on ${located.vm.name}: ${act}\n${out || "done"}${memo}`, 8000) };
       }
       case "n8n": {
         const want = str(a.service).toLowerCase();

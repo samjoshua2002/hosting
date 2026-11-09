@@ -359,6 +359,11 @@ const DETECT: [string, RegExp][] = [
   ["redis", /redis:\d|redis-server/],
 ];
 
+/** Shown on the Services page: a catalog service, or software the Assistant installed and described. */
+export function isService(m: { template?: string; start: string; build: string; service?: unknown }): boolean {
+  return Boolean(serviceIdOf(m) || m.service);
+}
+
 export function serviceIdOf(m: { template?: string; start: string; build: string }): string | null {
   if (m.template && template(m.template)) return m.template;
   const s = `${m.start} ${m.build}`;

@@ -4,7 +4,7 @@ import { Bell, LogOut, Plus, RefreshCw, Search, ShieldCheck, Shuffle } from "luc
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { serviceIdOf } from "@/lib/catalog";
+import { isService } from "@/lib/catalog";
 import { api } from "@/lib/client";
 import { findProblems, investigatePrompt } from "@/lib/health";
 import type { MailItem } from "@/lib/mail";
@@ -92,7 +92,7 @@ function Nav({ path }: { path: string | null }) {
   const { vms, status } = useCluster();
   const counts = useMemo(() => {
     const names = new Map<string, boolean>();
-    for (const v of vms) for (const p of status[v.name]?.agent?.projects ?? []) names.set(p.manifest.name, Boolean(serviceIdOf(p.manifest)));
+    for (const v of vms) for (const p of status[v.name]?.agent?.projects ?? []) names.set(p.manifest.name, isService(p.manifest));
     const services = [...names.values()].filter(Boolean).length;
     return { "/projects": names.size - services, "/services": services, "/machines": vms.length } as Record<string, number>;
   }, [vms, status]);

@@ -36,7 +36,7 @@ import { Button, Card, cx } from "@/components/ui";
 import { CATALOG, CATEGORIES, serviceIdOf, template, USAGE, type ServiceCategory, type ServiceTemplate } from "@/lib/catalog";
 import { api } from "@/lib/client";
 import { shortLabel, shortLink } from "@/lib/short-link";
-import type { JobLog, ProjectState } from "@/lib/types";
+import type { CustomServiceInfo, JobLog, ProjectManifest, ProjectState } from "@/lib/types";
 
 const ICON: Record<string, LucideIcon> = {
   postgres: Database,
@@ -63,9 +63,18 @@ const ENGINE_LABEL = { postgres: "PostgreSQL", mysql: "MySQL", mongo: "MongoDB",
 
 interface Installed {
   name: string;
+  /** catalog id, or "custom" for software the Assistant installed and described */
   id: string;
   t: ServiceTemplate;
   inst: { vm: string; p: ProjectState }[];
+  usage: string[];
+  custom?: CustomServiceInfo;
+}
+
+/** A catalog-shaped entry for a custom service, so it uses the same card. */
+function customTemplate(m: ProjectManifest, info: CustomServiceInfo): ServiceTemplate {
+  const cat = (CATEGORIES as readonly string[]).includes(info.category) ? (info.category as ServiceCategory) : "Developer tools";
+  return { id: "custom", name: info.title || m.name, category: cat, desc: info.desc, type: "tool", port: m.port ?? 0, link: m.publish ? (m.access === "private" ? "private" : "public") : "none", install: m.install, build: m.build, start: m.start, env: {}, login: info.login };
 }
 
 interface Install {
@@ -100,10 +109,12 @@ export default function ServicesPage() {
     const map = new Map<string, Installed>();
     for (const v of vms)
       for (const p of status[v.name]?.agent?.projects ?? []) {
-        const id = serviceIdOf(p.manifest);
-        const t = id ? template(id) : undefined;
+        const catalogId = serviceIdOf(p.manifest);
+        const info = !catalogId ? p.manifest.service : undefined;
+        const id = catalogId ?? (info ? "custom" : null);
+        const t = catalogId ? template(catalogId) : info ? customTemplate(p.manifest, info) : undefined;
         if (!id || !t) continue;
-        const e = map.get(p.manifest.name) ?? { name: p.manifest.name, id, t, inst: [] };
+        const e = map.get(p.manifest.name) ?? { name: p.manifest.name, id, t, inst: [], usage: catalogId ? (USAGE[catalogId] ?? []) : (info?.usage ?? []), custom: info };
         e.inst.push({ vm: v.name, p });
         map.set(p.manifest.name, e);
       }
@@ -158,7 +169,9 @@ export default function ServicesPage() {
 
       <Section title="Your services" hint="Open them, sign in, and see how to use each one.">
         {apps.length === 0 ? (
-          <Card className="p-6 text-sm text-muted">Nothing yet. pgAdmin, phpMyAdmin, Uptime Kuma, n8n, Ollama and more are one click away below.</Card>
+          <Card className="p-6 text-sm text-muted">
+            Nothing yet. pgAdmin, phpMyAdmin, Uptime Kuma, n8n, Ollama and more are one click away below. Need something that isn&apos;t listed? Ask the Assistant (&quot;install Plausible&quot;, &quot;add Nextcloud&quot;) and it shows up here too.
+          </Card>
         ) : (
           <div className="grid grid-cols-2 gap-4">
             {apps.map((x) => (
@@ -323,6 +336,7 @@ function ServiceCard({ x, open: initiallyOpen }: { x: Installed; open: boolean }
             {m.name}
           </Link>
           <p className="truncate text-xs text-muted">
+            {x.custom && <span className="mr-1.5 rounded bg-white/[0.06] px-1.5 py-px text-[10.5px] text-zinc-300">Custom</span>}
             {x.t.name} · {x.inst.map((i) => i.vm).join(", ")}
             {m.uses?.length ? ` · connected to ${m.uses.map((u) => u.name).join(", ")}` : ""}
           </p>
@@ -392,7 +406,7 @@ function ServiceCard({ x, open: initiallyOpen }: { x: Installed; open: boolean }
       {howOpen && (
         <div className="mt-2 space-y-3">
           <ol className="space-y-1.5 text-sm text-ink">
-            {(USAGE[x.id] ?? []).map((line, i) => (
+            {x.usage.map((line, i) => (
               <li key={i} className="flex gap-2">
                 <span className="grid size-5 shrink-0 place-items-center rounded-full bg-chip text-[11px] text-muted">{i + 1}</span>
                 <span>{fill(line)}</span>
@@ -405,6 +419,22 @@ function ServiceCard({ x, open: initiallyOpen }: { x: Installed; open: boolean }
               </li>
             )}
           </ol>
+          {x.custom?.docs && /^https:\/\//.test(x.custom.docs) && (
+            <a href={x.custom.docs} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-accent-soft hover:underline">
+              {x.t.name} documentation <ExternalLink className="size-3" />
+            </a>
+          )}
+          {x.custom?.notes?.length ? (
+            <details className="rounded-xl border border-white/[0.06] bg-black/20 px-3 py-2 text-xs text-ink">
+              <summary className="cursor-pointer text-muted">What the Assistant learned ({x.custom.notes.length})</summary>
+              <ul className="mt-2 space-y-1">
+                {x.custom.notes.slice(-12).map((n, i) => (
+                  <li key={i} className="break-words">• {n}</li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+          {x.custom && !x.usage.length && <p className="text-xs text-muted">Ask the Assistant how to use {x.t.name}; it saves the steps here.</p>}
           {x.id === "ollama" && <OllamaTry name={m.name} url={url} />}
         </div>
       )}

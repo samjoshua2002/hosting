@@ -36,9 +36,28 @@ export interface ProjectManifest {
   uses?: { name: string; env: string; keys?: string[] }[];
   /** made from a Services catalog entry (its id) */
   template?: string;
+  /** third-party software the Assistant installed that isn't in the catalog: shown on the Services page like one */
+  service?: CustomServiceInfo;
   envKeys: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** What the Services page and the Assistant know about a service that isn't in the catalog. */
+export interface CustomServiceInfo {
+  /** product name, e.g. "Plausible Analytics" */
+  title: string;
+  /** one of the catalog categories (Storage, Monitoring, Analytics, Automation, AI, Developer tools, Databases, Database tools) or "Other" */
+  category: string;
+  desc: string;
+  /** how to sign in: a literal user or the env key that holds it, and the env key holding the password */
+  login?: { user?: string; userEnv?: string; passEnv?: string; note?: string };
+  /** how to use it, step by step ({name}, {vm}, {port} are filled in) */
+  usage?: string[];
+  /** the product's documentation */
+  docs?: string;
+  /** what the Assistant learned while working with it (API calls that work, gotchas), newest last */
+  notes?: string[];
 }
 
 export interface GithubLink {
