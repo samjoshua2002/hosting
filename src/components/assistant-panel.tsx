@@ -2,7 +2,7 @@
 
 // Pieces of the Assistant's side panel that load their own data: standing instructions, connectors, live
 // monitoring of the fleet and the list of tools.
-import { Bot, Check, CircleAlert, Cloud, Cpu, Database, Image as ImageIcon, Loader2, Mail, Search, Server, Sparkles, Wrench, X, type LucideIcon } from "lucide-react";
+import { Bot, Check, CircleAlert, Cloud, Cpu, Database, Image as ImageIcon, Loader2, Mail, Plug, Search, Server, Sparkles, Wrench, X, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "@/lib/client";
 import { timeAgo } from "@/lib/format";
@@ -141,6 +141,151 @@ export function Connectors({ mcp }: { mcp?: ReactNode }) {
       <Row icon={Mail} name="Email alerts" sub={o.email ? "Autopilot emails what it fixed" : "Set EMAIL_USER and EMAIL_PASS"} ok={o.email} />
       <Row icon={Cloud} name="Unsplash" sub={o.unsplash ? "Daily cover photos and colors" : "Set UNSPLASH_ACCESS_KEY"} ok={o.unsplash} />
       {mcp}
+      <McpConnectors />
+    </div>
+  );
+}
+
+/* ---------- MCP connectors ---------- */
+
+interface McpInfo {
+  name: string;
+  url: string;
+  enabled: boolean;
+  tools: { name: string; description: string; readOnly?: boolean; destructive?: boolean }[];
+  checkedAt?: number;
+  error?: string;
+  hasToken: boolean;
+}
+interface McpList {
+  servers: McpInfo[];
+  suggestions: { name: string; url: string; about: string; token?: string }[];
+}
+
+function McpConnectors() {
+  const [d, setD] = useState<McpList | null>(null);
+  const [form, setForm] = useState<{ name: string; url: string; token: string; needsToken?: string } | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  useEffect(() => {
+    api<McpList>("/api/mcp").then(setD, () => setD({ servers: [], suggestions: [] }));
+  }, []);
+  const act = async (key: string, body: unknown) => {
+    setBusy(key);
+    setErr(null);
+    try {
+      setD(await api<McpList>("/api/mcp", body));
+      return true;
+    } catch (e) {
+      setErr((e as Error).message);
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  };
+  if (!d) return null;
+  const have = new Set(d.servers.map((x) => x.name));
+  return (
+    <div className="mt-4 space-y-2">
+      <p className="flex items-center gap-1.5 pt-2 text-[11px] font-medium text-zinc-400">
+        <Plug className="size-3" /> MCP servers
+        <span className="font-normal text-zinc-600">· tools from other services the Assistant can use</span>
+      </p>
+      {d.servers.map((m) => (
+        <div key={m.name} className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
+          <div className="flex items-center gap-2.5">
+            <span className="grid size-7 shrink-0 place-items-center rounded-md bg-white/[0.06] text-zinc-300">
+              <Plug className="size-3.5" />
+            </span>
+            <button onClick={() => setOpen(open === m.name ? null : m.name)} className="min-w-0 flex-1 text-left">
+              <p className="truncate text-xs font-medium text-white">{m.name}</p>
+              <p className="truncate text-[11px] text-zinc-500">{m.error ? m.error : `${m.tools.length} tools · ${m.url.replace(/^https:\/\//, "")}${m.hasToken ? " · token" : ""}`}</p>
+            </button>
+            <button
+              role="switch"
+              aria-checked={m.enabled}
+              onClick={() => void act(`en-${m.name}`, { enable: m.name, on: !m.enabled })}
+              className={cx("relative h-4 w-7 shrink-0 rounded-full transition-colors", m.enabled ? "bg-[var(--accent)]" : "bg-white/15")}
+              title={m.enabled ? "On" : "Off"}
+            >
+              <span className={cx("absolute top-0.5 size-3 rounded-full bg-white transition-all", m.enabled ? "left-[14px]" : "left-0.5")} />
+            </button>
+          </div>
+          {open === m.name && (
+            <div className="mt-2 space-y-1 border-t border-white/[0.05] pt-2">
+              {m.tools.slice(0, 40).map((t) => (
+                <p key={t.name} className="truncate text-[11px] text-zinc-400" title={t.description}>
+                  <span className="font-mono text-zinc-200">{t.name}</span> {t.destructive ? <span className="text-[var(--warning)]">· changes things</span> : t.readOnly ? <span className="text-zinc-600">· read-only</span> : null}
+                </p>
+              ))}
+              <div className="flex gap-3 pt-1 text-[11px]">
+                <button onClick={() => void act(`rf-${m.name}`, { refresh: m.name })} className="text-accent-soft hover:text-white">
+                  {busy === `rf-${m.name}` ? "Checking…" : "Refresh tools"}
+                </button>
+                <button onClick={() => void act(`rm-${m.name}`, { remove: m.name })} className="text-zinc-500 hover:text-[var(--critical-text)]">
+                  Remove
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+
+      {form ? (
+        <div className="space-y-1.5 rounded-lg border border-white/[0.08] bg-black/30 p-2.5">
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "") })} placeholder="name (e.g. context7)" className="w-full rounded-md bg-white/[0.04] px-2 py-1.5 text-xs text-white placeholder:text-zinc-600" />
+          <input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value.trim() })} placeholder="https://… (Streamable HTTP endpoint)" className="w-full rounded-md bg-white/[0.04] px-2 py-1.5 font-mono text-[11px] text-white placeholder:text-zinc-600" />
+          <input
+            value={form.token}
+            onChange={(e) => setForm({ ...form, token: e.target.value })}
+            type="password"
+            autoComplete="off"
+            placeholder={form.needsToken ? `Token: ${form.needsToken}` : "Token (optional, stored encrypted)"}
+            className="w-full rounded-md bg-white/[0.04] px-2 py-1.5 text-xs text-white placeholder:text-zinc-600"
+          />
+          <div className="flex justify-end gap-2 pt-0.5 text-xs">
+            <button onClick={() => setForm(null)} className="rounded-md px-2.5 py-1 text-zinc-400 hover:text-white">
+              Cancel
+            </button>
+            <button
+              disabled={!form.name || !form.url || busy === "add"}
+              onClick={async () => {
+                if (await act("add", { add: { name: form.name, url: form.url, token: form.token } })) setForm(null);
+              }}
+              className="flex items-center gap-1.5 rounded-md bg-white px-2.5 py-1 font-medium text-black hover:bg-white/90 disabled:bg-white/[0.08] disabled:text-zinc-500"
+            >
+              {busy === "add" && <Loader2 className="size-3 animate-spin" />} Connect
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setForm({ name: "", url: "", token: "" })} className="w-full rounded-lg border border-dashed border-white/10 px-3 py-2 text-xs text-zinc-400 hover:border-white/25 hover:text-white">
+          + Add an MCP server
+        </button>
+      )}
+      {err && <p className="text-[11px] text-[var(--critical-text)]">{err}</p>}
+
+      {d.suggestions.filter((x) => !have.has(x.name)).length > 0 && (
+        <div className="space-y-1 pt-1">
+          <p className="text-[10.5px] text-zinc-600">Popular remote servers</p>
+          {d.suggestions
+            .filter((x) => !have.has(x.name))
+            .map((x) => (
+              <button
+                key={x.name}
+                onClick={() => (x.token ? setForm({ name: x.name, url: x.url, token: "", needsToken: x.token }) : void act(`add-${x.name}`, { add: { name: x.name, url: x.url } }))}
+                className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-white/[0.04]"
+              >
+                {busy === `add-${x.name}` ? <Loader2 className="mt-0.5 size-3 shrink-0 animate-spin text-zinc-400" /> : <Plug className="mt-0.5 size-3 shrink-0 text-zinc-500" />}
+                <span className="min-w-0">
+                  <span className="block text-xs text-zinc-200">{x.name}</span>
+                  <span className="block text-[11px] leading-snug text-zinc-500">{x.about}{x.token ? " · needs a token" : ""}</span>
+                </span>
+              </button>
+            ))}
+        </div>
+      )}
     </div>
   );
 }

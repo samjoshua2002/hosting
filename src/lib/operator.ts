@@ -41,6 +41,7 @@ import { skill, skillIndex, SKILLS } from "./skills";
 import { asGuidance, installedSkill, installedSkills, installSkill, removeSkill, searchHub } from "./skill-hub";
 import { moveProject } from "./failover";
 import { importZip } from "./zip-import";
+import { callTool, mcpSummary, serverTools, toolIndex } from "./mcp";
 import { actionsFor, API_AUTH, COMMON, DRIVERS, driverSummary, type DriverCtx } from "./service-drivers";
 import { createService } from "./services";
 import { maskSecrets, revealIn, secretNames, vaultText } from "./vault";
@@ -395,6 +396,18 @@ const TOOLS: ToolDef[] = [
     ["name"],
   ),
   fn(
+    "mcp_tools",
+    "List the tools of a connected MCP server with their input schemas (see MCP connectors in the instructions), before calling one you haven't used.",
+    { server: { type: "string" } },
+    ["server"],
+  ),
+  fn(
+    "mcp_call",
+    "Call a tool on a connected MCP server (docs lookup, repo Q&A, model search, GitHub actions…) with arguments matching its input schema. Tools that change things outside this platform wait for the user's approval.",
+    { server: { type: "string" }, tool: { type: "string" }, arguments: { type: "object" } },
+    ["server", "tool"],
+  ),
+  fn(
     "screenshot",
     "Open a web page in a real browser (headless Chrome on one of the machines), show the screenshot in the chat, and look at it: says what the page actually shows and whether it looks right/finished. Use it to verify every site you deploy or change (home page, a key page, /wp-admin login), before saying it's done. full_page captures a taller view. question: what to check (e.g. 'Does this look like the Spexo Digital Agency demo, not a default WordPress page?').",
     { url: { type: "string" }, question: { type: "string" }, full_page: { type: "boolean" } },
@@ -547,7 +560,7 @@ function vmsFrom(v: unknown): VmConfig[] {
 }
 
 /** What a call does in plain words, and whether it must wait for the user. */
-const READ_ONLY = new Set(["update_plan", "load_skill", "find_skills", "fleet_status", "job_log", "ask_user", "read_attachment", "github_repos", "show_diagram", "repo_branches", "repo_files", "repo_read", "create_artifact", "remember", "forget"]);
+const READ_ONLY = new Set(["mcp_tools", "update_plan", "load_skill", "find_skills", "fleet_status", "job_log", "ask_user", "read_attachment", "github_repos", "show_diagram", "repo_branches", "repo_files", "repo_read", "create_artifact", "remember", "forget"]);
 
 const SQL_WRITE = /\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|replace|merge|copy|vacuum|reindex|rename|lock)\b/i;
 const MONGO_WRITE = /\b(insert\w*|update\w*|delete\w*|remove|drop\w*|replace\w*|create\w*|rename\w*|bulkWrite|findOneAnd\w+|\$out|\$merge)\b/i;
@@ -667,6 +680,13 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Copied attachment ${str(a.id)} to ~/${str(a.path)} on ${on(a.vms)}`, needsApproval: false, detail: "" };
     case "add_service":
       return { label: `Added ${str(a.name) || str(a.template)} from the catalog`, needsApproval: false, detail: "" };
+    case "mcp_tools":
+      return { label: `Looked at the ${str(a.server)} connector's tools`, needsApproval: false, detail: "", readOnly: true };
+    case "mcp_call": {
+      const t = toolIndex.get(`${str(a.server)}/${str(a.tool)}`);
+      const writes = t?.destructive === true || (!t?.readOnly && /(^|_|-)(create|update|delete|remove|write|send|post|push|merge|close|comment|publish|deploy|pay|transfer|run|exec)/i.test(str(a.tool)));
+      return { label: `${str(a.server)}: ${str(a.tool)}`, needsApproval: writes, detail: a.arguments ? JSON.stringify(a.arguments, null, 2).slice(0, 3000) : "", readOnly: !writes };
+    }
     case "screenshot":
       return { label: `Looked at ${clip(str(a.url).replace(/^https?:\/\//, "").replace(/\?.*$/, ""), 70)}`, needsApproval: false, detail: "", readOnly: true };
     case "import_zip":
@@ -970,6 +990,22 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
           }
         });
         return { ok: res.every((r) => r.ok), output: clip(res.map((r) => r.line).join("\n\n"), 5000) };
+      }
+      case "mcp_tools": {
+        try {
+          const tools = await serverTools(str(a.server));
+          return { ok: true, output: tools.map((t) => `- ${t.name}${t.readOnly ? " (read-only)" : t.destructive ? " (destructive)" : ""}: ${t.description}\n  input: ${JSON.stringify(t.inputSchema ?? {}).slice(0, 1500)}`).join("\n").slice(0, 30_000) || "This connector has no tools." };
+        } catch (e) {
+          return { ok: false, output: (e as Error).message };
+        }
+      }
+      case "mcp_call": {
+        try {
+          const r = await callTool(str(a.server), str(a.tool), a.arguments && typeof a.arguments === "object" ? (a.arguments as Record<string, unknown>) : {});
+          return { ok: r.ok, output: r.text };
+        } catch (e) {
+          return { ok: false, output: `${str(a.server)}/${str(a.tool)} failed: ${(e as Error).message}` };
+        }
       }
       case "import_zip": {
         if (!ctx.sessionId) return { ok: false, output: "no conversation to read the attachment from" };
@@ -1464,10 +1500,12 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
   const names = await secretNames().catch(() => []);
   const hubSkills = await installedSkills().catch(() => []);
   const standing = await getInstructions().catch(() => "");
+  const mcp = await mcpSummary().catch(() => "");
   const system = [
     SYSTEM.replace("${NAMES}", names.length ? names.join(", ") : "none yet").replaceAll("${SITE}", siteUrl()).replace("${SKILLS_INDEX}", skillIndex() + (hubSkills.length ? `\n${hubSkills.map((h) => `- ${h.slug} (installed from skills-hub): ${h.description}`).join("\n")}` : "")),
     gh ? capabilitySummary(gh.login, gh.scopes) : "GitHub: not connected. For repo work, ask the user to click Connect GitHub on the Projects page.",
     `Review mode: ${review === "manual" ? "manual (the user approves every action)" : "auto (only destructive actions wait for approval)"}.`,
+    mcp,
     standing ? `The user's standing instructions (follow them in every conversation unless they conflict with safety rules):\n${standing}` : "",
     memory.length ? `Memory (things the user asked you to remember):\n${memory.map((m) => `- [${m.id}] ${m.text}`).join("\n")}` : "Memory: nothing saved yet.",
   ].filter(Boolean).join("\n\n");
