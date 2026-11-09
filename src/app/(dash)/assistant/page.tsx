@@ -2,17 +2,19 @@
 
 import { LOCAL_URL, useNiceLink } from "@/components/nice-links";
 
-import { ArrowDown, ArrowUpRight, Brain, FileText, GraduationCap, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUpRight, BookOpen, Brain, Camera, FileText, GitBranch, GraduationCap, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Plug, ScrollText, Search, Server, Settings2, ShieldCheck, Sparkles, Trash2, Workflow, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { addFiles, currentDoc, editSession, hydrate, loadList, newSession, openSession, removeSession, send, setModel, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
 import { ArtifactView } from "@/components/artifact-view";
+import { Connectors, InstructionsEditor, Monitor, ToolsList } from "@/components/assistant-panel";
+import { AttachmentView } from "@/components/attachment-view";
 import { ChatItems, PlanCard } from "@/components/chat-items";
 import { CopyButton } from "@/components/chat-blocks";
 import { useCluster } from "@/components/cluster";
 import { Composer, contextFor, entitiesFrom, type ModelChoice } from "@/components/composer";
 import { Button, cx } from "@/components/ui";
 import { latestArtifacts, type Att, type Item } from "@/lib/assistant-items";
-import { api } from "@/lib/client";
+import { api, useStored } from "@/lib/client";
 import { timeAgo } from "@/lib/format";
 
 const STARTERS = [
@@ -53,6 +55,15 @@ type SkillList = {
 };
 
 /** A file in the chat box: uploading (pending, pct), ready, or failed; images carry a local preview. */
+type PanelTab = "outputs" | "context" | "connectors" | "monitor" | "tools";
+const PANEL_TABS: [PanelTab, string, typeof Layers][] = [
+  ["outputs", "Outputs", Layers],
+  ["context", "Context", BookOpen],
+  ["connectors", "Connectors", Plug],
+  ["monitor", "Monitor", Activity],
+  ["tools", "Tools", Wrench],
+];
+
 export type Staged = Att & { pending?: boolean; pct?: number; preview?: string; error?: string };
 
 export default function AssistantPage() {
@@ -77,7 +88,17 @@ export default function AssistantPage() {
   );
   const [note, setNote] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
-  const [art, setArt] = useState<string | null>(null);
+  const [art, setArtRaw] = useState<string | null>(null);
+  const [file, setFile] = useState<{ id: string; name: string } | null>(null);
+  // one side view at a time: an artifact or a file preview
+  const setArt = (id: string | null) => {
+    setArtRaw(id);
+    if (id) setFile(null);
+  };
+  const openFile = (f: { id: string; name: string } | null) => {
+    setFile(f);
+    if (f) setArtRaw(null);
+  };
   const [memory, setMemory] = useState<{ id: string; text: string }[] | null>(null);
   const loadMemory = () =>
     api<{ memory: { id: string; text: string }[] }>("/api/memory")
@@ -247,6 +268,12 @@ export default function AssistantPage() {
   };
 
   // ---- right panel ----
+  const [panelTab, setPanelTab] = useStored<PanelTab>("hosting.assistant.tab", "outputs");
+  const shots = items
+    .filter((i): i is Extract<Item, { kind: "image" }> => i.kind === "image")
+    .map((i) => ({ ...i, fileId: /[?&]id=([a-z0-9]+)/.exec(i.src)?.[1] }))
+    .reverse();
+  const repos = [...new Set(items.flatMap((i) => (i.kind === "text" ? i.text : i.kind === "step" ? `${i.label} ${i.output ?? ""}` : "").match(/github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+/g) ?? []).map((u) => u.replace(/^github\.com\//, "").replace(/\.git$/, "")))].slice(0, 8);
   const plan = [...items].reverse().find((i): i is Extract<Item, { kind: "plan" }> => i.kind === "plan");
   const nice = useNiceLink();
   const linkSet = new Set<string>();
@@ -262,6 +289,7 @@ export default function AssistantPage() {
   const machines = [...machineSet];
   const stepCount = items.filter((i) => i.kind === "step").length;
   const artifacts = latestArtifacts(items);
+  const outputCount = artifacts.length + shots.length;
   const artVersions = items.filter((i): i is Extract<Item, { kind: "artifact" }> => i.kind === "artifact" && i.id === art);
   const shown = (st.list ?? []).filter((s) => s.title.toLowerCase().includes(query.toLowerCase()));
 
@@ -328,7 +356,7 @@ export default function AssistantPage() {
               </div>
             )}
 
-            <ChatItems sid={sid} items={items} busy={busy} mentions={mentionNames} onOpenArtifact={setArt} />
+            <ChatItems sid={sid} items={items} busy={busy} mentions={mentionNames} onOpenArtifact={setArt} onOpenFile={openFile} />
 
             {busy && (
               <p className="flex items-center gap-2 text-sm text-muted">
@@ -391,38 +419,72 @@ export default function AssistantPage() {
         </div>
       </main>
 
-      {art && artVersions.length > 0 ? (
+      {file ? (
+        <aside className="w-[min(760px,48%)] shrink-0 border-l border-white/[0.06] bg-panel/60">
+          <AttachmentView key={file.id} session={sid} id={file.id} name={file.name} onClose={() => openFile(null)} />
+        </aside>
+      ) : art && artVersions.length > 0 ? (
         <aside className="w-[min(760px,48%)] shrink-0 border-l border-white/[0.06] bg-panel/60">
           <ArtifactView key={`${art}-${artVersions.length}`} versions={artVersions} onClose={() => setArt(null)} />
         </aside>
       ) : (
-      <aside className="scroll-thin w-80 shrink-0 space-y-6 overflow-y-auto border-l border-white/[0.06] p-5">
-        <div className="rounded-2xl border border-[var(--line)] bg-panel px-4 py-4">
-          <p className="text-[11px] font-semibold tracking-[0.12em] text-muted uppercase">Session</p>
-          <p className="mt-1 line-clamp-2 text-base font-semibold text-white">{title}</p>
-          <p className="mt-1 text-xs text-muted">
-            {stepCount} step{stepCount === 1 ? "" : "s"} · {st.review === "manual" ? "review each step" : "auto"} · saved on box5
+      <aside className="flex w-[340px] shrink-0 flex-col border-l border-white/[0.06]">
+        <div className="border-b border-white/[0.06] px-4 pt-4">
+          <p className="truncate text-sm font-semibold text-white">{title}</p>
+          <p className="mt-0.5 text-[11px] text-muted">
+            {stepCount} step{stepCount === 1 ? "" : "s"} · {st.review === "manual" ? "review each step" : "auto"} · {st.model || "default model"}
           </p>
-        </div>
-
-        {plan && (
-          <Section title="Progress" icon={<ListChecks className="size-3.5" />}>
-            <PlanCard plan={plan} compact />
-          </Section>
-        )}
-
-        {artifacts.length > 0 && (
-          <Section title="Artifacts" icon={<Layers className="size-3.5" />}>
-            {artifacts.map((x) => (
-              <button key={x.id} onClick={() => setArt(x.id)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-ink hover:bg-white/5">
-                <FileText className="size-3.5 shrink-0 text-muted" />
-                <span className="flex-1 truncate">{x.title}</span>
-                {x.version > 1 && <span className="text-muted">v{x.version}</span>}
+          <div className="-mb-px mt-3 flex gap-0.5 overflow-x-auto">
+            {PANEL_TABS.map(([id, label, Icon]) => (
+              <button
+                key={id}
+                onClick={() => setPanelTab(id)}
+                className={cx(
+                  "flex shrink-0 items-center gap-1.5 border-b-2 px-2 pb-2 text-xs transition-colors",
+                  panelTab === id ? "border-[var(--accent)] text-white" : "border-transparent text-zinc-500 hover:text-zinc-200",
+                )}
+              >
+                <Icon className="size-3.5" /> {label}
+                {id === "outputs" && outputCount > 0 && <span className="rounded bg-white/[0.08] px-1 text-[10px] tabular-nums text-zinc-300">{outputCount}</span>}
               </button>
             ))}
-          </Section>
-        )}
-
+          </div>
+        </div>
+        <div className="scroll-thin min-h-0 flex-1 space-y-6 overflow-y-auto p-4">
+        {panelTab === "outputs" && (
+          <>
+            {plan && (
+              <Section title="Progress" icon={<ListChecks className="size-3.5" />}>
+                <PlanCard plan={plan} compact />
+              </Section>
+            )}
+            <Section title="Artifacts" icon={<Layers className="size-3.5" />}>
+              {artifacts.length === 0 ? (
+                <p className="text-xs text-muted">Reports, designs, scripts and pages it makes open here.</p>
+              ) : (
+                artifacts.map((x) => (
+                  <button key={x.id} onClick={() => setArt(x.id)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-ink hover:bg-white/5">
+                    <FileText className="size-3.5 shrink-0 text-muted" />
+                    <span className="flex-1 truncate">{x.title}</span>
+                    <span className="text-[10px] uppercase text-zinc-600">{x.type}</span>
+                    {x.version > 1 && <span className="text-muted">v{x.version}</span>}
+                  </button>
+                ))
+              )}
+            </Section>
+            {shots.length > 0 && (
+              <Section title="Screenshots" icon={<Camera className="size-3.5" />}>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {shots.map((x) => (
+                    <button key={x.id} onClick={() => x.fileId && openFile({ id: x.fileId, name: x.title })} className="group overflow-hidden rounded-md border border-white/[0.08] text-left" title={x.title}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={x.src} alt={x.title} className="aspect-video w-full object-cover object-top transition-opacity group-hover:opacity-80" loading="lazy" />
+                      <span className="block truncate px-1.5 py-1 text-[10px] text-zinc-400">{(x.url ?? x.title).replace(/^https?:\/\//, "")}</span>
+                    </button>
+                  ))}
+                </div>
+              </Section>
+            )}
         <Section title="Links" icon={<Link2 className="size-3.5" />}>
           {links.length === 0 ? (
             <p className="text-xs text-muted">URLs it creates or finds show up here.</p>
@@ -437,20 +499,6 @@ export default function AssistantPage() {
             ))
           )}
         </Section>
-
-        <Section title="Attachments" icon={<Paperclip className="size-3.5" />}>
-          {files.length === 0 ? (
-            <p className="text-xs text-muted">Files you attach or paste are stored on box5. The assistant can read them or place them on a machine.</p>
-          ) : (
-            files.map((f) => (
-              <a key={f.id} href={`/api/attachments?session=${sid}&id=${f.id}`} className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-ink hover:bg-white/5" title="Download">
-                <FileText className="size-3.5 shrink-0 text-muted" /> <span className="flex-1 truncate">{f.name}</span>
-                <span className="text-muted">{fmtSize(f.size)}</span>
-              </a>
-            ))
-          )}
-        </Section>
-
         <Section title="Suggestions" icon={<Sparkles className="size-3.5" />}>
           {(suggestions.length ? suggestions : items.length ? [] : STARTERS.slice(0, 2)).map((s) => (
             <button key={s} onClick={() => void submit(s)} disabled={busy} className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-ink hover:bg-white/5 disabled:opacity-40">
@@ -459,21 +507,101 @@ export default function AssistantPage() {
           ))}
           {items.length > 0 && !suggestions.length && <p className="text-xs text-muted">Next steps appear when it finishes.</p>}
         </Section>
-
-        <Section title="Machines" icon={<Server className="size-3.5" />}>
-          {machines.length === 0 ? (
-            <p className="text-xs text-muted">Machines it works on show up here.</p>
+          </>
+        )}
+        {panelTab === "context" && (
+          <>
+        <Section title="Files" icon={<Paperclip className="size-3.5" />}>
+          {files.length === 0 ? (
+            <p className="text-xs text-muted">Files you attach show up here; click one to preview it.</p>
           ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {machines.map((m) => (
-                <span key={m} className="rounded-md bg-accent/15 px-2 py-0.5 font-mono text-xs text-ink ring-1 ring-accent/40">
-                  {m}
-                </span>
+            files.map((f) => (
+              <button key={f.id} onClick={() => openFile({ id: f.id, name: f.name })} className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-ink hover:bg-white/5" title="Preview">
+                <FileText className="size-3.5 shrink-0 text-muted" /> <span className="flex-1 truncate">{f.name}</span>
+                <span className="text-muted">{fmtSize(f.size)}</span>
+              </button>
+            ))
+          )}
+        </Section>
+            <Section title="Instructions" icon={<ScrollText className="size-3.5" />}>
+              <InstructionsEditor />
+            </Section>
+            <Section title="Repository" icon={<GitBranch className="size-3.5" />}>
+              {repos.length === 0 ? (
+                <p className="text-xs text-muted">GitHub repos this conversation works on show up here.</p>
+              ) : (
+                repos.map((r) => (
+                  <a key={r} href={`https://github.com/${r}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-accent-soft hover:bg-white/5">
+                    <GitBranch className="size-3.5 shrink-0" /> <span className="truncate">{r}</span>
+                  </a>
+                ))
+              )}
+            </Section>
+            <Section title="Environment" icon={<Settings2 className="size-3.5" />}>
+              <dl className="grid grid-cols-[84px_1fr] gap-y-1 px-2 text-xs">
+                <dt className="text-muted">Model</dt>
+                <dd className="truncate text-ink">{st.model || "default (best available)"}</dd>
+                <dt className="text-muted">Review</dt>
+                <dd className="text-ink">{st.review === "manual" ? "you approve every step" : "auto · risky steps ask first"}</dd>
+                <dt className="text-muted">Machines</dt>
+                <dd className="truncate text-ink">{machines.length ? machines.join(", ") : "none yet"}</dd>
+                <dt className="text-muted">Session</dt>
+                <dd className="truncate font-mono text-[11px] text-zinc-500">{sid}</dd>
+              </dl>
+            </Section>
+        <Section title="Memory" icon={<Brain className="size-3.5" />}>
+          {memory === null ? (
+            <p className="text-xs text-muted">Loading…</p>
+          ) : memory.length === 0 ? (
+            <p className="text-xs text-muted">Tell it a preference (&quot;deploy Java apps on box3&quot;) and it remembers it in every session.</p>
+          ) : (
+            memory.map((m) => (
+              <div key={m.id} className="group flex items-start gap-1.5 rounded-md px-2 py-1 text-xs text-ink hover:bg-white/5">
+                <span className="flex-1">{m.text}</span>
+                <button
+                  onClick={() => void api<{ memory: { id: string; text: string }[] }>("/api/memory", { remove: m.id }).then((r) => setMemory(r.memory))}
+                  className="hidden text-muted hover:text-[var(--critical-text)] group-hover:block"
+                  aria-label="Forget"
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            ))
+          )}
+        </Section>
+        <Section title="Skills" icon={<GraduationCap className="size-3.5" />}>
+          {skills === null ? (
+            <p className="text-xs text-muted">Loading…</p>
+          ) : (
+            <div className="space-y-2">
+              <p className="px-2 text-xs leading-relaxed text-muted">
+                {skills.builtIn.length} built in: {skills.builtIn.map((b) => b.title.split(/[:(]/)[0].trim()).join(", ")}.
+              </p>
+              {skills.installed.map((h) => (
+                <div key={h.slug} className="group flex items-start gap-1.5 rounded-md px-2 py-1 text-xs hover:bg-white/5" title={h.description}>
+                  <a href={`https://skills-hub.ai/skills/${h.slug}`} target="_blank" rel="noreferrer" className="min-w-0 flex-1 text-ink hover:underline">
+                    <span className="block truncate">{h.name}</span>
+                    <span className="block truncate text-[11px] text-muted">skills-hub · {h.author || "unknown"}{h.aiVerdict ? ` · review ${h.aiVerdict}` : ""}</span>
+                  </a>
+                  <button
+                    onClick={() => void api<SkillList>("/api/skills", { remove: h.slug }).then(setSkills)}
+                    className="hidden text-muted hover:text-[var(--critical-text)] group-hover:block"
+                    aria-label="Remove skill"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
               ))}
+              <p className="px-2 text-[11px] text-muted">Ask for anything specialised and it finds a skill on skills-hub.ai (you approve installs).</p>
             </div>
           )}
         </Section>
-
+          </>
+        )}
+        {panelTab === "connectors" && <Connectors />}
+        {panelTab === "monitor" && (
+          <>
+            <Monitor />
         <Section title="Autopilot" icon={<ShieldCheck className="size-3.5" />}>
           {autopilot === null ? (
             <p className="text-xs text-muted">Loading…</p>
@@ -530,55 +658,10 @@ export default function AssistantPage() {
             </div>
           )}
         </Section>
-
-        <Section title="Skills" icon={<GraduationCap className="size-3.5" />}>
-          {skills === null ? (
-            <p className="text-xs text-muted">Loading…</p>
-          ) : (
-            <div className="space-y-2">
-              <p className="px-2 text-xs leading-relaxed text-muted">
-                {skills.builtIn.length} built in: {skills.builtIn.map((b) => b.title.split(/[:(]/)[0].trim()).join(", ")}.
-              </p>
-              {skills.installed.map((h) => (
-                <div key={h.slug} className="group flex items-start gap-1.5 rounded-md px-2 py-1 text-xs hover:bg-white/5" title={h.description}>
-                  <a href={`https://skills-hub.ai/skills/${h.slug}`} target="_blank" rel="noreferrer" className="min-w-0 flex-1 text-ink hover:underline">
-                    <span className="block truncate">{h.name}</span>
-                    <span className="block truncate text-[11px] text-muted">skills-hub · {h.author || "unknown"}{h.aiVerdict ? ` · review ${h.aiVerdict}` : ""}</span>
-                  </a>
-                  <button
-                    onClick={() => void api<SkillList>("/api/skills", { remove: h.slug }).then(setSkills)}
-                    className="hidden text-muted hover:text-[var(--critical-text)] group-hover:block"
-                    aria-label="Remove skill"
-                  >
-                    <X className="size-3" />
-                  </button>
-                </div>
-              ))}
-              <p className="px-2 text-[11px] text-muted">Ask for anything specialised and it finds a skill on skills-hub.ai (you approve installs).</p>
-            </div>
-          )}
-        </Section>
-
-        <Section title="Memory" icon={<Brain className="size-3.5" />}>
-          {memory === null ? (
-            <p className="text-xs text-muted">Loading…</p>
-          ) : memory.length === 0 ? (
-            <p className="text-xs text-muted">Tell it a preference (&quot;deploy Java apps on box3&quot;) and it remembers it in every session.</p>
-          ) : (
-            memory.map((m) => (
-              <div key={m.id} className="group flex items-start gap-1.5 rounded-md px-2 py-1 text-xs text-ink hover:bg-white/5">
-                <span className="flex-1">{m.text}</span>
-                <button
-                  onClick={() => void api<{ memory: { id: string; text: string }[] }>("/api/memory", { remove: m.id }).then((r) => setMemory(r.memory))}
-                  className="hidden text-muted hover:text-[var(--critical-text)] group-hover:block"
-                  aria-label="Forget"
-                >
-                  <X className="size-3" />
-                </button>
-              </div>
-            ))
-          )}
-        </Section>
+          </>
+        )}
+        {panelTab === "tools" && <ToolsList />}
+        </div>
       </aside>
       )}
     </div>

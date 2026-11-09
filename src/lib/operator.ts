@@ -34,6 +34,7 @@ import { capabilitySummary } from "./github-scopes";
 import { rankMachines } from "./placement";
 import { connectProjects, disconnectProjects } from "./connections";
 import { addMachine, removeMachine, renameMachine } from "./machines";
+import { getInstructions } from "./instructions";
 import { forget, listMemory, remember } from "./memory";
 import { CATALOG, engineFromStart, serviceIdOf } from "./catalog";
 import { skill, skillIndex, SKILLS } from "./skills";
@@ -161,6 +162,11 @@ Be proactive
 Artifacts (like Claude)
 - Reports, summaries, documentation, scripts, config files, HTML pages, tables of data and anything the user may want to keep or download go into create_artifact, never as a link or a wall of chat text. Use markdown for reports (real numbers from your tools, headings, tables), html for pages or dashboards (self-contained, inline CSS), csv/json for data, code (with language) for scripts. In chat, say in one or two lines what the artifact contains. To revise one, call create_artifact again with the same id.
 
+Designs (like Claude's artifacts)
+- "Design / mock up / make a landing page / dashboard UI / app screen / logo / brand / email template" → load_skill "frontend-design", then create_artifact type html: one complete, self-contained page (inline CSS; system font stacks like Inter/SF/Segoe via font-family only, no web-font links; photos only from https://images.unsplash.com/... URLs, everything else inline SVG or CSS, since the preview can't load other sites; real copy for the user's product, responsive from phone to desktop, accessible contrast, hover/focus states; inline SVG icons; no external JS frameworks unless needed). It previews live with desktop/tablet/phone views. Make it distinctive and professional, never the generic AI look.
+- For this platform's own look (the user's hosting product): dark neutral surfaces (#09090b/#111113), thin white/8% borders, one accent from the cover photo, Inter-like sans, generous spacing, status dots (green/amber/red), cards with 12-16px radius.
+- Iterate with the same artifact id (new version) when the user asks for changes; offer to turn the design into a real deployed site (deploy it as a static project) when they like it. Logos/icons: type svg.
+
 Deploying any repository
 - Given any GitHub URL (yours or someone else's): github_repos with repo "owner/name" detects the framework (Next.js, Vite, Node, Python, Go, Java Maven/Gradle, Rust, PHP, Ruby, .NET, Dockerfile, Compose, static). If detection is Unknown or incomplete, read the README and build files (repo_files, repo_read) and work out install/build/start yourself.
 - Missing runtimes are fine: install them in the install step (sudo apt-get install -y openjdk-21-jdk-headless maven, golang, cargo via rustup, php-cli, ruby, dotnet via Microsoft's script) or use a Docker image. Pick a port no other project on that machine uses (fleet_status). Then deploy_project, follow the job with job_log, and if the build or start fails, read the error, fix the commands and redeploy until it is healthy. Finish with the link.
@@ -221,6 +227,11 @@ Links and output
 - End every final reply with up to 3 follow-up suggestions the user might want next, each on its own line starting with ">> " (e.g. ">> Show the logs of watch").`;
 
 const VM_LIST = () => getVms().map((v) => v.name);
+
+/** The tools, as the Assistant panel lists them. */
+export function toolCatalog(): { name: string; description: string }[] {
+  return TOOLS.map((t) => ({ name: t.function.name, description: t.function.description }));
+}
 
 const TOOLS: ToolDef[] = [
   fn("fleet_status", "Health of every machine: reachable, CPU, memory, disk, projects with state/port/URL, running jobs, tunnels.", {}),
@@ -1452,12 +1463,14 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
   const [gh, memory] = await Promise.all([githubAuth().catch(() => null), listMemory().catch(() => [])]);
   const names = await secretNames().catch(() => []);
   const hubSkills = await installedSkills().catch(() => []);
+  const standing = await getInstructions().catch(() => "");
   const system = [
     SYSTEM.replace("${NAMES}", names.length ? names.join(", ") : "none yet").replaceAll("${SITE}", siteUrl()).replace("${SKILLS_INDEX}", skillIndex() + (hubSkills.length ? `\n${hubSkills.map((h) => `- ${h.slug} (installed from skills-hub): ${h.description}`).join("\n")}` : "")),
     gh ? capabilitySummary(gh.login, gh.scopes) : "GitHub: not connected. For repo work, ask the user to click Connect GitHub on the Projects page.",
     `Review mode: ${review === "manual" ? "manual (the user approves every action)" : "auto (only destructive actions wait for approval)"}.`,
+    standing ? `The user's standing instructions (follow them in every conversation unless they conflict with safety rules):\n${standing}` : "",
     memory.length ? `Memory (things the user asked you to remember):\n${memory.map((m) => `- [${m.id}] ${m.text}`).join("\n")}` : "Memory: nothing saved yet.",
-  ].join("\n\n");
+  ].filter(Boolean).join("\n\n");
   const messages: ChatMessage[] = input.transcript.length ? [...input.transcript] : [{ role: "system", content: system }];
   if (messages[0]?.role !== "system") messages.unshift({ role: "system", content: system });
   else messages[0] = { role: "system", content: system }; // always the current instructions

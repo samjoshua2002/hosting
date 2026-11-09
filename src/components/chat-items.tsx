@@ -35,6 +35,7 @@ export function ChatItems({
   mentions,
   compact,
   onOpenArtifact,
+  onOpenFile,
 }: {
   sid: string;
   items: Item[];
@@ -42,6 +43,7 @@ export function ChatItems({
   mentions: Set<string>;
   compact?: boolean;
   onOpenArtifact?: (id: string) => void;
+  onOpenFile?: (f: { id: string; name: string }) => void;
 }) {
   const blocks: ({ kind: "steps"; steps: Extract<Item, { kind: "step" }>[]; key: string } | { kind: "one"; item: Item; key: string })[] = [];
   items.forEach((it, idx) => {
@@ -66,6 +68,7 @@ export function ChatItems({
             sessionId={sid}
             mentions={mentions}
             onOpenArtifact={onOpenArtifact}
+            onOpenFile={onOpenFile}
           />
         ),
       )}
@@ -130,6 +133,7 @@ function Bubble({
   sessionId,
   mentions,
   onOpenArtifact,
+  onOpenFile,
 }: {
   item: Item;
   busy: boolean;
@@ -138,6 +142,7 @@ function Bubble({
   sessionId: string;
   mentions: Set<string>;
   onOpenArtifact?: (id: string) => void;
+  onOpenFile?: (f: { id: string; name: string }) => void;
 }) {
   if (item.kind === "user")
     return (
@@ -149,7 +154,14 @@ function Bubble({
           <a
             key={f.id}
             href={`/api/attachments?session=${sessionId}&id=${f.id}`}
-            className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-panel px-2.5 py-1 text-xs text-ink"
+            onClick={(e) => {
+              // open the preview panel; the link still works for "open in new tab" and download
+              if (!onOpenFile || e.metaKey || e.ctrlKey) return;
+              e.preventDefault();
+              onOpenFile({ id: f.id, name: f.name });
+            }}
+            className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-panel px-2.5 py-1 text-xs text-ink transition-colors hover:border-white/25 hover:text-white"
+            title="Preview"
           >
             <FileText className="size-3.5" /> {f.name} <span className="text-muted">{fmtSize(f.size)}</span>
           </a>

@@ -1,6 +1,6 @@
 "use client";
 
-import { Braces, ChevronRight, Code2, Download, FileText, Globe, ImageIcon, Table2, X, type LucideIcon } from "lucide-react";
+import { Braces, ChevronRight, Code2, Download, ExternalLink, FileText, Globe, ImageIcon, Monitor, Smartphone, Table2, Tablet, X, type LucideIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ArtifactType, Item } from "@/lib/assistant-items";
 import { CopyButton } from "./chat-blocks";
@@ -93,6 +93,14 @@ export function ArtifactView({ versions, onClose }: { versions: Artifact[]; onCl
   const [tab, setTab] = useState<"preview" | "source">(previewable ? "preview" : "source");
   const Icon = ICON[a.type];
   const rows = useMemo(() => (a.type === "csv" ? csvRows(a.content).slice(0, 2000) : []), [a]);
+  // designs: see them at the sizes people will
+  const [device, setDevice] = useState<"desktop" | "tablet" | "phone">("desktop");
+  const width = device === "phone" ? 390 : device === "tablet" ? 820 : null;
+  const openTab = () => {
+    const url = URL.createObjectURL(new Blob([a.content], { type: a.type === "svg" ? "image/svg+xml" : "text/html" }));
+    window.open(url, "_blank", "noopener");
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -122,6 +130,24 @@ export function ArtifactView({ versions, onClose }: { versions: Artifact[]; onCl
             ))}
           </div>
         )}
+        {a.type === "html" && tab === "preview" && (
+          <div className="flex rounded-lg border border-white/[0.08] p-0.5" role="group" aria-label="Preview size">
+            {([
+              ["desktop", Monitor],
+              ["tablet", Tablet],
+              ["phone", Smartphone],
+            ] as const).map(([d, I]) => (
+              <button key={d} onClick={() => setDevice(d)} title={d[0].toUpperCase() + d.slice(1)} className={cx("rounded-md p-1", device === d ? "bg-white/[0.1] text-white" : "text-muted hover:text-white")}>
+                <I className="size-3.5" />
+              </button>
+            ))}
+          </div>
+        )}
+        {(a.type === "html" || a.type === "svg") && (
+          <button onClick={openTab} className="rounded-md p-1 text-muted hover:bg-white/[0.08] hover:text-white" title="Open in a new tab">
+            <ExternalLink className="size-3.5" />
+          </button>
+        )}
         <CopyButton text={a.content} label="Copy" />
         <button onClick={() => download(a)} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted hover:bg-white/[0.08] hover:text-white" title={`Download ${fileName(a)}`}>
           <Download className="size-3.5" /> Download
@@ -146,7 +172,15 @@ export function ArtifactView({ versions, onClose }: { versions: Artifact[]; onCl
           </div>
         ) : a.type === "html" || a.type === "svg" ? (
           // sandboxed: scripts run, but it can't touch the dashboard or its cookies
-          <iframe title={a.title} sandbox="allow-scripts allow-popups" srcDoc={a.type === "svg" ? `<body style="margin:0;display:grid;place-items:center;min-height:100vh;background:#fff">${a.content}</body>` : a.content} className="h-full min-h-[480px] w-full bg-white" />
+          <div className={cx("h-full min-h-[480px]", width && "bg-[#0c0c0e] px-4 py-5")}>
+            <iframe
+              title={a.title}
+              sandbox="allow-scripts allow-popups"
+              srcDoc={a.type === "svg" ? `<body style="margin:0;display:grid;place-items:center;min-height:100vh;background:#fff">${a.content}</body>` : a.content}
+              className={cx("h-full min-h-[480px] bg-white", width ? "mx-auto rounded-xl shadow-2xl shadow-black/60 ring-1 ring-white/10" : "w-full")}
+              style={width ? { width, maxWidth: "100%" } : undefined}
+            />
+          </div>
         ) : a.type === "csv" ? (
           <table className="w-full text-left text-xs">
             <thead className="sticky top-0 bg-panel">
