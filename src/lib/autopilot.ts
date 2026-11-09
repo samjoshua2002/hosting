@@ -8,7 +8,8 @@ import { failover, snapshotFleet } from "./failover";
 import { sendAlert } from "./mail";
 import { BusyError, prepareRun, runSession } from "./session-run";
 import { mapLimit, run, withVm } from "./ssh";
-import { storeGetJson, storePut } from "./store";
+import { storeBackend, storeGetJson, storePut } from "./store";
+import { mirrorStore } from "./store-location";
 import type { VmConfig } from "./config";
 import type { VmStatus } from "./types";
 
@@ -135,6 +136,16 @@ async function pass(state: AutopilotState): Promise<AutopilotState> {
     for (const j of [...a.jobs].sort((x, y) => x.meta.startedAt - y.meta.startedAt)) if (j.meta.kind === "deploy" && j.meta.project) latest.set(j.meta.project, j);
     for (const [name, j] of latest)
       if (j.state === "done" && j.exitCode !== 0 && j.meta.startedAt * 1000 > since) problems.push(`the last deploy of ${name} on ${s.name} failed (job ${j.id})`);
+  }
+
+  // the dashboard's own data: a fresh copy on a second machine, so a resting storage machine never strands it
+  if (storeBackend() === "machine") {
+    try {
+      const copy = await mirrorStore(fleet.filter((x) => x.ok).map((x) => x.name));
+      if (copy && !state.lastActions?.some((x) => x.includes(`copy of the dashboard's data on ${copy.vm}`))) actions.push(`kept a copy of the dashboard's data on ${copy.vm}`);
+    } catch (e) {
+      problems.push(`couldn't copy the dashboard's data to a second machine: ${(e as Error).message.slice(0, 140)}`);
+    }
   }
 
   // keep a copy of every app's settings, and move apps off machines that stay down

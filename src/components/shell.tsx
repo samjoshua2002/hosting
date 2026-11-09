@@ -11,6 +11,7 @@ import type { MailItem } from "@/lib/mail";
 import { startChat, useAssistantBusy } from "./assistant-store";
 import { useCluster } from "./cluster";
 import { CommandPalette } from "./command-palette";
+import { StorageBanner } from "./storage-banner";
 import { crumbs, NAV } from "./nav";
 import { shuffleTheme, UnsplashLayer, useTheme } from "./theme";
 import { cx } from "./ui";
@@ -59,6 +60,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <Suspense fallback={<TopBar path={null} />}>
           <TopBarWithPath />
         </Suspense>
+        <StorageBanner />
         <main className="relative isolate min-w-0 flex-1">
           <Suspense fallback={null}>
             <Cover />

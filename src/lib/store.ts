@@ -1,14 +1,17 @@
 // Small document + file store for Assistant sessions, attachments, memory, the vault, the machine registry,
 // Autopilot and the failover copy. Two backends with the same behavior:
 //   - Postgres (DATABASE_URL set): the dashboard's own database, independent of any machine. Recommended.
-//   - The storage machine (STORE_VM, default box5) over SSH: files under ~/.hosting/store. The original setup.
+//   - One of the user's own machines over SSH (files under ~/.hosting/store): STORE_VM at first, with a copy on a
+//     second machine each Autopilot pass and a switch the user can make while it rests (store-location.ts).
 import { Pool } from "pg";
 import { getVm, type VmConfig } from "./config";
-import { run, withVm } from "./ssh";
+import { run } from "./ssh";
+import { withStore } from "./store-location";
 
 const ROOT = '"$HOME/.hosting/store"';
 const SAFE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,200}$/;
 
+/** The machine the dashboard first kept its data on (the current one can differ: see store-location.ts). */
 export function storeVm(): VmConfig {
   const name = process.env.STORE_VM || "box5";
   const vm = getVm(name);
@@ -124,7 +127,7 @@ export async function storePut(path: string, data: Buffer | string): Promise<voi
   const buf = typeof data === "string" ? Buffer.from(data, "utf8") : data;
   if (storeBackend() === "database") return pg.put(valid(path), buf);
   const p = check(path);
-  await withVm(storeVm(), async (c) => {
+  await withStore(async (c) => {
     const r = await run(c, `umask 077; mkdir -p "$(dirname ${p})" && t=${p}.tmp.$$; base64 -d > "$t" && mv -f "$t" ${p} || { rm -f "$t"; exit 1; }`, { stdin: buf.toString("base64"), timeoutMs: 40_000 });
     if (r.code !== 0) throw new Error(r.stderr.trim() || "store write failed");
   });
@@ -133,7 +136,7 @@ export async function storePut(path: string, data: Buffer | string): Promise<voi
 export async function storeGet(path: string, maxBytes = 8 * 1024 * 1024): Promise<Buffer | null> {
   if (storeBackend() === "database") return pg.get(valid(path), maxBytes);
   const p = check(path);
-  return withVm(storeVm(), async (c) => {
+  return withStore(async (c) => {
     const r = await run(c, `[ -f ${p} ] && base64 -w0 < ${p} || echo __MISSING__`, { timeoutMs: 40_000, maxBytes: Math.ceil(maxBytes * 1.4) });
     const out = r.stdout.trim();
     if (out === "__MISSING__") return null;
@@ -156,7 +159,7 @@ export async function storeGetJson<T>(path: string): Promise<T | null> {
 export async function storeDelete(path: string): Promise<void> {
   if (storeBackend() === "database") return pg.del(valid(path));
   const p = check(path);
-  await withVm(storeVm(), async (c) => {
+  await withStore(async (c) => {
     await run(c, `rm -rf ${p}`, { timeoutMs: 20_000 });
   });
 }
@@ -165,7 +168,7 @@ export async function storeDelete(path: string): Promise<void> {
 export async function storeList(dir: string): Promise<{ name: string; size: number; mtime: number }[]> {
   if (storeBackend() === "database") return pg.list(valid(dir));
   const p = check(dir);
-  return withVm(storeVm(), async (c) => {
+  return withStore(async (c) => {
     const r = await run(c, `[ -d ${p} ] && find ${p} -maxdepth 1 -type f -printf '%f\\t%s\\t%T@\\n' || true`, { timeoutMs: 20_000 });
     return r.stdout
       .split("\n")
@@ -187,7 +190,7 @@ export async function storePutAndTakeFlag(path: string, data: string, flag: stri
   const p = check(path);
   const f = check(flag);
   const b64 = Buffer.from(data, "utf8").toString("base64");
-  return withVm(storeVm(), async (c) => {
+  return withStore(async (c) => {
     const take = clearFlag ? `rm -f ${f}` : `if [ -f ${f} ]; then rm -f ${f}; echo __FLAG__; fi`;
     const r = await run(c, `umask 077; mkdir -p "$(dirname ${p})" && t=${p}.tmp.$$; { base64 -d > "$t" && mv -f "$t" ${p}; } || { rm -f "$t"; exit 1; }; ${take}`, { stdin: b64, timeoutMs: 40_000 });
     if (r.code !== 0) throw new Error(r.stderr.trim() || "store write failed");
@@ -208,7 +211,7 @@ export async function storeReadJsonDir<T>(dir: string): Promise<{ name: string; 
     return out;
   }
   const p = check(dir);
-  return withVm(storeVm(), async (c) => {
+  return withStore(async (c) => {
     const r = await run(c, `[ -d ${p} ] || exit 0; for f in ${p}/*.json; do [ -f "$f" ] || continue; printf '%s\\t' "$(basename "$f")"; base64 -w0 < "$f"; echo; done`, {
       timeoutMs: 30_000,
       maxBytes: 8 * 1024 * 1024,

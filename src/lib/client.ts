@@ -16,8 +16,16 @@ export async function api<T>(path: string, body?: unknown, init?: RequestInit): 
     throw new Error("Signed out");
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data as { error?: string }).error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    storeDown(res.status, data);
+    throw new Error((data as { error?: string }).error || `Request failed (${res.status})`);
+  }
   return data as T;
+}
+
+/** The storage machine is resting: tell the page (the shell shows a banner with the choice). */
+function storeDown(status: number, data: unknown) {
+  if (status === 503 && (data as { code?: string })?.code === "store_down" && typeof window !== "undefined") window.dispatchEvent(new CustomEvent("store-down", { detail: data }));
 }
 
 /** POST and read an NDJSON stream, calling onLine for each parsed line. */
@@ -34,6 +42,7 @@ export async function apiStream<T>(path: string, body: unknown, onLine: (line: T
   }
   if (!res.ok || !res.body) {
     const data = await res.json().catch(() => ({}));
+    storeDown(res.status, data);
     throw new Error((data as { error?: string }).error || `Request failed (${res.status})`);
   }
   const reader = res.body.getReader();

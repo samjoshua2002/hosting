@@ -1,27 +1,19 @@
-# Render Blueprint: the backend. It owns the data (Postgres), Autopilot's schedule, failover and every SSH
-# connection to the machines, so no InstaBox machine has to stay up for the dashboard to work.
+# Render Blueprint: the controller. It holds the keys, runs Autopilot's schedule and failover, and talks to every
+# machine over SSH. It stores nothing itself: the dashboard's data stays on your own machines (STORE_VM first,
+# with a copy on a second machine every 15 minutes; if the storage machine rests, the dashboard asks whether to
+# wait or carry on from the copy).
 # The Vercel site stays the front door: set BACKEND_URL there and it forwards /api and /go here.
 #
 # Create it: Render dashboard → New → Blueprint → pick this repo. Fill in the values it asks for
 # (copy them from Vercel: SESSION_SECRET and CRON_SECRET MUST be the same on both).
-# On its first start with the empty database it copies the dashboard's data from box5 by itself.
-
-databases:
-  - name: hosting-db
-    databaseName: hosting
-    user: hosting
-    # free Postgres on Render expires after 30 days; basic-256mb keeps your data (about $6/month)
-    plan: basic-256mb
-    region: singapore
-    ipAllowList: [] # only Render services can reach it
 
 services:
   - type: web
     name: hosting-backend
     runtime: node
     region: singapore
-    # free works: your machines ping it every few minutes, which keeps it awake. starter (about $7/month)
-    # never sleeps, starts instantly and can send email alerts (free instances can't use SMTP ports).
+    # free: your machines ping it every few minutes, which keeps it awake. starter (about $7/month) never
+    # sleeps, starts instantly and can send email alerts (free instances can't use SMTP ports).
     plan: free
     buildCommand: npm ci && npm run build
     startCommand: npx next start -H 0.0.0.0 -p $PORT
@@ -30,10 +22,9 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
-      - key: DATABASE_URL
-        fromDatabase:
-          name: hosting-db
-          property: connectionString
+      # the machine that keeps the dashboard's data at first (the dashboard can switch it later)
+      - key: STORE_VM
+        value: box5
       - key: INTERNAL_SCHEDULER
         value: "1"
       # the public address people use (the Vercel site): links, passkeys, GitHub webhooks and the machines' pings

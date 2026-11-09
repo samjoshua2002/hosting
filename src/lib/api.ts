@@ -3,6 +3,7 @@ import { connection, type NextRequest } from "next/server";
 import { refreshMachines } from "./machines";
 import { verifySession } from "./auth";
 import { getVm, type VmConfig } from "./config";
+import { StoreDownError } from "./store-location";
 
 export class HttpError extends Error {
   constructor(
@@ -77,6 +78,9 @@ export function handle(fn: (req: NextRequest) => Promise<Response>) {
       return res;
     } catch (e) {
       if (e instanceof HttpError) return Response.json({ error: e.message }, { status: e.status, headers: { "Cache-Control": "no-store" } });
+      // the storage machine is resting: say so, with when it's back and where the latest copy is
+      if (e instanceof StoreDownError)
+        return Response.json({ error: e.message, code: "store_down", vm: e.vm, until: e.until, copy: e.backup }, { status: 503, headers: { "Cache-Control": "no-store" } });
       console.error(e);
       return Response.json({ error: e instanceof Error ? e.message : "server error" }, { status: 500 });
     }
