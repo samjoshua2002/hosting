@@ -61,8 +61,29 @@ export const COMMON: Record<string, Action> = {
 
 /* ---------- databases ---------- */
 
+/** Stream a .sql / .sql.gz file under the home folder to stdout (for imports). */
+const sqlFile = (c: DriverCtx): string | { error: string } => {
+  const f = homePath(p(c, "path"));
+  if (!f || !/\.(sql|sql\.gz|dump|psql)$/i.test(f)) return { error: "params.path: a .sql or .sql.gz file under the home folder (copy_attachment puts it there)" };
+  return `F="$HOME/${f}"; [ -f "$F" ] || { echo "no file at ~/${f}"; exit 1; }; case "$F" in *.gz) gunzip -c "$F" ;; *) cat "$F" ;; esac`;
+};
+const DBNAME = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
+
 const pg = (sql: string) => `docker exec "$C" psql -U postgres -v ON_ERROR_STOP=1 -c ${shq(sql)}`;
 const POSTGRES: Record<string, Action> = {
+  import_sql: {
+    about: "params {path: .sql/.sql.gz under ~ (from copy_attachment), database?: name (created if missing; default postgres)}: runs the file in that database",
+    danger: true,
+    script: (c) => {
+      const src = sqlFile(c);
+      if (typeof src !== "string") return src;
+      const db = p(c, "database") || "postgres";
+      if (!DBNAME.test(db)) return { error: "params.database: letters, digits and _" };
+      return `docker exec "$C" psql -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${db}'" | grep -q 1 || docker exec "$C" psql -U postgres -c 'CREATE DATABASE "${db}"'
+${src} | docker exec -i "$C" psql -U postgres -d ${shq(db)} -v ON_ERROR_STOP=1 -q 2>&1 | tail -n 20
+rc=$\{PIPESTATUS[1]}; docker exec "$C" psql -U postgres -d ${shq(db)} -tAc "SELECT count(*) || ' tables now' FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')"; exit $rc`;
+    },
+  },
   databases: { about: "list databases and sizes", readOnly: true, script: () => `docker exec "$C" psql -U postgres -Atc "select datname, pg_size_pretty(pg_database_size(datname)) from pg_database where not datistemplate"` },
   create_database: { about: "params {database}", script: (c) => need(c, "database") ?? pg(`CREATE DATABASE "${p(c, "database")}"`) },
   backup: { about: "dump every database to ~/data/backups (gzip)", script: () => `mkdir -p ${BACKUPS}; f=${BACKUPS}/"$S"-${stamp}.sql.gz; docker exec "$C" pg_dumpall -U postgres | gzip > "$f" && ls -lh "$f"` },
@@ -80,6 +101,20 @@ const POSTGRES: Record<string, Action> = {
 const MYSQL = (cli: string, dump: string): Record<string, Action> => {
   const q = (sql: string) => `docker exec -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" "$C" ${cli} -uroot -e ${shq(sql)}`;
   return {
+    import_sql: {
+      about: "params {path: .sql/.sql.gz under ~ (from copy_attachment), database?: name (created if missing; default the app database)}: runs the file in that database",
+      danger: true,
+      script: (c) => {
+        const src = sqlFile(c);
+        if (typeof src !== "string") return src;
+        const db = p(c, "database") || "";
+        if (db && !DBNAME.test(db)) return { error: "params.database: letters, digits and _" };
+        const target = db ? shq(db) : '"${MYSQL_DATABASE:-app}"';
+        return `D=${target}; docker exec -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" "$C" ${cli} -uroot -e "CREATE DATABASE IF NOT EXISTS \\\`$D\\\` CHARACTER SET utf8mb4"
+${src} | docker exec -i -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" "$C" ${cli} -uroot "$D" 2>&1 | tail -n 20
+rc=$\{PIPESTATUS[1]}; docker exec -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" "$C" ${cli} -uroot -N -e "SELECT CONCAT(COUNT(*), ' tables in $D') FROM information_schema.tables WHERE table_schema='$D'"; exit $rc`;
+      },
+    },
     databases: { about: "list databases", readOnly: true, script: () => `docker exec -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" "$C" ${cli} -uroot -N -e "SHOW DATABASES"` },
     create_database: { about: "params {database}", script: (c) => need(c, "database") ?? q(`CREATE DATABASE IF NOT EXISTS \`${p(c, "database")}\` CHARACTER SET utf8mb4`) },
     backup: {
