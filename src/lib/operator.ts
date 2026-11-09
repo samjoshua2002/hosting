@@ -39,6 +39,7 @@ import { CATALOG, engineFromStart, serviceIdOf } from "./catalog";
 import { skill, skillIndex, SKILLS } from "./skills";
 import { asGuidance, installedSkill, installedSkills, installSkill, removeSkill, searchHub } from "./skill-hub";
 import { moveProject } from "./failover";
+import { importZip } from "./zip-import";
 import { actionsFor, API_AUTH, COMMON, DRIVERS, driverSummary, type DriverCtx } from "./service-drivers";
 import { createService } from "./services";
 import { maskSecrets, revealIn, secretNames, vaultText } from "./vault";
@@ -141,6 +142,7 @@ How you work
 - New machines: when the user gives SSH details for a machine (InstaBox token/command or user@host), call add_machine; it is set up automatically and immediately available everywhere. If the message says "[machine added as boxN]", the dashboard already did it: just confirm and use it.
 - Never ask which machine to use. Unless the user named machines (@box1, "on box2"…), leave vms out of deploy_project and it is placed on the best machine automatically (databases with the other databases). Use exactly the machines the user names when they do.
 - If a choice is genuinely the user's (overwrite or keep, which of several repos, which branch…), call the ask_user tool with 2–4 short options instead of guessing. Never ask a question in plain text: the user answers by clicking the options ask_user shows, and a question written in your reply leaves them with nothing to click. Don't ask about things you can check yourself.
+- A zipped project (a .zip attachment, "here's my code"): import_zip it into a new private GitHub repo, then detect the stack (github_repos) and deploy it end to end like any repo (goal-mode). Report the repo link, what was left out, which secrets came from its .env, and the live link.
 - The user can attach files (shown as "[Attached: name (id …)]"). Read them with read_attachment; put them on a machine with copy_attachment (e.g. an .env file or a config). To apply an attached .env to a project, read it and pass its variables to deploy_project.
 Context the user gives you
 - Messages may end with a [Context] block describing projects, databases or machines the user named (with or without @). Treat them as what the user is talking about.
@@ -373,6 +375,12 @@ const TOOLS: ToolDef[] = [
     "Start a project on another machine from the settings copy Autopilot keeps on the storage machine (works even when its machine is down or gone): same code (GitHub or Docker image), same env, database tunnels rebuilt, /go link follows. Databases and apps that keep data on the old machine's disk can't move. Leave to empty to pick the best healthy machine.",
     { name: { type: "string" }, to: { type: "string", description: "only if the user named a machine" }, from: { type: "string", description: "which machine's copy, if it ran on several" } },
     ["name"],
+  ),
+  fn(
+    "import_zip",
+    "Turn a zipped project the user attached into a new GitHub repository (one commit on the default branch). It skips dependencies, build output and OS junk, and never commits .env files: their values go to the secrets vault and come back as {{secret:NAME}} names for deploy_project env. Then detect the stack with github_repos {repo} and deploy it with deploy_project github_repo. Pick a short repo name from the project (lowercase-with-dashes) unless the user gave one.",
+    { id: { type: "string", description: "the attachment id" }, name: { type: "string", description: "new repository name" }, private: { type: "boolean", description: "default true" }, description: { type: "string" } },
+    ["id", "name"],
   ),
   fn(
     "update_plan",
@@ -635,6 +643,8 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Copied attachment ${str(a.id)} to ~/${str(a.path)} on ${on(a.vms)}`, needsApproval: false, detail: "" };
     case "add_service":
       return { label: `Added ${str(a.name) || str(a.template)} from the catalog`, needsApproval: false, detail: "" };
+    case "import_zip":
+      return { label: `Created GitHub repo ${str(a.name)} from the zip`, needsApproval: false, detail: `${a.private === false ? "Public" : "Private"} repository in your GitHub account.` };
     case "move_project":
       return { label: `Started ${str(a.name)} on ${str(a.to) || "a healthy machine"}${a.from ? ` (from ${str(a.from)})` : ""}`, needsApproval: false, detail: "" };
     case "update_plan":
@@ -934,6 +944,23 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
           }
         });
         return { ok: res.every((r) => r.ok), output: clip(res.map((r) => r.line).join("\n\n"), 5000) };
+      }
+      case "import_zip": {
+        if (!ctx.sessionId) return { ok: false, output: "no conversation to read the attachment from" };
+        const file = await loadAttachment(ctx.sessionId, str(a.id));
+        if (!file) return { ok: false, output: "attachment not found (check its id in the [Attached: …] note)" };
+        try {
+          const r = await importZip(file.data, { name: str(a.name), private: a.private !== false, description: str(a.description) || undefined });
+          const lines = [
+            `Created ${r.url} (${r.repo}, branch ${r.branch}) with ${r.files} files${r.root ? ` from the zip's "${r.root}/" folder` : ""}.`,
+            r.envFiles.length ? `Not committed (secrets): ${r.envFiles.map((e) => `${e.path} → saved as ${e.secrets.map((x) => `{{secret:${x}}}`).join(", ") || "nothing"}`).join("; ")}. Pass these to deploy_project env.` : "No .env files in the zip; check .env.example (if any) for the settings it needs.",
+            r.skipped.length ? `Left out: ${r.skipped.slice(0, 12).map((x) => `${x.path} (${x.why})`).join(", ")}${r.skipped.length > 12 ? ` and ${r.skipped.length - 12} more` : ""}.` : "",
+            `Next: github_repos {"repo": "${r.repo}"} to detect the stack, then deploy_project with github_repo "${r.repo}".`,
+          ];
+          return { ok: true, output: lines.filter(Boolean).join("\n") };
+        } catch (e) {
+          return { ok: false, output: (e as Error).message };
+        }
       }
       case "move_project": {
         const fleet = await mapLimit(getVms(), 12, (vm) => probe(vm, 9_999_999_999));

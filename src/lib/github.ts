@@ -521,3 +521,9 @@ export async function githubApi(method: string, path: string, body?: unknown): P
   const text = await r.text();
   return { status: r.status, text: text.slice(0, 12000) };
 }
+
+/** Any GitHub REST call with the stored token, full response text (for code that parses the JSON). */
+export async function githubApiRaw(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }> {
+  const r = await call(await githubToken(), path, { method, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
+  return { status: r.status, text: await r.text() };
+}
