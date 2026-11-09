@@ -1,12 +1,21 @@
-// Langfuse tracing for the Assistant. One trace per Assistant run, grouped by conversation (sessionId); every
-// model call is a generation and every tool call a span inside it, so a session shows exactly which skills,
-// MCP servers, connectors and commands it used. Nothing secret leaves: content is scrubbed and clipped first,
-// and LANGFUSE_LOG_CONTENT=0 sends timings, models, tokens and tool names only.
+// Langfuse tracing for the Assistant, sent over OpenTelemetry (Langfuse's current ingestion; the old v3 event API is
+// refused for new accounts). One trace per Assistant run, grouped by conversation (session.id); every model call is
+// a generation and every tool call a span inside it, so a session shows exactly which skills, MCP servers,
+// connectors and commands it used. Nothing secret leaves: content is scrubbed and clipped first, and
+// LANGFUSE_LOG_CONTENT=0 sends timings, models, tokens and tool names only.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { Langfuse, type LangfuseTraceClient } from "langfuse";
+import { LangfuseSpanProcessor } from "@langfuse/otel";
+import { LangfuseOtelSpanAttributes as A, setLangfuseTracerProvider, startObservation, type LangfuseAgent } from "@langfuse/tracing";
+import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 
-let instance: Langfuse | null = null;
-const current = new AsyncLocalStorage<LangfuseTraceClient | null>();
+let processor: LangfuseSpanProcessor | null = null;
+
+interface Run {
+  root: LangfuseAgent;
+  /** trace-wide attributes, copied onto every span so filters work on each one */
+  attrs: Record<string, string | string[]>;
+}
+const current = new AsyncLocalStorage<Run | null>();
 
 export function isLangfuseConfigured(): boolean {
   return Boolean(process.env.LANGFUSE_SECRET_KEY && process.env.LANGFUSE_PUBLIC_KEY);
@@ -17,16 +26,21 @@ export function langfuseBaseUrl(): string {
   return (process.env.LANGFUSE_BASE_URL || process.env.LANGFUSE_HOST || process.env.LANGFUSE_BASEURL || "https://cloud.langfuse.com").replace(/\/$/, "");
 }
 
-function lf(): Langfuse | null {
-  if (!isLangfuseConfigured()) return null;
-  instance ??= new Langfuse({
-    publicKey: process.env.LANGFUSE_PUBLIC_KEY!,
-    secretKey: process.env.LANGFUSE_SECRET_KEY!,
-    baseUrl: langfuseBaseUrl(),
-    flushAt: 20,
-    flushInterval: 2000,
-  });
-  return instance;
+/** A private tracer provider just for Langfuse (it never touches the app's global OpenTelemetry setup). */
+function ready(): boolean {
+  if (!isLangfuseConfigured()) return false;
+  if (!processor) {
+    processor = new LangfuseSpanProcessor({
+      publicKey: process.env.LANGFUSE_PUBLIC_KEY!,
+      secretKey: process.env.LANGFUSE_SECRET_KEY!,
+      baseUrl: langfuseBaseUrl(),
+      // serverless functions can freeze right after responding: send each span as it ends
+      exportMode: "immediate",
+      environment: (process.env.VERCEL_ENV || process.env.NODE_ENV || "development").toLowerCase().replace(/[^a-z0-9_-]/g, "-"),
+    });
+    setLangfuseTracerProvider(new NodeTracerProvider({ spanProcessors: [processor] }));
+  }
+  return true;
 }
 
 const logContent = () => process.env.LANGFUSE_LOG_CONTENT !== "0";
@@ -47,6 +61,10 @@ const SECRET_PATTERNS: [RegExp, string][] = [
   // KEY=value / "password": "…" style assignments of anything that looks secret
   [/\b([A-Z0-9_]*(?:PASSWORD|PASS|SECRET|TOKEN|API_KEY|PRIVATE_KEY|ACCESS_KEY)[A-Z0-9_]*)(\s*[=:]\s*)("?)[^\s"',;]+\3/g, "$1$2$3••••$3"],
   [/("(?:password|secret|token|api_?key|authorization)"\s*:\s*")[^"]+"/gi, '$1••••"'],
+  // lower/mixed-case forms in prose and commands: password=…, token: …, --password …, Bearer …
+  [/\b(passw(?:or)?d|pwd|secret|token|api[_-]?key|access[_-]?key)(\s*[=:]\s*)(["']?)(?!••••)[^\s"',;]{3,}\3/gi, "$1$2$3••••$3"],
+  [/(--(?:passw(?:or)?d|token|secret|api[_-]?key)\s+)(["']?)[^\s"']{3,}\2/gi, "$1$2••••$2"],
+  [/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, "$1 ••••"],
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "-----PRIVATE KEY ••••-----"],
 ];
 
@@ -82,29 +100,46 @@ export interface TraceContext {
   input?: string;
 }
 
+const clip200 = (v: string) => v.slice(0, 200);
+
 /** Run fn inside a trace: every chat() and recordSpan() in it attaches to that trace. Always flushes. */
 export async function withTrace<T>(ctx: TraceContext, fn: () => Promise<T>): Promise<T> {
-  const client = lf();
-  let trace: LangfuseTraceClient | null = null;
-  if (client) {
+  let run: Run | null = null;
+  if (ready()) {
     try {
-      trace = client.trace({
-        name: ctx.name,
-        sessionId: ctx.sessionId,
-        userId: ctx.userId || "admin",
-        tags: ctx.tags,
-        metadata: ctx.metadata,
-        input: ctx.input && logContent() ? scrub(ctx.input, 4000) : undefined,
-      });
+      const attrs: Run["attrs"] = { [A.TRACE_NAME]: clip200(ctx.name), [A.TRACE_USER_ID]: clip200(ctx.userId || "admin") };
+      if (ctx.sessionId) attrs[A.TRACE_SESSION_ID] = clip200(ctx.sessionId);
+      if (ctx.tags?.length) attrs[A.TRACE_TAGS] = ctx.tags;
+      const root = startObservation(ctx.name, { input: ctx.input && logContent() ? scrub(ctx.input, 4000) : undefined, metadata: ctx.metadata }, { asType: "agent" });
+      root.otelSpan.setAttributes(attrs);
+      run = { root, attrs };
     } catch (err) {
       console.warn("[langfuse] trace error:", (err as Error).message);
     }
   }
   try {
-    return await current.run(trace, fn);
+    return await current.run(run, fn);
+  } catch (err) {
+    run?.root.update({ level: "ERROR", statusMessage: scrub((err as Error).message ?? String(err), 500) });
+    throw err;
   } finally {
+    try {
+      run?.root.end();
+    } catch {
+      /* ignore */
+    }
     await flushTelemetry();
   }
+}
+
+/** A child observation of the current run (or a stand-alone one outside a run), ended straight away. */
+function child(name: string, type: "generation" | "tool", attributes: Record<string, unknown>, start?: Date, end?: Date) {
+  const run = current.getStore();
+  const opts = { asType: type, startTime: start ?? new Date(), ...(run ? { parentSpanContext: run.root.otelSpan.spanContext() } : {}) };
+  // the overloads differ only by asType; the attributes object matches both shapes
+  const obs = (startObservation as unknown as (n: string, a: Record<string, unknown>, o: typeof opts) => { otelSpan: { setAttributes(a: Run["attrs"]): void }; end(t?: Date): void })(name, attributes, opts);
+  if (run) obs.otelSpan.setAttributes(run.attrs);
+  obs.end(end ?? new Date());
 }
 
 /** Record a model call (attached to the current trace when there is one). */
@@ -118,21 +153,23 @@ export function recordGeneration(opts: {
   endTime?: Date;
   error?: string;
 }): void {
-  const client = lf();
-  if (!client) return;
+  if (!ready()) return;
   try {
-    const parent = current.getStore() ?? client;
-    parent.generation({
-      name: opts.name || "azure-openai-chat",
-      model: opts.model,
-      input: scrubMessages(opts.input),
-      output: opts.output && logContent() ? (scrubMessages([opts.output]) as unknown[] | undefined)?.[0] : undefined,
-      startTime: opts.startTime || new Date(),
-      endTime: opts.endTime || new Date(),
-      usage: opts.usage ? { input: opts.usage.prompt_tokens, output: opts.usage.completion_tokens, total: opts.usage.total_tokens, unit: "TOKENS" } : undefined,
-      level: opts.error ? "ERROR" : "DEFAULT",
-      statusMessage: opts.error ? scrub(opts.error, 500) : undefined,
-    });
+    const u = opts.usage;
+    child(
+      opts.name || "azure-openai-chat",
+      "generation",
+      {
+        model: opts.model,
+        input: scrubMessages(opts.input),
+        output: opts.output && logContent() ? (scrubMessages([opts.output]) as unknown[] | undefined)?.[0] : undefined,
+        usageDetails: u ? { input: u.prompt_tokens ?? 0, output: u.completion_tokens ?? 0, total: u.total_tokens ?? 0 } : undefined,
+        level: opts.error ? "ERROR" : "DEFAULT",
+        statusMessage: opts.error ? scrub(opts.error, 500) : undefined,
+      },
+      opts.startTime,
+      opts.endTime,
+    );
   } catch (err) {
     console.warn("[langfuse] generation error:", (err as Error).message);
   }
@@ -140,30 +177,33 @@ export function recordGeneration(opts: {
 
 /** Record a tool call (skill, MCP, connector, command…) under the current trace. */
 export function recordSpan(opts: { name: string; input?: unknown; output?: unknown; startTime?: Date; endTime?: Date; error?: string; metadata?: Record<string, unknown> }): void {
-  const trace = current.getStore();
-  if (!trace) return;
+  if (!current.getStore()) return;
+  const text = (v: unknown) => scrub(typeof v === "string" ? v : JSON.stringify(v), 3000);
   try {
-    trace.span({
-      name: opts.name,
-      input: logContent() && opts.input !== undefined ? scrub(typeof opts.input === "string" ? opts.input : JSON.stringify(opts.input), 3000) : undefined,
-      output: logContent() && opts.output !== undefined ? scrub(typeof opts.output === "string" ? opts.output : JSON.stringify(opts.output), 3000) : undefined,
-      startTime: opts.startTime || new Date(),
-      endTime: opts.endTime || new Date(),
-      level: opts.error ? "ERROR" : "DEFAULT",
-      statusMessage: opts.error ? scrub(opts.error, 500) : undefined,
-      metadata: opts.metadata,
-    });
+    child(
+      opts.name,
+      "tool",
+      {
+        input: logContent() && opts.input !== undefined ? text(opts.input) : undefined,
+        output: logContent() && opts.output !== undefined ? text(opts.output) : undefined,
+        level: opts.error ? "ERROR" : "DEFAULT",
+        statusMessage: opts.error ? scrub(opts.error, 500) : undefined,
+        metadata: opts.metadata,
+      },
+      opts.startTime,
+      opts.endTime,
+    );
   } catch (err) {
     console.warn("[langfuse] span error:", (err as Error).message);
   }
 }
 
-/** Set the trace's final output (the Assistant's last reply). */
+/** Set the run's final output (the Assistant's last reply). */
 export function traceOutput(text: string): void {
-  const trace = current.getStore();
-  if (!trace || !logContent()) return;
+  const run = current.getStore();
+  if (!run || !logContent()) return;
   try {
-    trace.update({ output: scrub(text, 4000) });
+    run.root.update({ output: scrub(text, 4000) });
   } catch {
     /* ignore */
   }
@@ -171,10 +211,9 @@ export function traceOutput(text: string): void {
 
 /** Send what's buffered (called at the end of every traced run; serverless functions may stop right after). */
 export async function flushTelemetry(): Promise<void> {
-  const client = lf();
-  if (!client) return;
+  if (!processor) return;
   try {
-    await client.flushAsync();
+    await processor.forceFlush();
   } catch (err) {
     console.warn("[langfuse] flush error:", (err as Error).message);
   }
