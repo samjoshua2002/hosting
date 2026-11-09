@@ -95,3 +95,14 @@ export async function maskSecrets(text: string): Promise<string> {
 export function displayMasked(text: string): string {
   return text.replace(PLACEHOLDER, (_m, name: string) => `••••(${name}, saved)`);
 }
+
+/** Store one named secret (used by connectors: the token stays sealed, the model only ever sees the name). */
+export async function setSecret(name: string, value: string): Promise<void> {
+  if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(name)) throw new Error("bad secret name");
+  await saveAll({ ...(await load()), [name]: value });
+}
+
+/** Read one named secret on the server (never sent to the browser or the model). */
+export async function getSecret(name: string): Promise<string | undefined> {
+  return (await load())[name];
+}

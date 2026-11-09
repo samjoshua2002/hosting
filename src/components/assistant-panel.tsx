@@ -163,7 +163,7 @@ interface McpList {
   suggestions: { name: string; url: string; about: string; token?: string }[];
 }
 
-function McpConnectors() {
+export function McpConnectors() {
   const [d, setD] = useState<McpList | null>(null);
   const [form, setForm] = useState<{ name: string; url: string; token: string; needsToken?: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);

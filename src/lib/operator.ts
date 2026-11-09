@@ -42,6 +42,8 @@ import { asGuidance, installedSkill, installedSkills, installSkill, removeSkill,
 import { moveProject } from "./failover";
 import { importZip } from "./zip-import";
 import { callTool, mcpSummary, serverTools, toolIndex } from "./mcp";
+import { callConnector, connectorSummary } from "./connectors";
+import { DEFAULT_PREFERENCES, getPreferences, preferenceRules } from "./preferences";
 import { actionsFor, API_AUTH, COMMON, DRIVERS, driverSummary, type DriverCtx } from "./service-drivers";
 import { createService } from "./services";
 import { maskSecrets, revealIn, secretNames, vaultText } from "./vault";
@@ -435,6 +437,12 @@ const TOOLS: ToolDef[] = [
     ["name"],
   ),
   fn(
+    "connector_api",
+    "Call a connected service's REST API (Vercel, Render, Netlify, Cloudflare, Supabase, Neon, Sentry, Slack, Discord, Telegram, Resend, Notion, Linear, Stripe, OpenAI, Anthropic, Hugging Face; see Connected services in the instructions). The user's token is added for you and never shown. path is relative to the service's API base (e.g. vercel GET /v9/projects, render GET /v1/services, cloudflare GET /client/v4/zones, slack POST /api/chat.postMessage, telegram POST /sendMessage, linear POST /graphql). Reads run directly; anything that changes something waits for the user's approval. If a service isn't connected, tell the user to connect it in Settings → Customize → Connectors.",
+    { connector: { type: "string" }, method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"] }, path: { type: "string" }, body: { type: "object" } },
+    ["connector", "method", "path"],
+  ),
+  fn(
     "mcp_tools",
     "List the tools of a connected MCP server with their input schemas (see MCP connectors in the instructions), before calling one you haven't used.",
     { server: { type: "string" } },
@@ -719,6 +727,12 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Copied attachment ${str(a.id)} to ~/${str(a.path)} on ${on(a.vms)}`, needsApproval: false, detail: "" };
     case "add_service":
       return { label: `Added ${str(a.name) || str(a.template)} from the catalog`, needsApproval: false, detail: "" };
+    case "connector_api": {
+      const m = (str(a.method) || "GET").toUpperCase();
+      const graphRead = str(a.connector) === "linear" && m === "POST" && str(a.path) === "/graphql" && !/\bmutation\b/i.test(JSON.stringify(a.body ?? {}));
+      const read = m === "GET" || graphRead;
+      return { label: `${str(a.connector)}: ${m} ${clip(str(a.path), 80)}`, needsApproval: !read, detail: a.body ? JSON.stringify(a.body, null, 2).slice(0, 3000) : "", readOnly: read };
+    }
     case "mcp_tools":
       return { label: `Looked at the ${str(a.server)} connector's tools`, needsApproval: false, detail: "", readOnly: true };
     case "mcp_call": {
@@ -1029,6 +1043,14 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
           }
         });
         return { ok: res.every((r) => r.ok), output: clip(res.map((r) => r.line).join("\n\n"), 5000) };
+      }
+      case "connector_api": {
+        try {
+          const r = await callConnector(str(a.connector), str(a.method) || "GET", str(a.path), a.body);
+          return { ok: r.status < 400, output: `HTTP ${r.status}\n${r.text}` };
+        } catch (e) {
+          return { ok: false, output: (e as Error).message };
+        }
       }
       case "mcp_tools": {
         try {
@@ -1529,12 +1551,14 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
   const names = await secretNames().catch(() => []);
   const hubSkills = await installedSkills().catch(() => []);
   const standing = await getInstructions().catch(() => "");
-  const [mcp, fleetNow] = await Promise.all([mcpSummary().catch(() => ""), fleetSnapshot()]);
+  const [mcp, fleetNow, connected, prefs] = await Promise.all([mcpSummary().catch(() => ""), fleetSnapshot(), connectorSummary().catch(() => ""), getPreferences().catch(() => DEFAULT_PREFERENCES)]);
   const system = [
     SYSTEM.replace("${NAMES}", names.length ? names.join(", ") : "none yet").replaceAll("${SITE}", siteUrl()).replace("${SKILLS_INDEX}", skillIndex() + (hubSkills.length ? `\n${hubSkills.map((h) => `- ${h.slug} (installed from skills-hub): ${h.description}`).join("\n")}` : "")),
     gh ? capabilitySummary(gh.login, gh.scopes) : "GitHub: not connected. For repo work, ask the user to click Connect GitHub on the Projects page.",
     `Review mode: ${review === "manual" ? "manual (the user approves every action)" : "auto (only destructive actions wait for approval)"}.`,
     `Your fleet right now (live; every machine and everything installed on it; call fleet_status for full detail, logs and jobs):\n${fleetNow}`,
+    preferenceRules(prefs),
+    connected,
     mcp,
     standing ? `The user's standing instructions (follow them in every conversation unless they conflict with safety rules):\n${standing}` : "",
     memory.length ? `Memory (things the user asked you to remember):\n${memory.map((m) => `- [${m.id}] ${m.text}`).join("\n")}` : "Memory: nothing saved yet.",

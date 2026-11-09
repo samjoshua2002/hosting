@@ -96,7 +96,7 @@ function Sidebar({ path, onSearch }: { path: string | null; onSearch: () => void
 function Cover() {
   const path = usePathname();
   const { photo } = useTheme();
-  if (path?.startsWith("/assistant")) return null;
+  if (path?.startsWith("/assistant") || path?.startsWith("/settings")) return null;
   return <UnsplashLayer photo={photo} className="page-cover" />;
 }
 

@@ -3,6 +3,7 @@
 import { Check, ChevronRight, FileText, ListChecks, Loader2, ShieldAlert, X } from "lucide-react";
 import { useState } from "react";
 import type { Item } from "@/lib/assistant-items";
+import { useStored } from "@/lib/client";
 import { answer, decide } from "./assistant-store";
 import { ArtifactCard } from "./artifact-view";
 import { DiffView, TerminalBlock } from "./chat-blocks";
@@ -77,12 +78,15 @@ export function ChatItems({
 }
 
 function StepGroup({ steps }: { steps: Extract<Item, { kind: "step" }>[] }) {
-  const [open, setOpen] = useState(false);
+  // Settings → Code → transcript detail: "verbose" shows every step's details by default
+  const [detail] = useStored<"normal" | "verbose">("hosting.assistant.detail", "normal");
+  const [toggled, setOpen] = useState<boolean | null>(null);
+  const open = toggled ?? detail === "verbose";
   const running = steps.find((s) => s.running);
   const failed = steps.filter((s) => !s.running && s.ok === false).length;
   return (
     <div>
-      <button onClick={() => setOpen((o) => !o)} className="flex max-w-full items-center gap-2 py-1 text-sm text-muted hover:text-white">
+      <button onClick={() => setOpen(!open)} className="flex max-w-full items-center gap-2 py-1 text-sm text-muted hover:text-white">
         {running ? <Loader2 className="size-3.5 shrink-0 animate-spin text-accent" /> : <ChevronRight className={cx("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />}
         {running ? (
           <span className="truncate">{inline(running.label)}</span>

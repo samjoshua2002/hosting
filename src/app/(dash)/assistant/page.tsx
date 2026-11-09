@@ -304,7 +304,8 @@ export default function AssistantPage() {
   }
   const links = [...new Set([...linkSet].filter((u) => !/\.git$/.test(u) && !/api\.github\.com/.test(u) && !LOCAL_URL.test(u)).map(nice))].slice(-12);
   const lastText = [...items].reverse().find((i): i is Extract<Item, { kind: "text" }> => i.kind === "text");
-  const suggestions = !busy && lastText ? splitSuggestions(lastText.text).suggestions : [];
+  const [suggestOn] = useStored<boolean>("hosting.assistant.suggest", true);
+  const suggestions = suggestOn && !busy && lastText ? splitSuggestions(lastText.text).suggestions : [];
   const machineSet = new Set<string>();
   for (const i of items) if (i.kind === "step") for (const v of vms) if (new RegExp(`\\b${v.name}\\b`).test(i.label + (i.shell?.vms.join(" ") ?? ""))) machineSet.add(v.name);
   const machines = [...machineSet];
