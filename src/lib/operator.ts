@@ -3,6 +3,7 @@
 // to the database machine. Only destructive actions pause for the user's approval; then it carries on.
 import { chat, type ChatMessage, type ToolCall, type ToolDef } from "./ai";
 import type { ArtifactType, DiagramEdge, DiagramNode, OperatorEvent, Shell } from "./assistant-items";
+import type { ProjectManifest } from "./types";
 import { cronAction, ensureAgent, fillGenerated, jobLog, listManifests, newJobId, probe, projectAction, saveProject, startDeploy, startJob, PROJECT_NAME_RE, ENV_KEY_RE } from "./agent";
 import { getVm, getVms, type VmConfig } from "./config";
 import { isDestructive } from "./safety";
@@ -34,7 +35,8 @@ import { rankMachines } from "./placement";
 import { connectProjects, disconnectProjects } from "./connections";
 import { addMachine, removeMachine, renameMachine } from "./machines";
 import { forget, listMemory, remember } from "./memory";
-import { CATALOG } from "./catalog";
+import { CATALOG, engineFromStart, serviceIdOf } from "./catalog";
+import { actionsFor, API_AUTH, COMMON, DRIVERS, driverSummary, type DriverCtx } from "./service-drivers";
 import { createService } from "./services";
 import { maskSecrets, revealIn, secretNames, vaultText } from "./vault";
 import { chatLocal, isLocal } from "./local-models";
@@ -45,6 +47,32 @@ export type { OperatorEvent } from "./assistant-items";
 
 const MAX_OUTPUT = 6000;
 const clip = (s: string, n = MAX_OUTPUT) => (s.length > n ? `${s.slice(0, n)}\n…(${s.length - n} more characters cut)` : s);
+
+/** Where a project lives (first reachable machine that has it). */
+// several tool calls in one round look projects up at once: share one listing per machine for a few seconds
+const manifestCache = new Map<string, { at: number; list: Promise<ProjectManifest[]> }>();
+function manifestsOf(vm: VmConfig): Promise<ProjectManifest[]> {
+  const hit = manifestCache.get(vm.name);
+  if (hit && Date.now() - hit.at < 20_000) return hit.list;
+  const list = withVm(vm, (c) => listManifests(c)).catch(() => withVm(vm, (c) => listManifests(c))).catch(() => [] as ProjectManifest[]);
+  manifestCache.set(vm.name, { at: Date.now(), list });
+  return list;
+}
+async function findProjectAnywhere(name: string): Promise<{ vm: VmConfig; manifest: ProjectManifest } | null> {
+  const all = await Promise.all(getVms().map(async (vm) => ({ vm, ms: await manifestsOf(vm) })));
+  for (const { vm, ms } of all) {
+    const m = ms.find((x) => x.name === name);
+    if (m) return { vm, manifest: m };
+  }
+  return null;
+}
+
+/** The Docker container a project runs in: its start command's --name (with $PORT filled in), else the project name. */
+function containerOf(m: ProjectManifest): string {
+  const hit = m.start.match(/--name\s+(["']?)([^\s"';]+)\1/);
+  const name = hit ? hit[2].replace(/\$\{?PORT\}?/g, String(m.port ?? "")).replace(/\{name\}/g, m.name) : m.name;
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name) ? name : m.name;
+}
 
 /** This dashboard's public address, for short links in replies. */
 function siteUrl(): string {
@@ -124,7 +152,8 @@ Working on code (GitHub)
 Using the services (they are your tools, not just things to install)
 - If a task needs a service that isn't installed (automation, storage, monitoring, dashboards, local AI), install it yourself with add_service (placement is automatic), wait for it, then use it. Reuse an existing one when there is one.
 - n8n: build and run automations with the n8n tool: write the workflow JSON yourself (Webhook, Schedule Trigger, HTTP Request, Code, IF, Set, MongoDB/Postgres, email, Slack… nodes), import it, add credentials (secrets as {{secret:NAME}}), activate it, test it (run, or curl its webhook), and give the user the workflow name and its webhook URL. n8n webhooks live at <n8n link>/webhook/<path>; set WEBHOOK_URL in n8n's env to its real link if webhooks show localhost.
-- Other services through their CLI/API on the machine with run_command: docker exec <service> … (MinIO: mc; databases: db_query), or curl http://127.0.0.1:<port> with the admin login loaded from the service's env without printing it (set -a; . ~/.hosting/projects/<service>.env; set +a; curl -u "admin:$GF_SECURITY_ADMIN_PASSWORD" …). Grafana and Metabase have HTTP APIs; Ollama: curl /api/generate; Uptime Kuma has no simple API, so tell the user the 3 clicks to add a monitor.
+- Every other service: use_service. It knows each one's real actions and signs in with its stored admin login on the machine, so you never handle passwords: backups/restores and new databases (postgres, mysql, mariadb, mongodb, redis), buckets and files (minio), monitors and alerts (uptime-kuma: run setup first on a fresh install), dashboards and data sources (grafana), questions and dashboards on the user's databases (metabase: setup, add_database, create_question), local models (ollama: pull, ask), editor extensions (code-server), containers (portainer). status/logs/restart/api work on every project, including ones you deploy yourself. If an action you need isn't listed, use action api with the service's HTTP API, or run_command with docker exec <service> <its CLI>.
+- Typical combos, done end to end without being asked twice: "watch my sites" → add uptime-kuma, setup, add_monitor for each project link, add_notification if the user gives a channel; "dashboards on my data" → add metabase, setup, add_database, create_question for the useful views; "store files" → add minio, create_bucket, upload; "nightly backups" → schedule_task running the backup action's command, plus a first backup now; "local AI" → add ollama, pull a model that fits the machine's RAM, ask to test.
 - Anything not in the catalog (any open-source tool or Docker image): deploy it yourself with deploy_project the same way (Docker, port on 127.0.0.1, data in ~/data/<name>, passwords "generate", link private unless it's meant to be public, type "tool" or "service"), and connect it with connect_projects.
 
 Moving an app off Render, Vercel, Heroku, Netlify or Railway (the user wants everything on their own machines)
@@ -298,6 +327,16 @@ const TOOLS: ToolDef[] = [
     "Call any GitHub REST API endpoint the connected token allows, e.g. GET /repos/o/r/issues, POST /repos/o/r/issues, GET /repos/o/r/actions/runs, POST /gists. Returns status and JSON (trimmed).",
     { method: { type: "string", enum: ["GET", "POST", "PATCH", "PUT", "DELETE"] }, path: { type: "string" }, body: { type: "object" } },
     ["method", "path"],
+  ),
+  fn(
+    "use_service",
+    `Use an installed service (or any project) with built-in actions that run on its machine, signed in with its stored admin login (you never see passwords). Every project: ${Object.keys(COMMON).join(", ")} (api = its HTTP API: params {method, path, body?}). Per service: ${driverSummary()}. n8n has its own tool. Admin web UIs (pgAdmin, phpMyAdmin, Adminer, Mongo Express, Redis Insight, CloudBeaver) are for the user to open; use db_query for data. Pass action-specific values in params.`,
+    {
+      service: { type: "string", description: "the service's project name (e.g. postgres, minio, grafana)" },
+      action: { type: "string" },
+      params: { type: "object" },
+    },
+    ["service", "action"],
   ),
   fn(
     "n8n",
@@ -492,6 +531,14 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Copied attachment ${str(a.id)} to ~/${str(a.path)} on ${on(a.vms)}`, needsApproval: false, detail: "" };
     case "add_service":
       return { label: `Added ${str(a.name) || str(a.template)} from the catalog`, needsApproval: false, detail: "" };
+    case "use_service": {
+      const act = str(a.action);
+      const method = str((a.params as { method?: unknown } | undefined)?.method);
+      const readOnly = [COMMON, ...Object.values(DRIVERS)].some((d) => d[act]?.readOnly) || (act === "api" && /^(get)?$/i.test(method));
+      const danger = Object.values(DRIVERS).some((d) => d[act]?.danger) || (act === "api" && /^delete$/i.test(method));
+      const shown = a.params && typeof a.params === "object" ? Object.entries(a.params as Record<string, unknown>).filter(([k]) => !/pass|secret|token|key/i.test(k)).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join("\n").slice(0, 2000) : "";
+      return { label: `${str(a.service)}: ${act.replace(/_/g, " ")}`, needsApproval: danger, detail: shown, readOnly };
+    }
     case "n8n": {
       const act = str(a.action);
       const what = act === "import" ? `Saved n8n workflow ${str((a.workflow as { name?: unknown } | undefined)?.name) || ""}` : act === "credentials" ? "Saved credentials in n8n" : act === "list" ? "Listed n8n workflows" : `${act[0]?.toUpperCase() ?? ""}${act.slice(1)} n8n workflow ${str(a.id)}`;
@@ -760,6 +807,41 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
         });
         return { ok: res.every((r) => r.ok), output: clip(res.map((r) => r.line).join("\n\n"), 5000) };
       }
+      case "use_service": {
+        const want = str(a.service).toLowerCase();
+        const act = str(a.action);
+        if (!PROJECT_NAME_RE.test(want)) return { ok: false, output: "service must be a project name" };
+        const located = await findProjectAnywhere(want);
+        if (!located) return { ok: false, output: `no project named ${want} (resting machines can't be reached; check fleet_status)` };
+        const id = serviceIdOf(located.manifest);
+        if (id === "n8n" && !(act in COMMON)) return { ok: false, output: "use the n8n tool for workflows" };
+        const actions = actionsFor(id);
+        const action = actions[act];
+        if (!action) return { ok: false, output: `${want} (${id ?? "custom project"}) can: ${Object.entries(actions).map(([k, v]) => `${k} (${v.about})`).join("; ")}` };
+        const params = a.params && typeof a.params === "object" ? (a.params as Record<string, unknown>) : {};
+        const envOf = async (vm: VmConfig, name: string) => {
+          const r = await withVm(vm, (c) => run(c, `cat "$HOME/.hosting/projects/${name}.env" 2>/dev/null || true`, { timeoutMs: 15_000 }));
+          return Object.fromEntries(r.stdout.split("\n").map((l) => l.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)).filter((m): m is RegExpMatchArray => Boolean(m)).map((m) => [m[1], m[2].replace(/^'(.*)'$/, "$1").replace(/'\\''/g, "'")]));
+        };
+        let peer: DriverCtx["peer"];
+        if (action.needsPeer) {
+          const dbName = str(params.database).toLowerCase();
+          const db = PROJECT_NAME_RE.test(dbName) ? await findProjectAnywhere(dbName) : null;
+          if (db) peer = { name: dbName, engine: engineFromStart(db.manifest.start) ?? "", port: db.manifest.port ?? 0, env: await envOf(db.vm, dbName), sameMachine: db.vm.name === located.vm.name };
+        }
+        const body = action.script({ name: want, port: located.manifest.port ?? 0, params, peer });
+        if (typeof body !== "string") return { ok: false, output: body.error };
+        const prelude = `set -a; [ -f "$HOME/.hosting/projects/${want}.env" ] && . "$HOME/.hosting/projects/${want}.env"; set +a; S=${shq(want)}; C=${shq(containerOf(located.manifest))}; PORT=${located.manifest.port ?? ""}; AUTH=()`;
+        const auth = act === "api" && id && API_AUTH[id] ? `${API_AUTH[id]}\n` : "";
+        const go = () => withVm(located.vm, (c) => run(c, `${prelude}\n${auth}${body}`, { timeoutMs: 240_000 }));
+        // a dropped connection (many calls at once) is worth one retry for read-only actions
+        const r = await go().catch((e: Error) => (action.readOnly && /ECONNRESET|handshake|timed out/i.test(e.message) ? go() : Promise.reject(e)));
+        // the service's (and the other database's) passwords never go back to the model
+        const secrets = Object.values({ ...(await envOf(located.vm, want).catch(() => ({}))), ...(peer?.env ?? {}) }).filter((v) => v.length >= 6);
+        let out = `${r.stdout}\n${r.stderr}`.trim();
+        for (const v of secrets.sort((x, y) => y.length - x.length)) out = out.split(v).join("••••");
+        return { ok: r.code === 0, output: clip(`${want} on ${located.vm.name}: ${act}\n${out || "done"}`, 8000) };
+      }
       case "n8n": {
         const want = str(a.service).toLowerCase();
         let found: { vm: VmConfig; name: string } | null = null;
@@ -767,7 +849,7 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
           const ms = await withVm(vm, (c) => listManifests(c)).catch(() => []);
           const m = ms.find((x) => (want ? x.name === want : /n8nio\/n8n/.test(x.start)));
           if (m) {
-            found = { vm, name: m.name };
+            found = { vm, name: containerOf(m) };
             break;
           }
         }
