@@ -270,7 +270,7 @@ export default function AssistantPage() {
             uploading={uploading}
             staged={staged}
             review={st.review}
-            placeholder={pendingQuestion ? "Type your own answer…" : pendingApproval ? "Approve or decline above, or type to change course…" : "Tell it what to do…  / for commands, @ to tag"}
+            placeholder={pendingQuestion ? "Type your own answer…" : pendingApproval ? "Approve or decline above, or type to change course…" : "Ask anything, @ to mention, / for actions"}
             onSend={(t) => void submit(t)}
             onStop={() => void stop(sid)}
             onAttach={(f) => void upload(f)}

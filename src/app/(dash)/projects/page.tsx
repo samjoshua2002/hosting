@@ -12,6 +12,7 @@ import { Button, Card, cx } from "@/components/ui";
 import { api } from "@/lib/client";
 import { timeAgo } from "@/lib/format";
 import { rankMachines } from "@/lib/placement";
+import { shortLabel, shortLink } from "@/lib/short-link";
 import { projectType, TYPE_LABEL, TYPE_ORDER, type ProjectType } from "@/lib/project-type";
 import type { CommitInfo, JobStartResult, JobState, ProjectManifest, ProjectState, VmStatus } from "@/lib/types";
 
@@ -54,11 +55,7 @@ function health(p: Project): { label: string; tone: Tone } {
 function address(p: Project): { text: string; href?: string; locked?: boolean } {
   const url = p.instances.find((i) => i.url)?.url;
   if (url) {
-    let host = url;
-    try {
-      host = new URL(url).host;
-    } catch {}
-    return { text: host, href: url, locked: url.includes("_token=") };
+    return { text: shortLabel(p.name), href: shortLink(p.name), locked: url.includes("_token=") };
   }
   if (p.type === "database") return { text: p.m.port ? `127.0.0.1:${p.m.port} · private` : "private", locked: true };
   if (!p.m.port) return { text: "no port · runs in the background" };
@@ -505,15 +502,18 @@ function Usage({ vms, status }: { vms: string[]; status: StatusMap }) {
   const memU = memT - sum((a) => a.memAvailKb);
   const diskT = sum((a) => a.diskTotalKb);
   const diskU = sum((a) => a.diskUsedKb);
-  const inst = live.flatMap((a) => a.projects);
-  const running = inst.filter((p) => p.active === "active").length;
+  // per project, not per copy: box5-heartbeat on 6 machines is one project
+  const byName = new Map<string, boolean>();
+  for (const p of live.flatMap((a) => a.projects)) byName.set(p.manifest.name, (byName.get(p.manifest.name) ?? true) && p.active === "active");
+  const inst = [...byName.values()];
+  const running = inst.filter(Boolean).length;
   const gb = (kb: number) => `${(kb / 1048576).toFixed(kb > 10 * 1048576 ? 0 : 1)} GB`;
   const rows: [string, number, string, "high" | "low"][] = [
     ["Machines online", vms.length ? (online / vms.length) * 100 : 0, `${online} / ${vms.length}`, "low"],
     ["CPU", cpu, `${Math.round(cpu)}% avg · ${sum((a) => a.cores)} cores`, "high"],
     ["Memory", memT ? (memU / memT) * 100 : 0, `${gb(memU)} / ${gb(memT)}`, "high"],
     ["Disk", diskT ? (diskU / diskT) * 100 : 0, `${gb(diskU)} / ${gb(diskT)}`, "high"],
-    ["Services running", inst.length ? (running / inst.length) * 100 : 100, `${running} / ${inst.length}`, "low"],
+    ["Projects running", inst.length ? (running / inst.length) * 100 : 100, `${running} / ${inst.length}`, "low"],
   ];
   return (
     <section>

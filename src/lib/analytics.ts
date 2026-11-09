@@ -167,7 +167,10 @@ export interface Totals {
 export function totals(vms: VmInfo[], status: Record<string, VmStatus | undefined>): Totals {
   const agents = vms.filter((v) => status[v.name]?.ok && status[v.name]?.agent).map((v) => status[v.name]!.agent!);
   const cores = agents.reduce((s, a) => s + a.cores, 0);
-  const projects = agents.flatMap((a) => a.projects);
+  // one entry per project, however many machines run it: live only when every copy is running
+  const byName = new Map<string, string[]>();
+  for (const p of agents.flatMap((a) => a.projects)) byName.set(p.manifest.name, [...(byName.get(p.manifest.name) ?? []), p.active]);
+  const states = [...byName.values()];
   return {
     online: vms.filter((v) => status[v.name]?.ok).length,
     total: vms.length,
@@ -180,9 +183,9 @@ export function totals(vms: VmInfo[], status: Record<string, VmStatus | undefine
     memFreeMax: Math.max(0, ...agents.map((a) => a.memAvailKb)),
     disks: agents.length,
     cpuAvg: cores ? agents.reduce((s, a) => s + a.cpuPct * a.cores, 0) / cores : 0,
-    projects: projects.length,
-    projectsLive: projects.filter((p) => p.active === "active").length,
-    projectsFailed: projects.filter((p) => p.active === "failed").length,
+    projects: states.length,
+    projectsLive: states.filter((st) => st.every((x) => x === "active")).length,
+    projectsFailed: states.filter((st) => st.some((x) => x === "failed")).length,
     jobsRunning: agents.flatMap((a) => a.jobs).filter((j) => j.state === "running").length,
   };
 }

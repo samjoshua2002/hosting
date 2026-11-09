@@ -26,6 +26,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/client";
+import { shortLabel, shortLink } from "@/lib/short-link";
 import { timeAgo } from "@/lib/format";
 import { projectType, TYPE_LABEL, type ProjectType } from "@/lib/project-type";
 import type { ProjectManifest, ProjectState, VmStatus } from "@/lib/types";
@@ -81,13 +82,6 @@ function health(inst: Inst[], m: ProjectManifest): { tone: Tone; label: string }
   return { tone: "off", label: "Stopped" };
 }
 
-function host(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-}
 
 /* ---------- nodes and edges ---------- */
 
@@ -263,7 +257,7 @@ function Inner() {
     const repos = new Map<string, RepoData>();
     for (const p of projects.values()) {
       const sub =
-        p.url ? host(p.url) : p.type === "database" ? `127.0.0.1:${p.m.port ?? "?"} · private` : p.m.port ? `port ${p.m.port} · no link` : "background process";
+        p.url ? shortLabel(p.name) : p.type === "database" ? `127.0.0.1:${p.m.port ?? "?"} · private` : p.m.port ? `port ${p.m.port} · no link` : "background process";
       ns.push({
         id: `p:${p.name}`,
         type: "proj",
@@ -544,13 +538,13 @@ function Inspector({
           {p.url && (
             <div className="mt-4 flex items-center gap-1 rounded-lg border border-line-strong px-2.5 py-1.5">
               {p.url.includes("_token=") && <Lock className="size-3.5 shrink-0 text-muted" />}
-              <a href={p.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-sm text-accent-soft hover:underline">
-                {host(p.url)}
+              <a href={shortLink(p.name)} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-sm text-accent-soft hover:underline">
+                {shortLabel(p.name)}
               </a>
-              <a href={p.url} target="_blank" rel="noreferrer" className="rounded-md p-1 text-muted hover:text-white" title="Open">
+              <a href={shortLink(p.name)} target="_blank" rel="noreferrer" className="rounded-md p-1 text-muted hover:text-white" title="Open">
                 <ExternalLink className="size-3.5" />
               </a>
-              <CopyButton text={p.url} label="Copy" />
+              <CopyButton text={shortLink(p.name)} label="Copy" />
             </div>
           )}
 

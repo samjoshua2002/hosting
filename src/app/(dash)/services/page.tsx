@@ -35,6 +35,7 @@ import { PageHero } from "@/components/page-hero";
 import { Button, Card, cx } from "@/components/ui";
 import { CATALOG, CATEGORIES, serviceIdOf, template, USAGE, type ServiceCategory, type ServiceTemplate } from "@/lib/catalog";
 import { api } from "@/lib/client";
+import { shortLabel, shortLink } from "@/lib/short-link";
 import type { JobLog, ProjectState } from "@/lib/types";
 
 const ICON: Record<string, LucideIcon> = {
@@ -334,7 +335,7 @@ function ServiceCard({ x, open: initiallyOpen }: { x: Installed; open: boolean }
 
       {url && (
         <div className="mt-4 flex items-center gap-2">
-          <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-[#0b0e1c] hover:bg-white/90">
+          <a href={shortLink(m.name)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-[#0b0e1c] hover:bg-white/90">
             Open {x.t.name.split(" (")[0]} <ExternalLink className="size-3.5" />
           </a>
           {url.includes("_token=") && (
@@ -343,7 +344,8 @@ function ServiceCard({ x, open: initiallyOpen }: { x: Installed; open: boolean }
             </span>
           )}
           <span className="flex-1" />
-          <CopyButton text={url} label="Copy link" />
+          <span className="truncate text-xs text-zinc-500">{shortLabel(m.name)}</span>
+          <CopyButton text={shortLink(m.name)} label="Copy link" />
         </div>
       )}
 

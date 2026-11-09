@@ -1,11 +1,11 @@
 "use client";
 
-import { Cloud, Cpu, Database, FileText, FolderGit2, Globe, Hash, Loader2, Paperclip, SendHorizonal, Server, ShieldCheck, Square, Wrench, X, Zap, type LucideIcon } from "lucide-react";
+import { ArrowRight, ChevronUp, Cloud, Cpu, Database, FileText, Plus, FolderGit2, Globe, Hash, Loader2, Server, ShieldCheck, Square, Wrench, X, Zap, type LucideIcon } from "lucide-react";
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Att } from "@/lib/assistant-items";
 import { projectType, TYPE_LABEL, type ProjectType } from "@/lib/project-type";
 import type { VmInfo, VmStatus } from "@/lib/types";
-import { Button, cx } from "./ui";
+import { cx } from "./ui";
 
 export interface Entity {
   name: string;
@@ -109,21 +109,34 @@ export interface ModelChoice {
 }
 
 /** Cloud models do the work (tools); local ones on your machines chat only. */
-function ModelPicker({ value, models, onChange }: { value: string; models: ModelChoice[]; onChange: (id: string) => void }) {
+function ModelPicker({
+  value,
+  models,
+  onChange,
+  review,
+  onReview,
+}: {
+  value: string;
+  models: ModelChoice[];
+  onChange: (id: string) => void;
+  review: "auto" | "manual";
+  onReview: (r: "auto" | "manual") => void;
+}) {
   const [open, setOpen] = useState(false);
   const cur = models.find((m) => m.id === value) ?? models[0];
-  if (!models.length) return null;
+
   const group = (local: boolean) => models.filter((m) => m.local === local);
   return (
     <div className="relative">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex h-7 max-w-[200px] items-center gap-1.5 rounded-lg border border-white/[0.08] px-2 text-[11.5px] text-ink hover:border-white/20"
-        title="Choose the model"
+        className="flex h-8 max-w-[260px] items-center gap-1.5 rounded-full px-2.5 text-sm text-zinc-300 hover:bg-white/[0.06]"
+        title="Model and review mode"
       >
-        {cur?.local ? <Cpu className="size-3.5 shrink-0 text-muted" /> : <Cloud className="size-3.5 shrink-0 text-muted" />}
         <span className="truncate">{cur?.label ?? "Model"}</span>
+        <span className="text-zinc-500">{cur?.local ? "Local" : review === "manual" ? "Review" : "Auto"}</span>
+        <ChevronUp className="size-3.5 text-zinc-500" />
       </button>
       {open && (
         <>
@@ -156,7 +169,28 @@ function ModelPicker({ value, models, onChange }: { value: string; models: Model
                 </div>
               ) : null,
             )}
-            <p className="border-t border-white/[0.06] px-3 py-2 text-[11px] text-muted">Local models know your fleet and answer questions; switch to a cloud model to deploy, fix or change things.</p>
+            {!group(true).length && (
+              <p className="px-3.5 pb-2 text-[11px] text-muted">
+                No local models yet. Add <b className="text-zinc-300">Ollama</b> in Services and its models show up here.
+              </p>
+            )}
+            <div className="border-t border-white/[0.06] p-1.5">
+              <p className="px-2 pt-1 pb-1 text-[10.5px] font-semibold tracking-wide text-muted uppercase">When it acts</p>
+              {(["auto", "manual"] as const).map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => onReview(r)}
+                  className={cx("flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-white/[0.06]", review === r && "bg-white/[0.06]")}
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm text-white">{r === "auto" ? "Auto" : "Review each step"}</span>
+                    <span className="block text-[11px] text-muted">{r === "auto" ? "Acts on its own; only risky steps wait for you" : "Every action waits for your OK"}</span>
+                  </span>
+                  {review === r && <span className="size-1.5 rounded-full bg-accent" />}
+                </button>
+              ))}
+            </div>
           </div>
         </>
       )}
@@ -354,7 +388,7 @@ export function Composer({
           ))}
         </div>
       )}
-      <div className="rounded-2xl border border-white/[0.1] bg-panel shadow-xl focus-within:border-white/20">
+      <div className="rounded-[22px] border border-white/[0.08] bg-[#1a1a1d] transition-colors focus-within:border-white/[0.16]">
         <textarea
           ref={area}
           value={text}
@@ -372,51 +406,38 @@ export function Composer({
               onAttach(e.clipboardData.files);
             }
           }}
-          rows={2}
+          rows={1}
           placeholder={placeholder}
-          className="block max-h-56 min-h-[56px] w-full resize-none bg-transparent px-4 pt-3 text-sm text-white placeholder:text-muted focus:outline-none"
+          className="block max-h-56 min-h-[52px] w-full resize-none bg-transparent px-5 pt-4 text-[15px] text-white placeholder:text-zinc-500 focus:outline-none"
         />
-        <div className="flex items-center gap-1 px-2 pb-2">
+        <div className="flex items-center gap-1 px-3 pt-1 pb-3">
           <input ref={fileInput} type="file" multiple hidden onChange={(e) => onAttach(e.target.files)} />
-          <button type="button" onClick={() => fileInput.current?.click()} disabled={uploading} className="grid size-8 place-items-center rounded-lg text-muted hover:bg-white/5 hover:text-white" aria-label="Attach files" title="Attach files">
-            {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
-          </button>
           <button
             type="button"
-            onClick={() => {
-              setText((t) => `${t}${t && !t.endsWith(" ") ? " " : ""}/`);
-              setCaret(text.length + (text && !text.endsWith(" ") ? 2 : 1));
-              area.current?.focus();
-            }}
-            className="grid size-8 place-items-center rounded-lg font-mono text-sm text-muted hover:bg-white/5 hover:text-white"
-            title="Commands"
+            onClick={() => fileInput.current?.click()}
+            disabled={uploading}
+            className="grid size-8 place-items-center rounded-full text-zinc-400 hover:bg-white/[0.06] hover:text-white"
+            aria-label="Add files"
+            title="Add files"
           >
-            /
+            {uploading ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-[18px]" />}
           </button>
-          <ModelPicker value={model} models={models} onChange={onModel} />
-          <div className="ml-1 flex shrink-0 rounded-lg border border-white/[0.08] p-0.5 text-[11.5px]">
-            {(["auto", "manual"] as const).map((r) => (
-              <button
-                key={r}
-                type="button"
-                onClick={() => onReview(r)}
-                className={cx("rounded-md px-2 py-0.5 whitespace-nowrap", review === r ? "bg-white/[0.1] text-white" : "text-muted hover:text-white")}
-                title={r === "auto" ? "Acts on its own; only destructive steps wait for you" : "Every action waits for your approval (commits show the diff)"}
-              >
-                {r === "auto" ? "Auto" : "Review"}
-              </button>
-            ))}
-          </div>
+          <ModelPicker value={model} models={models} onChange={onModel} review={review} onReview={onReview} />
           <span className="flex-1" />
-          <span className="mr-2 hidden text-[11px] whitespace-nowrap text-muted 2xl:inline">/ commands · @ to tag</span>
           {busy ? (
-            <Button type="button" variant="danger" size="sm" onClick={onStop}>
-              <Square className="size-3.5" /> Stop
-            </Button>
+            <button type="button" onClick={onStop} className="grid size-9 place-items-center rounded-full bg-white/[0.1] text-white hover:bg-white/[0.16]" aria-label="Stop">
+              <Square className="size-3.5 fill-current" />
+            </button>
           ) : (
-            <Button type="button" variant="primary" size="sm" onClick={submit} disabled={(!text.trim() && !staged.length) || disabled}>
-              <SendHorizonal className="size-4" />
-            </Button>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={(!text.trim() && !staged.length) || disabled}
+              className="grid size-9 place-items-center rounded-full bg-white text-black transition-opacity hover:bg-white/90 disabled:bg-white/[0.08] disabled:text-zinc-500"
+              aria-label="Send"
+            >
+              <ArrowRight className="size-4" />
+            </button>
           )}
         </div>
       </div>

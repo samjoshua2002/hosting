@@ -1,8 +1,8 @@
 "use client";
 
-import { Bell, ChevronLeft, ChevronRight, LogOut, Plus, RefreshCw, Search, ShieldCheck, Shuffle } from "lucide-react";
+import { Bell, LogOut, Plus, RefreshCw, Search, ShieldCheck, Shuffle } from "lucide-react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { serviceIdOf } from "@/lib/catalog";
 import { api } from "@/lib/client";
@@ -31,20 +31,20 @@ export function Shell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex min-h-dvh flex-row">
-      <aside className="sticky top-0 flex h-dvh w-60 shrink-0 flex-col border-r border-[var(--line)] bg-[var(--sidebar)] px-3 py-4">
-        <Link href="/" className="mb-5 flex items-center gap-2.5 px-2">
-          <span className="grid size-8 place-items-center rounded-lg bg-[var(--accent)] text-[var(--accent-ink)]">
-            <span className="size-2.5 rounded-sm bg-[var(--accent-ink)]" />
+      <aside className="sticky top-0 flex h-dvh w-56 shrink-0 flex-col border-r border-white/[0.05] bg-[var(--sidebar)] px-2.5 py-3">
+        <Link href="/" className="mb-3 flex h-9 items-center gap-2 px-2">
+          <span className="grid size-6 place-items-center rounded-md bg-white text-black">
+            <span className="size-2 rounded-[3px] bg-black" />
           </span>
-          <span className="text-[15px] font-semibold tracking-tight text-white">hosting</span>
+          <span className="text-sm font-semibold tracking-tight text-white">hosting</span>
         </Link>
         <button
           onClick={() => setPalette(true)}
-          className="mb-5 flex h-9 items-center gap-2 rounded-lg border border-[var(--line-strong)] bg-[var(--panel)] px-3 text-sm text-muted hover:border-white/20"
+          className="mb-4 flex h-8 items-center gap-2 rounded-md bg-white/[0.04] px-2.5 text-[13px] text-zinc-500 transition-colors hover:bg-white/[0.07] hover:text-zinc-300"
         >
-          <Search className="size-4" />
+          <Search className="size-3.5" />
           <span className="flex-1 text-left">Search</span>
-          <kbd className="rounded border border-[var(--line-strong)] px-1 font-sans text-[10px]">⌘K</kbd>
+          <span className="text-[11px] text-zinc-600">⌘K</span>
         </button>
         <Suspense fallback={<Nav path={null} />}>
           <NavWithPath />
@@ -97,11 +97,11 @@ function Nav({ path }: { path: string | null }) {
   }, [vms, status]);
 
   return (
-    <nav className="space-y-5">
+    <nav className="space-y-4">
       {NAV.map((g) => (
         <div key={g.title}>
-          <p className="mb-1.5 px-3 text-[10.5px] font-semibold tracking-[0.12em] text-muted/80 uppercase">{g.title}</p>
-          <div className="space-y-0.5">
+          <p className="mb-1 px-2.5 text-[11px] font-medium text-zinc-600">{g.title}</p>
+          <div className="space-y-px">
             {g.items.map(({ href, label, icon: Icon }) => {
               const active = path !== null && (href === "/" ? path === "/" : path.startsWith(href));
               return (
@@ -109,14 +109,14 @@ function Nav({ path }: { path: string | null }) {
                   key={href}
                   href={href}
                   className={cx(
-                    "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-                    active ? "bg-white/[0.08] font-medium text-white" : "text-zinc-400 hover:bg-white/[0.04] hover:text-white",
+                    "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] transition-colors",
+                    active ? "bg-white/[0.07] text-white" : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100",
                   )}
                 >
-                  <Icon className={cx("size-[18px]", active ? "text-[var(--accent)]" : "text-zinc-500")} />
+                  <Icon className={cx("size-4", active ? "text-[var(--accent)]" : "text-zinc-500")} strokeWidth={1.75} />
                   <span className="flex-1">{label}</span>
                   {href === "/assistant" && working && <span className="size-2 animate-pulse rounded-full bg-[var(--accent)]" title="The Assistant is working" />}
-                  {counts[href] ? <span className="rounded-md bg-white/[0.06] px-1.5 text-[11px] tabular-nums text-zinc-400">{counts[href]}</span> : null}
+                  {counts[href] ? <span className="text-[11px] tabular-nums text-zinc-600">{counts[href]}</span> : null}
                 </Link>
               );
             })}
@@ -127,8 +127,15 @@ function Nav({ path }: { path: string | null }) {
   );
 }
 
+function IconButton({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <button onClick={onClick} className="grid size-8 place-items-center rounded-md text-zinc-400 hover:bg-white/[0.05] hover:text-white" aria-label={label} title={label}>
+      {children}
+    </button>
+  );
+}
+
 function TopBar({ path }: { path: string | null }) {
-  const router = useRouter();
   const { vms, status, checking, refresh, auto, setAuto } = useCluster();
   const { photo } = useTheme();
   const [shuffling, setShuffling] = useState(false);
@@ -138,48 +145,34 @@ function TopBar({ path }: { path: string | null }) {
   const trail = crumbs(path);
 
   return (
-    <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-[var(--line)] bg-[var(--bg)]/90 px-6 backdrop-blur">
-      <div className="flex items-center gap-1">
-        <button onClick={() => router.back()} className="grid size-8 place-items-center rounded-lg border border-[var(--line)] text-zinc-400 hover:text-white" aria-label="Back">
-          <ChevronLeft className="size-4" />
-        </button>
-        <button onClick={() => router.forward()} className="grid size-8 place-items-center rounded-lg border border-[var(--line)] text-zinc-400 hover:text-white" aria-label="Forward">
-          <ChevronRight className="size-4" />
-        </button>
-      </div>
-      <nav className="flex min-w-0 items-center gap-1.5 text-sm">
-        <Link href="/" className="text-muted hover:text-white">
-          hosting
-        </Link>
+    <header className="sticky top-0 z-20 flex h-12 items-center gap-1 border-b border-white/[0.05] bg-[var(--bg)]/80 px-5 backdrop-blur-md">
+      <nav className="flex min-w-0 items-center gap-1.5 text-[13px]">
         {trail.map((c, i) => (
           <span key={i} className="flex min-w-0 items-center gap-1.5">
-            <ChevronRight className="size-3.5 text-zinc-600" />
-            <span className={cx("truncate", i === trail.length - 1 ? "text-white" : "text-muted")}>{c}</span>
+            {i > 0 && <span className="text-zinc-700">/</span>}
+            <span className={cx("truncate", i === trail.length - 1 ? "text-white" : "text-zinc-500")}>{c}</span>
           </span>
         ))}
       </nav>
       <span className="flex-1" />
-      <span className="flex items-center gap-2 rounded-lg border border-[var(--line)] px-2.5 py-1 text-xs text-zinc-300">
-        <span className={cx("size-2 rounded-full", online === vms.length && vms.length ? "bg-[var(--good)]" : online ? "bg-[var(--warning)]" : "bg-zinc-600")} />
-        <span className="tabular-nums">
-          {online}/{vms.length}
-        </span>
-        online
-      </span>
       <button
         onClick={() => setAuto(!auto)}
         role="switch"
         aria-checked={auto}
-        className="flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-2.5 py-1 text-xs text-zinc-300 hover:bg-white/5"
-        title={auto ? "Refreshing every 30 s (click to pause)" : "Auto-refresh paused (click to resume)"}
+        className="mr-2 flex items-center gap-2 rounded-md px-2 py-1 text-xs text-zinc-400 hover:bg-white/[0.05] hover:text-white"
+        title={auto ? "Live: refreshing every 30 s (click to pause)" : "Paused (click to resume)"}
       >
-        <span className={cx("size-1.5 rounded-full", auto ? "animate-pulse-dot bg-[var(--accent)]" : "bg-zinc-600")} />
-        {auto ? "Live" : "Paused"}
+        <span className={cx("size-1.5 rounded-full", online === vms.length && vms.length ? "bg-[var(--good)]" : online ? "bg-[var(--warning)]" : "bg-zinc-600", auto && "animate-pulse-dot")} />
+        <span className="tabular-nums">
+          {online}/{vms.length} online
+        </span>
+        {!auto && <span className="text-zinc-600">· paused</span>}
       </button>
-      <button onClick={() => refresh()} className="grid size-8 place-items-center rounded-lg border border-[var(--line)] hover:bg-white/5" aria-label="Refresh" title="Refresh now">
-        <RefreshCw className={cx("size-4 text-[var(--accent)]", anyChecking && "animate-spin")} />
-      </button>
-      <button
+      <IconButton label="Refresh now" onClick={() => refresh()}>
+        <RefreshCw className={cx("size-4", anyChecking && "animate-spin")} />
+      </IconButton>
+      <IconButton
+        label={photo ? `New photo and accent (now: ${photo.author} on Unsplash)` : "New photo and accent"}
         onClick={async () => {
           setShuffling(true);
           try {
@@ -188,18 +181,15 @@ function TopBar({ path }: { path: string | null }) {
             setShuffling(false);
           }
         }}
-        className="grid size-8 place-items-center rounded-lg border border-[var(--line)] text-zinc-400 hover:bg-white/5 hover:text-white"
-        aria-label="Shuffle theme"
-        title={photo ? `Theme from ${photo.author} on Unsplash (click to shuffle)` : "Shuffle theme"}
       >
-        <Shuffle className={cx("size-4 text-[var(--accent)]", shuffling && "animate-spin")} />
-      </button>
-      <Link href="/" className="relative grid size-8 place-items-center rounded-lg border border-[var(--line)] hover:bg-white/5" aria-label="Alerts" title={problems.length ? `${problems.length} need attention` : "No alerts"}>
-        <Bell className="size-4 text-[var(--accent)]" />
-        {problems.length > 0 && <span className="absolute -top-1 -right-1 grid size-4 place-items-center rounded-full bg-[var(--critical)] text-[9px] font-bold text-white">{problems.length}</span>}
+        <Shuffle className={cx("size-4", shuffling && "animate-spin")} />
+      </IconButton>
+      <Link href="/" className="relative grid size-8 place-items-center rounded-md text-zinc-400 hover:bg-white/[0.05] hover:text-white" aria-label="Alerts" title={problems.length ? `${problems.length} need attention` : "No alerts"}>
+        <Bell className="size-4" />
+        {problems.length > 0 && <span className="absolute top-1 right-1 size-2 rounded-full bg-[var(--critical)] ring-2 ring-[var(--bg)]" />}
       </Link>
-      <Link href="/projects?new=1" className="flex h-8 items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 text-sm font-medium text-[var(--accent-ink)] hover:brightness-110">
-        <Plus className="size-4" /> Deploy
+      <Link href="/projects?new=1" className="ml-2 flex h-8 items-center gap-1.5 rounded-md bg-white px-3 text-[13px] font-medium text-black hover:bg-white/90">
+        <Plus className="size-3.5" /> Deploy
       </Link>
     </header>
   );
@@ -220,17 +210,12 @@ function AutopilotCard() {
   }, []);
   if (!s) return null;
   return (
-    <div className="mb-3 rounded-xl border border-[var(--line)] bg-[var(--panel)] p-3">
-      <p className="flex items-center gap-2 text-sm font-medium text-white">
-        <ShieldCheck className="size-4 text-[var(--accent)]" /> Autopilot {s.enabled ? "on" : "off"}
-      </p>
-      <p className="mt-1 line-clamp-2 text-xs text-muted">
-        {s.enabled ? (s.lastSummary?.split("\n")[0] ?? "Watching your machines every 15 minutes.") : "Let it restart crashes and fix problems every 15 minutes."}
-      </p>
-      <Link href="/assistant" className="mt-2.5 inline-flex h-7 items-center rounded-lg bg-[var(--accent)] px-2.5 text-xs font-medium text-[var(--accent-ink)] hover:brightness-110">
-        {s.enabled ? "Open Assistant" : "Turn on"}
-      </Link>
-    </div>
+    <Link href="/assistant" className="mb-1 flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100" title={s.lastSummary ?? undefined}>
+      <ShieldCheck className="size-4 text-zinc-500" strokeWidth={1.75} />
+      <span className="flex-1">Autopilot</span>
+      <span className={cx("size-1.5 rounded-full", s.enabled ? "bg-[var(--good)]" : "bg-zinc-600")} />
+      <span className="text-[11px] text-zinc-600">{s.enabled ? "on" : "off"}</span>
+    </Link>
   );
 }
 
@@ -240,8 +225,8 @@ function SignOut() {
     window.location.href = "/login";
   };
   return (
-    <button onClick={logout} className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-zinc-400 hover:bg-white/[0.04] hover:text-white">
-      <LogOut className="size-[18px] text-zinc-500" /> Log out
+    <button onClick={logout} className="flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100">
+      <LogOut className="size-4 text-zinc-500" strokeWidth={1.75} /> Log out
     </button>
   );
 }
