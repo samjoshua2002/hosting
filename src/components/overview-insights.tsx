@@ -11,6 +11,7 @@ import { api } from "@/lib/client";
 import { timeAgo } from "@/lib/format";
 import { projectType, TYPE_LABEL, type ProjectType } from "@/lib/project-type";
 import type { VmInfo, VmStatus } from "@/lib/types";
+import { Bar, BarChart, LabelList, PolarAngleAxis, RadialBar, RadialBarChart, ResponsiveContainer, XAxis, YAxis } from "recharts";
 import { Card, cx } from "./ui";
 
 gsap.registerPlugin(useGSAP);
@@ -116,61 +117,62 @@ function healthOf(vms: VmInfo[], status: Record<string, VmStatus | undefined>) {
   return { score: Math.max(0, Math.round(score)), reasons, ready: known.length > 0 };
 }
 
-function Ring({ value }: { value: number }) {
-  const ref = useRef<SVGCircleElement>(null);
-  const r = 46;
-  const c = 2 * Math.PI * r;
-  const color = value >= 85 ? "var(--good)" : value >= 60 ? "var(--warning)" : "var(--critical)";
-  useGSAP(
-    () => {
-      const mm = gsap.matchMedia();
-      mm.add("(prefers-reduced-motion: no-preference)", () => {
-        gsap.fromTo(ref.current, { strokeDashoffset: c }, { strokeDashoffset: c * (1 - value / 100), duration: 1.3, ease: "power3.out" });
-      });
-      mm.add("(prefers-reduced-motion: reduce)", () => {
-        gsap.set(ref.current, { strokeDashoffset: c * (1 - value / 100) });
-      });
-      return () => mm.revert();
-    },
-    { dependencies: [value] },
-  );
+/* shadcn-style card: header (title + description), content, footer */
+function InsightCard({ title, description, footer, children, className }: { title: string; description: string; footer?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
-    <svg viewBox="0 0 110 110" className="size-[110px] -rotate-90">
-      <circle cx="55" cy="55" r={r} fill="none" stroke="var(--track)" strokeWidth="9" />
-      <circle ref={ref} cx="55" cy="55" r={r} fill="none" stroke={color} strokeWidth="9" strokeLinecap="round" strokeDasharray={c} strokeDashoffset={c} />
-    </svg>
+    <Card className={cx("flex flex-col", className)}>
+      <div className="space-y-1 px-6 pt-5">
+        <p className="text-[15px] leading-none font-semibold tracking-tight text-white">{title}</p>
+        <p className="text-[13px] text-muted">{description}</p>
+      </div>
+      <div className="flex flex-1 items-center px-6 py-3">{children}</div>
+      {footer && <div className="flex flex-col gap-1 border-t border-[var(--line)] px-6 py-3.5 text-[13px]">{footer}</div>}
+    </Card>
   );
 }
 
-function Bars({ rows }: { rows: { label: string; n: number }[] }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const max = Math.max(1, ...rows.map((r) => r.n));
-  useGSAP(
-    () => {
-      const mm = gsap.matchMedia();
-      mm.add("(prefers-reduced-motion: no-preference)", () => {
-        gsap.from(ref.current!.querySelectorAll("[data-bar]"), { scaleX: 0, transformOrigin: "left center", duration: 0.9, ease: "power3.out", stagger: 0.07 });
-      });
-      return () => mm.revert();
-    },
-    { scope: ref, dependencies: [rows.map((r) => r.n).join(",")] },
-  );
+/** Radial score, like shadcn's "Radial Chart - Shape": a thin rounded arc on a muted ring, the number in the middle. */
+function ScoreChart({ value, ready }: { value: number; ready: boolean }) {
+  const color = !ready ? "var(--line-strong)" : value >= 85 ? "var(--good)" : value >= 60 ? "var(--warning)" : "var(--critical)";
+  const data = [{ name: "health", value: ready ? value : 0, fill: color }];
   return (
-    <div ref={ref} className="space-y-2.5">
-      {rows.map((r) => (
-        <div key={r.label} className="grid grid-cols-[86px_minmax(0,1fr)_28px] items-center gap-3 text-[12.5px]">
-          <span className="text-zinc-400">{r.label}</span>
-          <span className="h-2 overflow-hidden rounded-full bg-[var(--track)]">
-            <span data-bar className="block h-full rounded-full bg-[var(--accent)]" style={{ width: `${Math.max(r.n ? 6 : 0, (r.n / max) * 100)}%` }} />
-          </span>
-          <span className="text-right text-zinc-200 tabular-nums">{r.n}</span>
+    <div className="relative mx-auto aspect-square w-full max-w-[180px]">
+      <ResponsiveContainer width="100%" height="100%">
+        <RadialBarChart data={data} startAngle={90} endAngle={-270} innerRadius="78%" outerRadius="100%">
+          <RadialBar dataKey="value" background={{ fill: "var(--track)" }} cornerRadius={10} isAnimationActive animationDuration={1100} />
+          <PolarAngleAxis type="number" domain={[0, 100]} tick={false} axisLine={false} />
+        </RadialBarChart>
+      </ResponsiveContainer>
+      <div className="pointer-events-none absolute inset-0 grid place-items-center text-center">
+        <div>
+          <CountUp text={ready ? String(value) : "–"} className="block text-[34px] leading-none font-bold tracking-tight text-white tabular-nums" />
+          <span className="mt-1 block text-[12px] text-muted">out of 100</span>
         </div>
-      ))}
+      </div>
+    </div>
+  );
+}
+
+/** Horizontal bars with the value at the end, like shadcn's "Bar Chart - Custom Label". */
+function MixChart({ rows }: { rows: { label: string; n: number }[] }) {
+  return (
+    <div className="h-[178px] w-full">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={rows} layout="vertical" margin={{ left: 0, right: 28, top: 4, bottom: 4 }} barCategoryGap={7}>
+          <XAxis type="number" hide domain={[0, (max: number) => Math.max(1, max)]} />
+          <YAxis dataKey="label" type="category" tickLine={false} axisLine={false} width={78} tick={{ fill: "var(--muted)", fontSize: 12.5 }} />
+          <Bar dataKey="n" fill="var(--accent)" radius={6} background={{ fill: "var(--panel-2)", radius: 6 }} animationDuration={900}>
+            <LabelList dataKey="n" position="right" offset={8} className="fill-[var(--text)]" fontSize={12.5} />
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
     </div>
   );
 }
 
 /* ---------- the row ---------- */
+
+type AiStats = { ok: boolean; today: number; week: number; running: number; artifacts: number | null; autopilot?: { enabled: boolean; lastRun?: number; lastSummary?: string } };
 
 export function OverviewInsights({ vms, status }: { vms: VmInfo[]; status: Record<string, VmStatus | undefined> }) {
   const health = useMemo(() => healthOf(vms, status), [vms, status]);
@@ -180,97 +182,96 @@ export function OverviewInsights({ vms, status }: { vms: VmInfo[]; status: Recor
     const order: ProjectType[] = ["website", "service", "worker", "database", "tool"];
     return order.map((t) => ({ label: TYPE_LABEL[t].many, n: [...seen.values()].filter((x) => x === t).length }));
   }, [vms, status]);
-  const [ai, setAi] = useState<{ today: number; week: number; running: number; artifacts: number | null; autopilot?: { enabled: boolean; lastRun?: number; lastSummary?: string } } | null>(null);
+  const total = mix.reduce((a, r) => a + r.n, 0);
+  const [ai, setAi] = useState<AiStats | null>(null);
   useEffect(() => {
     let alive = true;
     void (async () => {
       const [sessions, ap] = await Promise.all([
-        api<{ sessions: { updatedAt: number; running?: boolean }[] }>("/api/sessions").catch(() => ({ sessions: [] })),
+        api<{ sessions: { updatedAt: number; running?: boolean }[] }>("/api/sessions").catch(() => null),
         api<{ enabled: boolean; lastRun?: number; lastSummary?: string }>("/api/autopilot").catch(() => undefined),
       ]);
-      const now = Date.now();
-      const list = sessions.sessions ?? [];
       if (!alive) return;
-      setAi({ today: list.filter((s) => now - s.updatedAt < 86_400_000).length, week: list.filter((s) => now - s.updatedAt < 7 * 86_400_000).length, running: list.filter((s) => s.running).length, artifacts: null, autopilot: ap });
+      const now = Date.now();
+      const list = sessions?.sessions ?? [];
+      setAi({ ok: Boolean(sessions), today: list.filter((s) => now - s.updatedAt < 86_400_000).length, week: list.filter((s) => now - s.updatedAt < 7 * 86_400_000).length, running: list.filter((s) => s.running).length, artifacts: null, autopilot: ap });
       const arts = await api<{ artifacts: unknown[] }>("/api/artifacts").catch(() => null);
-      if (alive && arts) setAi((x) => (x ? { ...x, artifacts: arts.artifacts.length } : x));
+      if (alive) setAi((x) => (x ? { ...x, artifacts: arts ? arts.artifacts.length : -1 } : x));
     })();
     return () => {
       alive = false;
     };
   }, []);
+  const stat = (n: number | null | undefined) => (!ai?.ok || n === -1 ? "–" : n === null || n === undefined ? "…" : String(n));
 
   return (
     <Stagger className="grid grid-cols-3 gap-4">
-      <Card className="flex items-center gap-5 p-5">
-        <div className="relative grid place-items-center">
-          <Ring value={health.ready ? health.score : 0} />
-          <div className="absolute text-center">
-            <CountUp text={health.ready ? String(health.score) : "–"} className="block text-[26px] leading-none font-semibold text-white tabular-nums" />
-            <span className="text-[10.5px] tracking-wide text-zinc-500 uppercase">health</span>
-          </div>
-        </div>
-        <div className="min-w-0">
-          <p className="flex items-center gap-1.5 font-medium text-white">
-            <Activity className="size-4 text-[var(--accent)]" /> Fleet health
-          </p>
-          {health.reasons.length ? (
-            <ul className="mt-2 space-y-1 text-[12.5px] text-zinc-400">
-              {health.reasons.map((r) => (
-                <li key={r} className="flex items-center gap-1.5">
-                  <span className="size-1.5 shrink-0 rounded-full bg-[var(--warning)]" /> {r}
-                </li>
-              ))}
-            </ul>
+      <InsightCard
+        title="Fleet health"
+        description="Machines, crashes, disk and memory"
+        footer={
+          health.reasons.length ? (
+            health.reasons.map((r) => (
+              <span key={r} className="flex items-center gap-2 text-zinc-300">
+                <span className="size-1.5 shrink-0 rounded-full bg-[var(--warning)]" /> {r}
+              </span>
+            ))
           ) : (
-            <p className="mt-2 text-[12.5px] text-zinc-400">{health.ready ? "Every machine up, nothing crashed, room on every disk." : "Checking the machines…"}</p>
-          )}
-        </div>
-      </Card>
+            <span className="flex items-center gap-2 text-zinc-300">
+              <Activity className="size-4 text-[var(--good)]" /> {health.ready ? "All clear: every machine up, nothing crashed" : "Checking the machines…"}
+            </span>
+          )
+        }
+      >
+        <ScoreChart value={health.score} ready={health.ready} />
+      </InsightCard>
 
-      <Card className="p-5">
-        <p className="mb-4 flex items-center gap-1.5 font-medium text-white">
-          <Boxes className="size-4 text-[var(--accent)]" /> What&apos;s running
-        </p>
-        <Bars rows={mix} />
-      </Card>
+      <InsightCard
+        title="What's running"
+        description="Projects by kind, across every machine"
+        footer={
+          <span className="flex items-center gap-2 text-zinc-300">
+            <Boxes className="size-4 text-[var(--accent)]" /> {total} project{total === 1 ? "" : "s"} in total
+          </span>
+        }
+      >
+        <MixChart rows={mix} />
+      </InsightCard>
 
-      <Card className="flex flex-col p-5">
-        <p className="flex items-center gap-1.5 font-medium text-white">
-          <Bot className="size-4 text-[var(--accent)]" /> Assistant
-        </p>
-        {!ai ? (
-          <p className="mt-3 text-[12.5px] text-zinc-500">Loading…</p>
-        ) : (
+      <InsightCard
+        title="Assistant"
+        description="Conversations and what they produced"
+        footer={
           <>
-            <div className="mt-3 grid grid-cols-3 gap-2">
-              {(
-                [
-                  ["today", String(ai.today)],
-                  ["this week", String(ai.week)],
-                  ["artifacts", ai.artifacts === null ? "…" : String(ai.artifacts)],
-                ] as [string, string][]
-              ).map(([l, v]) => (
-                <div key={l} className="rounded-lg border border-[var(--line)] bg-[var(--panel-2)] px-2.5 py-2">
-                  <CountUp text={v} className="block text-[20px] leading-tight font-semibold text-white tabular-nums" />
-                  <span className="text-[11px] text-zinc-500">{l === "today" || l === "this week" ? `chats ${l}` : l}</span>
-                </div>
-              ))}
-            </div>
-            <p className="mt-3 flex-1 text-[12px] leading-relaxed text-zinc-400">
-              {ai.running ? (
-                <span className={cx("mr-1 inline-flex items-center gap-1 text-[var(--accent)]")}>
-                  <span className="size-1.5 animate-pulse rounded-full bg-[var(--accent)]" /> {ai.running} working now ·
-                </span>
-              ) : null}
-              {ai.autopilot?.enabled ? `Autopilot on${ai.autopilot.lastRun ? `, last check ${timeAgo(ai.autopilot.lastRun)}: ${(ai.autopilot.lastSummary ?? "").split("\n")[0].slice(0, 90)}` : ""}` : "Autopilot off"}
-            </p>
-            <Link href="/assistant" className="mt-2 inline-flex items-center gap-1 text-[12.5px] text-accent-soft hover:underline">
-              <Layers className="size-3.5" /> Open the Assistant
+            <span className="text-zinc-300">
+              {!ai ? "Loading…" : !ai.ok ? "Can't reach the storage machine right now" : ai.autopilot?.enabled ? `Autopilot on${ai.autopilot.lastRun ? ` · checked ${timeAgo(ai.autopilot.lastRun)}` : ""}` : "Autopilot off"}
+            </span>
+            <Link href="/assistant" className="inline-flex items-center gap-1 text-muted hover:text-white">
+              <Bot className="size-3.5" /> Open the Assistant
             </Link>
           </>
-        )}
-      </Card>
+        }
+      >
+        <div className="grid w-full grid-cols-3 divide-x divide-[var(--line)]">
+          {(
+            [
+              ["Today", stat(ai ? ai.today : null)],
+              ["This week", stat(ai ? ai.week : null)],
+              ["Artifacts", ai ? stat(ai.artifacts) : "…"],
+            ] as [string, string][]
+          ).map(([l, v]) => (
+            <div key={l} className="px-3 first:pl-0">
+              <p className="text-[12px] text-muted">{l}</p>
+              <CountUp text={v} className="mt-1 block text-[30px] leading-none font-bold tracking-tight text-white tabular-nums" />
+            </div>
+          ))}
+        </div>
+        {ai?.running ? (
+          <span className="ml-2 inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--line)] px-2 py-0.5 text-[11px] text-[var(--accent)]">
+            <Layers className="size-3" /> {ai.running} working
+          </span>
+        ) : null}
+      </InsightCard>
     </Stagger>
   );
 }
