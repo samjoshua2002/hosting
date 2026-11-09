@@ -73,6 +73,7 @@ export default function AssistantPage() {
     [],
   );
   const [note, setNote] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
   const [art, setArt] = useState<string | null>(null);
   const [memory, setMemory] = useState<{ id: string; text: string }[] | null>(null);
   const loadMemory = () =>
@@ -158,15 +159,29 @@ export default function AssistantPage() {
     if (!list?.length) return;
     setUploading(true);
     try {
-      for (const f of Array.from(list)) {
-        if (f.size > 3 * 1024 * 1024) throw new Error(`${f.name} is larger than 3 MB`);
-        const data = await new Promise<string>((ok, fail) => {
+      const CHUNK = 2_500_000; // under Vercel's request limit; bigger files go in pieces
+      const b64 = (blob: Blob) =>
+        new Promise<string>((ok, fail) => {
           const r = new FileReader();
           r.onload = () => ok(String(r.result).split(",")[1] ?? "");
           r.onerror = () => fail(r.error);
-          r.readAsDataURL(f);
+          r.readAsDataURL(blob);
         });
-        const att = await api<Att>("/api/attachments", { session: sid, name: f.name || "pasted", type: f.type, data });
+      for (const f of Array.from(list)) {
+        if (f.size > 50 * 1024 * 1024) throw new Error(`${f.name} is larger than 50 MB`);
+        const name = f.name || "pasted";
+        let att: Att;
+        if (f.size <= CHUNK) att = await api<Att>("/api/attachments", { session: sid, name, type: f.type, data: await b64(f) });
+        else {
+          const upload = Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+          const parts = Math.ceil(f.size / CHUNK);
+          for (let i = 0; i < parts; i++) {
+            setProgress(`Uploading ${name}… ${i + 1}/${parts}`);
+            await api("/api/attachments", { session: sid, upload, index: i, data: await b64(f.slice(i * CHUNK, (i + 1) * CHUNK)) });
+          }
+          setProgress(`Uploading ${name}… putting it together`);
+          att = await api<Att>("/api/attachments", { session: sid, upload, finish: true, parts, size: f.size, name, type: f.type });
+        }
         setStaged((s) => [...s, att]);
         addFiles(sid, [att]);
       }
@@ -174,6 +189,7 @@ export default function AssistantPage() {
       setNote((e as Error).message);
     } finally {
       setUploading(false);
+      setProgress(null);
     }
   };
 
@@ -306,6 +322,7 @@ export default function AssistantPage() {
             model={st.model}
             onModel={setModel}
           />
+          {progress && <p className="mt-2 text-xs text-zinc-400">{progress}</p>}
           {(note || st.error) && <p className="mt-2 text-xs text-[var(--critical-text)]">{note || st.error}</p>}
         </div>
       </main>

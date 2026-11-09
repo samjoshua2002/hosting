@@ -229,3 +229,30 @@ export async function storeReadJsonDir<T>(dir: string): Promise<{ name: string; 
     return out;
   });
 }
+
+/** Join several stored files into one (in order), then remove the pieces. Used for uploads sent in chunks. */
+export async function storeConcat(parts: string[], dest: string, maxBytes = 64 * 1024 * 1024): Promise<number> {
+  if (!parts.length) throw new Error("nothing to join");
+  if (storeBackend() === "database") {
+    const bufs: Buffer[] = [];
+    for (const p of parts) {
+      const b = await pg.get(valid(p), maxBytes);
+      if (!b) throw new Error(`missing piece ${p}`);
+      bufs.push(b);
+    }
+    const all = Buffer.concat(bufs);
+    await pg.put(valid(dest), all);
+    for (const p of parts) await pg.del(valid(p));
+    return all.length;
+  }
+  const d = check(dest);
+  const ps = parts.map(check);
+  // on the machine itself: the pieces never travel back through the dashboard
+  return withStore(async (c) => {
+    const r = await run(c, `umask 077; set -e; for p in ${ps.join(" ")}; do [ -f "$p" ] || { echo "missing $p" >&2; exit 3; }; done; mkdir -p "$(dirname ${d})"; t=${d}.tmp.$$; cat ${ps.join(" ")} > "$t"; mv -f "$t" ${d}; rm -f ${ps.join(" ")}; stat -c %s ${d}`, { timeoutMs: 120_000 });
+    if (r.code !== 0) throw new Error(r.stderr.trim() || "couldn't join the upload");
+    const size = Number(r.stdout.trim().split("\n").pop());
+    if (size > maxBytes) throw new Error(`the file is larger than ${Math.round(maxBytes / 1048576)} MB`);
+    return size;
+  });
+}
