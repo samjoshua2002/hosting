@@ -1,5 +1,7 @@
 // Azure OpenAI client (plain fetch). Discovers deployments, falls back across models on 404/429/5xx.
 
+import { recordGeneration } from "./telemetry";
+
 export interface Deployment {
   id: string;
   model: string;
@@ -71,6 +73,7 @@ export async function chat(opts: {
   if (!aiConfigured()) throw new Error("Azure OpenAI is not configured");
   const chain = [...new Set([opts.model, agentModel(), ...fallbacks()].filter((m): m is string => Boolean(m)))];
   let lastError = "no deployment available";
+  const startTime = new Date();
   for (const deployment of chain) {
     const body: Record<string, unknown> = {
       messages: opts.messages,
@@ -95,12 +98,27 @@ export async function chat(opts: {
     }
     if (res.ok) {
       const data = (await res.json()) as { choices: { message: ChatResult["message"] }[]; usage?: ChatResult["usage"] };
+      recordGeneration({
+        model: deployment,
+        input: opts.messages,
+        output: data.choices[0].message,
+        usage: data.usage as { total_tokens?: number; prompt_tokens?: number; completion_tokens?: number },
+        startTime,
+        endTime: new Date(),
+      });
       return { message: data.choices[0].message, model: deployment, usage: data.usage };
     }
     const text = await res.text().catch(() => "");
     lastError = `${deployment}: ${res.status} ${text.slice(0, 200)}`;
     if (![404, 408, 429, 500, 502, 503, 504].includes(res.status)) break; // a real error: don't hide it behind fallbacks
   }
+  recordGeneration({
+    model: chain[0] || "unknown",
+    input: opts.messages,
+    startTime,
+    endTime: new Date(),
+    error: lastError,
+  });
   throw new Error(`AI request failed (${lastError})`);
 }
 

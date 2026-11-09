@@ -21,6 +21,19 @@ interface State {
 /** A brand logo (Simple Icons), falling back to a lettered tile. */
 export function Logo({ def, size = 44 }: { def: Pick<ConnectorDef, "name" | "logo">; size?: number }) {
   const [broken, setBroken] = useState(false);
+  if (def.logo.slug === "langfuse") {
+    return (
+      <span className="grid shrink-0 place-items-center rounded-xl border border-white/[0.08] bg-panel-2 text-white" style={{ width: size, height: size }}>
+        <svg width={size * 0.52} height={size * 0.52} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 3v18" />
+          <path d="m3 12 18 0" />
+          <circle cx="12" cy="12" r="3" fill="currentColor" />
+          <path d="m5 5 14 14" />
+          <path d="m19 5-14 14" />
+        </svg>
+      </span>
+    );
+  }
   return (
     <span className="grid shrink-0 place-items-center rounded-xl border border-white/[0.08] bg-panel-2" style={{ width: size, height: size }}>
       {broken ? (
@@ -235,13 +248,25 @@ function ConnectorAction({ def, s, busy, onConnect, onDisconnect }: { def: Conne
   const [menu, setMenu] = useState(false);
   if (busy) return <Loader2 className="size-4 shrink-0 animate-spin text-zinc-500" />;
   if (def.kind === "builtin") {
+    if (def.id === "langfuse" && s?.connected) {
+      return (
+        <a
+          href={s.account ? `https://${s.account}` : "https://cloud.langfuse.com"}
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-1.5 h-7 shrink-0 rounded-lg border border-white/10 px-2 text-[11.5px] text-zinc-300 hover:bg-white/[0.06] hover:text-white"
+        >
+          <Check className="size-3.5 text-[var(--good)]" /> Open <ExternalLink className="size-3 opacity-60" />
+        </a>
+      );
+    }
     if (s?.connected) return <Check className="size-4 shrink-0 text-[var(--good)]" />;
     return def.id === "github" ? (
       <Link href="/projects" className="h-8 shrink-0 rounded-lg border border-white/10 px-2.5 py-1.5 text-[12px] text-zinc-200 hover:bg-white/[0.06]">
         Connect
       </Link>
     ) : (
-      <span className="shrink-0 text-[11px] text-zinc-600">env</span>
+      <span className="shrink-0 text-[11px] text-zinc-600 font-mono">.env</span>
     );
   }
   if (s?.connected)

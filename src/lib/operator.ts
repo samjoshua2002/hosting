@@ -1,6 +1,7 @@
 // The Assistant: an operator that does the work on the fleet, end to end.
 // It runs commands, starts and watches background jobs, deploys and manages projects, and connects machines
 // to the database machine. Only destructive actions pause for the user's approval; then it carries on.
+import { recordSpan, traceOutput, withTrace } from "./telemetry";
 import { chat, describeImage, type ChatMessage, type ToolCall, type ToolDef } from "./ai";
 import type { ArtifactType, DiagramEdge, DiagramNode, OperatorEvent, Shell } from "./assistant-items";
 import type { CustomServiceInfo, ProjectManifest } from "./types";
@@ -1474,6 +1475,48 @@ async function screenshot(call: ToolCall, input: OperatorInput, emit: (e: Operat
   return { ok: true, output: `Screenshot of ${shown} taken on ${vm.name}${src ? " and shown to the user" : ""}.\nWhat it shows: ${seen}` };
 }
 
+/** A short, stable name for a tool call: what the session "used" (skill, MCP, connector, service, tool). */
+function toolTag(call: ToolCall): string {
+  let a: Args = {};
+  try {
+    a = JSON.parse(call.function.arguments || "{}") as Args;
+  } catch {
+    /* keep the plain name */
+  }
+  switch (call.function.name) {
+    case "load_skill":
+      return `skill:${str(a.id) || "?"}`;
+    case "install_skill":
+      return `skill-install:${str(a.slug)}`;
+    case "mcp_call":
+      return `mcp:${str(a.server)}/${str(a.tool)}`;
+    case "mcp_tools":
+      return `mcp:${str(a.server)}`;
+    case "connector_api":
+      return `connector:${str(a.connector)}`;
+    case "use_service":
+      return `service:${str(a.service)}.${str(a.action)}`;
+    case "n8n":
+      return `service:n8n.${str(a.action)}`;
+    default:
+      return call.function.name;
+  }
+}
+
+/** Run one tool call with a Langfuse span around it (no-op without Langfuse). */
+async function traced(call: ToolCall, run: () => Promise<{ ok: boolean; output: string }>): Promise<{ ok: boolean; output: string }> {
+  const t0 = new Date();
+  let r: { ok: boolean; output: string };
+  try {
+    r = await run();
+  } catch (e) {
+    recordSpan({ name: toolTag(call), input: call.function.arguments, startTime: t0, error: (e as Error).message, metadata: { tool: call.function.name } });
+    throw e;
+  }
+  recordSpan({ name: toolTag(call), input: call.function.arguments, output: r.output, startTime: t0, error: r.ok ? undefined : r.output.slice(0, 300), metadata: { tool: call.function.name } });
+  return r;
+}
+
 /** The live checklist: same title = same card, updated in place. */
 function plan(call: ToolCall, emit: (e: OperatorEvent) => void): string {
   let a: Args;
@@ -1542,7 +1585,32 @@ async function runLocal(input: OperatorInput, emit: (e: OperatorEvent) => void):
   emit({ type: "done", transcript: [...input.transcript, { role: "user", content: input.message }, { role: "assistant", content: reply }], waiting: false, paused: false });
 }
 
+/** One Assistant run, traced in Langfuse (when configured) as a single trace in the conversation's session. */
 export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent) => void, signal: AbortSignal): Promise<void> {
+  let last = "";
+  const watch = (e: OperatorEvent) => {
+    if (e.type === "text") last = e.content;
+    emit(e);
+  };
+  await withTrace(
+    {
+      name: isLocal(input.model) ? "assistant-local" : "assistant-run",
+      sessionId: input.sessionId,
+      tags: ["assistant", input.review ?? "auto", ...(input.model ? [input.model] : [])],
+      metadata: { model: input.model ?? "default", review: input.review ?? "auto" },
+      input: input.message,
+    },
+    async () => {
+      try {
+        await runOperatorInner(input, watch, signal);
+      } finally {
+        traceOutput(last);
+      }
+    },
+  );
+}
+
+async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) => void, signal: AbortSignal): Promise<void> {
   if (isLocal(input.model)) return runLocal(input, emit);
   const started = Date.now();
   const BUDGET_MS = 250_000;
@@ -1593,8 +1661,8 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
         emit({ type: "tool_result", id: call.id, ok: false, output: "declined" });
         continue;
       }
-      emit({ type: "tool", id: call.id, label: d.label, shell: d.shell });
-      const r = await execute(call, input);
+      emit({ type: "tool", id: call.id, label: d.label, shell: d.shell, tool: toolTag(call) });
+      const r = await traced(call, () => execute(call, input));
       messages.push({ role: "tool", tool_call_id: call.id, content: clip(r.output) });
       emit({ type: "tool_result", id: call.id, ok: r.ok, output: clip(r.output, 3000) });
     }
@@ -1660,8 +1728,8 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
           return { role: "tool" as const, tool_call_id: call.id, content: r };
         }
         if (call.function.name === "screenshot") {
-          emit({ type: "tool", id: call.id, label: d.label });
-          const r = await screenshot(call, input, emit);
+          emit({ type: "tool", id: call.id, label: d.label, tool: toolTag(call) });
+          const r = await traced(call, () => screenshot(call, input, emit));
           emit({ type: "tool_result", id: call.id, ok: r.ok, output: clip(r.output, 3000) });
           return { role: "tool" as const, tool_call_id: call.id, content: clip(r.output) };
         }
@@ -1669,8 +1737,8 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
           const r = plan(call, emit);
           return { role: "tool" as const, tool_call_id: call.id, content: r };
         }
-        emit({ type: "tool", id: call.id, label: d.label, shell: d.shell });
-        const r = await execute(call, input);
+        emit({ type: "tool", id: call.id, label: d.label, shell: d.shell, tool: toolTag(call) });
+        const r = await traced(call, () => execute(call, input));
         emit({ type: "tool_result", id: call.id, ok: r.ok, output: clip(r.output, 3000) });
         return { role: "tool" as const, tool_call_id: call.id, content: clip(r.output) };
       }),

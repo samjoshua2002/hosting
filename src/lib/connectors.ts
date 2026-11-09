@@ -6,6 +6,7 @@ import { CONNECTORS, connectorDef, type ConnectorDef } from "./connector-catalog
 import { githubAuth, githubToken } from "./github";
 import { addServer, listServers, removeServer } from "./mcp";
 import { storeGetJson, storePut } from "./store";
+import { langfuseBaseUrl } from "./telemetry";
 import { forgetSecret, getSecret, setSecret } from "./vault";
 
 const META = "assistant/connectors.json";
@@ -118,6 +119,16 @@ export async function connectorStates(): Promise<ConnectorState[]> {
         return gh ? { id: d.id, connected: true, account: `@${gh.login}`, detail: `${gh.scopes.length} permissions` } : { id: d.id, connected: false, detail: "Connect on the Projects page" };
       case "azure":
         return { id: d.id, connected: aiConfigured(), account: aiConfigured() ? new URL(process.env.AZURE_OPENAI_ENDPOINT!).host : undefined };
+      case "langfuse": {
+        const connected = Boolean(process.env.LANGFUSE_SECRET_KEY && process.env.LANGFUSE_PUBLIC_KEY);
+        const host = langfuseBaseUrl().replace(/^https?:\/\//, "");
+        return {
+          id: d.id,
+          connected,
+          account: connected ? host : undefined,
+          detail: connected ? "Every run traced by conversation, with each skill, MCP and connector call" : "Set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY (and LANGFUSE_BASE_URL if self-hosted)",
+        };
+      }
       case "machines":
         return { id: d.id, connected: vms.length > 0, account: `${vms.length} machines` };
       case "email":

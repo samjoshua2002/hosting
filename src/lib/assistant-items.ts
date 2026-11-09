@@ -31,7 +31,7 @@ export interface DiagramEdge {
 export type Item =
   | { kind: "user"; text: string; files?: Att[] }
   | { kind: "text"; text: string }
-  | { kind: "step"; id: string; label: string; running: boolean; ok?: boolean; output?: string; shell?: Shell }
+  | { kind: "step"; id: string; label: string; running: boolean; ok?: boolean; output?: string; shell?: Shell; tool?: string }
   | { kind: "approval"; id: string; label: string; detail: string; diff?: boolean; decision?: boolean }
   | { kind: "question"; id: string; question: string; options: string[]; answer?: string }
   | { kind: "diagram"; id: string; title: string; nodes: DiagramNode[]; edges: DiagramEdge[] }
@@ -52,7 +52,7 @@ export type ArtifactType = "markdown" | "html" | "code" | "csv" | "json" | "svg"
 /** Events the operator streams. */
 export type OperatorEvent =
   | { type: "text"; content: string }
-  | { type: "tool"; id: string; label: string; shell?: Shell }
+  | { type: "tool"; id: string; label: string; shell?: Shell; tool?: string }
   | { type: "tool_result"; id: string; ok: boolean; output: string }
   | { type: "approval"; id: string; label: string; detail: string; diff?: boolean }
   | { type: "question"; id: string; question: string; options: string[] }
@@ -68,7 +68,7 @@ export function applyEvent(items: Item[], e: OperatorEvent): Item[] {
     case "text":
       return [...items, { kind: "text", text: e.content }];
     case "tool":
-      return [...items, { kind: "step", id: e.id, label: e.label, running: true, shell: e.shell }];
+      return [...items, { kind: "step", id: e.id, label: e.label, running: true, shell: e.shell, tool: e.tool }];
     case "tool_result":
       return items.map((i) => (i.kind === "step" && i.id === e.id ? { ...i, running: false, ok: e.ok, output: e.output } : i));
     case "approval":

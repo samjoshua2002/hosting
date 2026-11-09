@@ -99,6 +99,15 @@ export const CONNECTORS: ConnectorDef[] = [
   },
   // ---- monitoring ----
   {
+    id: "langfuse",
+    name: "Langfuse",
+    by: "Langfuse",
+    category: "Monitoring",
+    desc: "LLM observability, agent traces, token costs, latency and evaluations for your AI Assistant",
+    logo: { slug: "langfuse", color: "ffffff" },
+    kind: "builtin",
+  },
+  {
     id: "sentry",
     name: "Sentry",
     by: "Sentry",
