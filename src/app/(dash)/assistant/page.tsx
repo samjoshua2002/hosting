@@ -5,15 +5,16 @@ import { useRouter } from "next/navigation";
 
 import { LOCAL_URL, useNiceLink } from "@/components/nice-links";
 
-import { Activity, SquareTerminal, ArrowDown, ArrowUpRight, Cpu, FolderOpen, Globe, Hash, MessagesSquare, MoreHorizontal, Settings, Camera, FileText, GitBranch, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
+import { Activity, Blocks, SquareTerminal, ArrowDown, ArrowUpRight, Cpu, FolderOpen, Globe, Hash, MessagesSquare, MoreHorizontal, Settings, Camera, FileText, GitBranch, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { addFiles, currentDoc, editSession, hydrate, newSession, openSession, removeSession, send, setModel, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
 import { ArtifactView } from "@/components/artifact-view";
 import { Monitor, TerminalPanel } from "@/components/assistant-panel";
 import { ArtifactsGallery, SearchDialog, type ArtifactEntry } from "@/components/assistant-library";
 import { AttachmentView } from "@/components/attachment-view";
+import { BrowserPanel } from "@/components/browser-panel";
 import { ChatItems, PlanCard } from "@/components/chat-items";
-import { CopyButton } from "@/components/chat-blocks";
+import { CopyButton, openInApp, registerInAppBrowser } from "@/components/chat-blocks";
 import { useCluster } from "@/components/cluster";
 import { Composer, contextFor, entitiesFrom, type ModelChoice } from "@/components/composer";
 import { Button, cx } from "@/components/ui";
@@ -83,11 +84,17 @@ export default function AssistantPage() {
   // one side view at a time: an artifact or a file preview
   const setArt = (id: string | null) => {
     setArtRaw(id);
-    if (id) setFile(null);
+    if (id) {
+      setFile(null);
+      setBrowserUrl(null);
+    }
   };
   const openFile = (f: { id: string; name: string } | null) => {
     setFile(f);
-    if (f) setArtRaw(null);
+    if (f) {
+      setArtRaw(null);
+      setBrowserUrl(null);
+    }
   };
   const bottom = useRef<HTMLDivElement>(null);
 
@@ -247,6 +254,21 @@ export default function AssistantPage() {
   const router = useRouter();
   const [infoOpen, setInfoOpen] = useState(false);
   const [view, setView] = useState<"chat" | "artifacts">("chat");
+  // links open in the side browser first
+  const [browserUrl, setBrowserUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const unregister = registerInAppBrowser();
+    const on = (e: Event) => {
+      setArtRaw(null);
+      setFile(null);
+      setBrowserUrl((e as CustomEvent<string>).detail);
+    };
+    window.addEventListener("open-link", on);
+    return () => {
+      unregister();
+      window.removeEventListener("open-link", on);
+    };
+  }, []);
   const [searchOpen, setSearchOpen] = useState(false);
   // an artifact picked from the gallery/search opens once its conversation has loaded
   const [pendingArt, setPendingArt] = useState<string | null>(null);
@@ -254,7 +276,9 @@ export default function AssistantPage() {
     setPendingArt(null);
     setArt(pendingArt);
   }
-  const openArtifact = (a: ArtifactEntry) => {
+  const [artTab, setArtTab] = useState<"preview" | "source">("preview");
+  const openArtifact = (a: ArtifactEntry, tab: "preview" | "source" = "preview") => {
+    setArtTab(tab);
     setView("chat");
     if (a.session === sid) setArt(a.id);
     else {
@@ -311,6 +335,25 @@ export default function AssistantPage() {
   const machines = [...machineSet];
   const stepCount = items.filter((i) => i.kind === "step").length;
   const artifacts = latestArtifacts(items);
+  // what this conversation used: skills, MCP servers, connectors, services, other tools (with counts)
+  const used = (() => {
+    const groups: Record<string, Map<string, number>> = { Skills: new Map(), MCP: new Map(), Connectors: new Map(), Services: new Map(), Tools: new Map() };
+    for (const i of items) {
+      if (i.kind !== "step") continue;
+      let tag = i.tool;
+      if (!tag) {
+        // older conversations: read it from the step label
+        const sk = /^Using the (.+) playbook$/.exec(i.label);
+        tag = sk ? `skill:${sk[1]}` : undefined;
+      }
+      if (!tag) continue;
+      const [kind, rest] = tag.includes(":") ? [tag.slice(0, tag.indexOf(":")), tag.slice(tag.indexOf(":") + 1)] : ["tool", tag];
+      const g = kind === "skill" ? "Skills" : kind === "mcp" ? "MCP" : kind === "connector" ? "Connectors" : kind === "service" ? "Services" : kind === "skill-install" ? "Skills" : "Tools";
+      const name = g === "MCP" ? rest.split("/")[0] : g === "Services" ? rest.split(".")[0] : rest.replace(/_/g, " ");
+      groups[g].set(name, (groups[g].get(name) ?? 0) + 1);
+    }
+    return Object.entries(groups).filter(([, m]) => m.size) as [string, Map<string, number>][];
+  })();
   const outputCount = artifacts.length + shots.length;
   const artVersions = items.filter((i): i is Extract<Item, { kind: "artifact" }> => i.kind === "artifact" && i.id === art);
   const shown = st.list ?? [];
@@ -380,7 +423,18 @@ export default function AssistantPage() {
 
       {view === "artifacts" ? (
         <main className="scroll-thin min-w-0 flex-1 overflow-y-auto">
-          <ArtifactsGallery onOpen={openArtifact} />
+          <ArtifactsGallery
+            onOpen={openArtifact}
+            onSession={(id) => {
+              setView("chat");
+              void openSession(id);
+            }}
+            onDeleted={(a) => {
+              // keep an open copy of that conversation in step with the server
+              updateItems(a.session, (list) => list.filter((i) => !(i.kind === "artifact" && i.id === a.id)));
+              if (a.session === sid && art === a.id) setArt(null);
+            }}
+          />
         </main>
       ) : (
       <>
@@ -534,13 +588,17 @@ export default function AssistantPage() {
         </div>
       </main>
 
-      {file ? (
+      {browserUrl ? (
+        <aside className="w-[min(820px,52%)] shrink-0 border-l border-white/[0.06] bg-panel/60">
+          <BrowserPanel url={browserUrl} onClose={() => setBrowserUrl(null)} onBack={links.length ? () => (setBrowserUrl(null), setPanel("links")) : undefined} />
+        </aside>
+      ) : file ? (
         <aside className="w-[min(760px,48%)] shrink-0 border-l border-white/[0.06] bg-panel/60">
           <AttachmentView key={file.id} session={sid} id={file.id} name={file.name} onClose={() => openFile(null)} />
         </aside>
       ) : art && artVersions.length > 0 ? (
         <aside className="w-[min(760px,48%)] shrink-0 border-l border-white/[0.06] bg-panel/60">
-          <ArtifactView key={`${art}-${artVersions.length}`} versions={artVersions} onClose={() => setArt(null)} />
+          <ArtifactView key={`${art}-${artVersions.length}-${artTab}`} versions={artVersions} initialTab={artTab} onClose={() => { setArt(null); setArtTab("preview"); }} />
         </aside>
       ) : panel ? (
       <aside className="flex w-[360px] shrink-0 flex-col border-l border-white/[0.06] bg-[var(--sidebar)]">
@@ -556,6 +614,27 @@ export default function AssistantPage() {
             {plan && (
               <Section title="Progress" icon={<ListChecks className="size-3.5" />}>
                 <PlanCard plan={plan} compact />
+              </Section>
+            )}
+            {used.length > 0 && (
+              <Section title="Used in this session" icon={<Blocks className="size-3.5" />}>
+                <div className="space-y-2 px-1">
+                  {used.map(([g, m]) => (
+                    <div key={g}>
+                      <p className="mb-1 text-[11px] text-zinc-500">{g}</p>
+                      <div className="flex flex-wrap gap-1">
+                        {[...m.entries()]
+                          .sort((a, b) => b[1] - a[1])
+                          .map(([n, c]) => (
+                            <span key={n} className="inline-flex items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-1.5 py-0.5 text-[11.5px] text-zinc-300">
+                              {n}
+                              {c > 1 && <span className="text-zinc-500">×{c}</span>}
+                            </span>
+                          ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </Section>
             )}
             <Section title="Artifacts" icon={<Layers className="size-3.5" />}>
@@ -602,7 +681,7 @@ export default function AssistantPage() {
           ) : (
             links.map((u) => (
               <div key={u} className="group flex items-center gap-1 rounded-md hover:bg-white/5">
-                <a href={u} target="_blank" rel="noreferrer" className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-xs text-accent-soft">
+                <a href={u} target="_blank" rel="noreferrer" onClick={(e) => openInApp(e, u)} className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-xs text-accent-soft">
                   <ArrowUpRight className="size-3 shrink-0" /> <span className="truncate">{u.replace(/^https?:\/\//, "").replace(/\?.*$/, "")}</span>
                 </a>
                 <CopyButton text={u} />

@@ -12,6 +12,8 @@ const csp = [
   "img-src 'self' data: blob: https://images.unsplash.com https://cdn.simpleicons.org",
   "font-src 'self' data:",
   `connect-src 'self'${dev ? " ws: wss:" : ""}`,
+  // the Assistant's side browser shows sites (yours and the links it gives you) in a sandboxed frame
+  "frame-src 'self' https:",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

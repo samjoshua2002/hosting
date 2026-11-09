@@ -3,7 +3,7 @@ import type { Item } from "@/lib/assistant-items";
 import { handle, requireAuth } from "@/lib/api";
 import { listSessions, sessionPath } from "@/lib/sessions";
 import { mapLimit } from "@/lib/ssh";
-import { storeGetJson } from "@/lib/store";
+import { storeGetJson, storePut } from "@/lib/store";
 
 export const maxDuration = 60;
 
@@ -46,4 +46,23 @@ export const GET = handle(async (req: NextRequest) => {
   const list = per.flat().sort((a, b) => b.updatedAt - a.updatedAt);
   cache = { at: Date.now(), list };
   return Response.json({ artifacts: list });
+});
+
+/**
+ * DELETE /api/artifacts?session=…&id=…: remove one artifact (every version) from its conversation. The rest of
+ * the conversation stays as it was.
+ */
+export const DELETE = handle(async (req: NextRequest) => {
+  await requireAuth(req);
+  const session = req.nextUrl.searchParams.get("session") ?? "";
+  const id = req.nextUrl.searchParams.get("id") ?? "";
+  if (!/^[\w-]{1,80}$/.test(session) || !id) return Response.json({ error: "session and id are required" }, { status: 400 });
+  const doc = await storeGetJson<{ items?: Item[] } & Record<string, unknown>>(sessionPath(session));
+  if (!doc) return Response.json({ error: "conversation not found" }, { status: 404 });
+  const items = doc.items ?? [];
+  const kept = items.filter((i) => !(i.kind === "artifact" && i.id === id));
+  if (kept.length === items.length) return Response.json({ error: "artifact not found" }, { status: 404 });
+  await storePut(sessionPath(session), JSON.stringify({ ...doc, items: kept }));
+  cache = null;
+  return Response.json({ ok: true, removed: items.length - kept.length });
 });

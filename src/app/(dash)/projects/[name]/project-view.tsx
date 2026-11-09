@@ -262,7 +262,7 @@ function Logs({ name, vms }: { name: string; vms: string[] }) {
   }, [text]);
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-white/10 bg-[hsl(var(--h)_30%_4%)]">
+    <div className="overflow-hidden rounded-2xl border border-white/10 bg-term">
       <div className="flex items-center gap-3 border-b border-white/[0.06] px-4 py-2 text-xs">
         {vms.length > 1 &&
           vms.map((v) => (

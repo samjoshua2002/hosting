@@ -2,7 +2,7 @@
 
 // The Assistant's library, like Claude's: a search across conversations and artifacts, and a gallery of
 // everything the Assistant has made.
-import { Code2, FileText, Globe, ImageIcon, Layers, Loader2, MessageSquare, Search, Table2, X, type LucideIcon } from "lucide-react";
+import { Code2, FileText, Globe, ImageIcon, Layers, Loader2, MessageSquare, Search, Table2, Trash2, X, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/client";
 import { timeAgo } from "@/lib/format";
@@ -60,9 +60,35 @@ function Thumb({ a }: { a: ArtifactEntry }) {
   );
 }
 
-export function ArtifactsGallery({ onOpen }: { onOpen: (a: ArtifactEntry) => void }) {
+export function ArtifactsGallery({
+  onOpen,
+  onSession,
+  onDeleted,
+}: {
+  /** open the artifact in its conversation, on the preview or the source tab */
+  onOpen: (a: ArtifactEntry, tab?: "preview" | "source") => void;
+  /** open the conversation the artifact came from */
+  onSession: (id: string) => void;
+  onDeleted?: (a: ArtifactEntry) => void;
+}) {
   const [list, setList] = useState<ArtifactEntry[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const keyOf = (a: ArtifactEntry) => `${a.session}-${a.id}`;
+  const remove = async (a: ArtifactEntry) => {
+    setBusy(keyOf(a));
+    try {
+      await api(`/api/artifacts?session=${encodeURIComponent(a.session)}&id=${encodeURIComponent(a.id)}`, undefined, { method: "DELETE" });
+      setList((l) => (l ?? []).filter((x) => keyOf(x) !== keyOf(a)));
+      onDeleted?.(a);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+      setConfirming(null);
+    }
+  };
   const [q, setQ] = useState("");
   const [kind, setKind] = useState<string>("all");
   useEffect(() => {
@@ -103,23 +129,49 @@ export function ArtifactsGallery({ onOpen }: { onOpen: (a: ArtifactEntry) => voi
           {shown.map((a) => {
             const Icon = TYPE_ICON[a.type] ?? FileText;
             return (
-              <button key={`${a.session}-${a.id}`} onClick={() => onOpen(a)} className="group overflow-hidden rounded-xl border border-white/[0.07] bg-panel text-left transition-colors hover:border-white/[0.18]">
-                <div className="aspect-[16/10] border-b border-white/[0.06]">
-                  <Thumb a={a} />
-                </div>
-                <div className="flex items-center gap-3 px-3.5 py-3">
-                  <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-white/[0.05] text-zinc-400">
-                    <Icon className="size-4" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13.5px] font-medium text-zinc-100 group-hover:text-white">{a.title}</span>
-                    <span className="block truncate text-[11.5px] text-zinc-500">
-                      {TYPE_LABEL[a.type] ?? a.type}
-                      {a.version > 1 ? ` · v${a.version}` : ""} · {timeAgo(a.updatedAt)}
+              <div key={keyOf(a)} className="group relative overflow-hidden rounded-xl border border-white/[0.07] bg-panel transition-colors hover:border-white/[0.18]">
+                <button onClick={() => onOpen(a)} className="block w-full text-left">
+                  <div className="aspect-[16/10] border-b border-white/[0.06]">
+                    <Thumb a={a} />
+                  </div>
+                  <div className="flex items-center gap-3 px-3.5 py-3">
+                    <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-white/[0.05] text-zinc-400">
+                      <Icon className="size-4" />
                     </span>
-                  </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13.5px] font-medium text-zinc-100 group-hover:text-white">{a.title}</span>
+                      <span className="block truncate text-[11.5px] text-zinc-500">
+                        {TYPE_LABEL[a.type] ?? a.type}
+                        {a.version > 1 ? ` · v${a.version}` : ""} · {timeAgo(a.updatedAt)}
+                      </span>
+                    </span>
+                  </div>
+                </button>
+                <div className="flex items-center gap-0.5 border-t border-white/[0.06] px-2 py-1.5">
+                  <button onClick={() => onSession(a.session)} title={`Open “${a.sessionTitle}”`} className="flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-zinc-400 hover:bg-white/[0.06] hover:text-white">
+                    <MessageSquare className="size-3.5 shrink-0" /> <span className="truncate">Open chat</span>
+                  </button>
+                  <button onClick={() => onOpen(a, "source")} className="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-zinc-400 hover:bg-white/[0.06] hover:text-white">
+                    <Code2 className="size-3.5" /> Source
+                  </button>
+                  <span className="flex-1" />
+                  {confirming === keyOf(a) ? (
+                    <span className="flex shrink-0 items-center gap-1 text-[12px]">
+                      <span className="text-zinc-400">Delete?</span>
+                      <button disabled={busy === keyOf(a)} onClick={() => void remove(a)} className="flex items-center gap-1 rounded-md bg-[var(--critical)] px-2 py-0.5 font-medium text-white disabled:opacity-60">
+                        {busy === keyOf(a) && <Loader2 className="size-3 animate-spin" />} Delete
+                      </button>
+                      <button onClick={() => setConfirming(null)} className="rounded-md px-1.5 py-0.5 text-zinc-400 hover:text-white">
+                        Cancel
+                      </button>
+                    </span>
+                  ) : (
+                    <button onClick={() => setConfirming(keyOf(a))} title="Delete this artifact" className="rounded-md p-1.5 text-zinc-500 hover:bg-white/[0.06] hover:text-[var(--critical-text)]">
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  )}
                 </div>
-              </button>
+              </div>
             );
           })}
         </div>

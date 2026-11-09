@@ -28,6 +28,27 @@ export function CopyButton({ text, label, className }: { text: string; label?: s
 }
 
 /** A link as a chip: open it, or copy it. */
+/**
+ * Links open in the Assistant's browser panel first (when one is on the page); ⌘/Ctrl-click, middle-click or
+ * pages without the panel open a new tab as usual.
+ */
+let inAppBrowser = 0;
+/** The Assistant page registers its side browser while it's mounted; returns the unregister function. */
+export function registerInAppBrowser(): () => void {
+  inAppBrowser++;
+  return () => {
+    inAppBrowser--;
+  };
+}
+
+export function openInApp(e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; button: number; preventDefault: () => void }, href: string) {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+  if (typeof window === "undefined" || inAppBrowser <= 0) return;
+  if (!/^https?:\/\//i.test(href)) return;
+  e.preventDefault();
+  window.dispatchEvent(new CustomEvent("open-link", { detail: href }));
+}
+
 export function LinkChip({ href: raw, children }: { href: string; children?: ReactNode }) {
   const nice = useNiceLink();
   const href = nice(raw);
@@ -40,7 +61,7 @@ export function LinkChip({ href: raw, children }: { href: string; children?: Rea
   } catch {}
   return (
     <span className="inline-flex max-w-full items-center gap-0.5 rounded-lg border border-line-strong bg-white/[0.03] py-0.5 pr-0.5 pl-2 align-middle">
-      <a href={href} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-1 text-[13px] text-accent-soft hover:underline">
+      <a href={href} target="_blank" rel="noreferrer" onClick={(e) => openInApp(e, href)} className="flex min-w-0 items-center gap-1 text-[13px] text-accent-soft hover:underline">
         <span className="truncate">{children ?? shown}</span>
         <ExternalLink className="size-3 shrink-0" />
       </a>

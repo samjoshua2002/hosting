@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Suggestions } from "@/components/ai-recs";
 import { ColumnChart, Segmented } from "@/components/charts";
 import { useCluster } from "@/components/cluster";
+import { CountUp, OverviewInsights, Stagger } from "@/components/overview-insights";
 import { Card, Empty, cx } from "@/components/ui";
 import { METRICS, RANGES, buildBuckets, totals, type Metric, type RangeId } from "@/lib/analytics";
 import { useStored } from "@/lib/client";
@@ -106,7 +107,7 @@ export default function OverviewPage() {
         </Card>
       ) : (
         <>
-          <div className="grid grid-cols-4 gap-4">
+          <Stagger className="grid grid-cols-4 gap-4">
             <StatCard icon={Server} title="Machines" sub="Online right now" value={`${t.online}/${t.total}`} badge={t.online === t.total ? "all up" : `${t.total - t.online} resting`} good={t.online === t.total} href="/machines" footer="Manage machines" />
             <StatCard
               icon={FolderGit2}
@@ -129,7 +130,9 @@ export default function OverviewPage() {
               href="/machines"
               footer="See machines"
             />
-          </div>
+          </Stagger>
+
+          <OverviewInsights vms={vms} status={status} />
 
           <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)] gap-4">
             <Card className="p-5">
@@ -234,7 +237,7 @@ function StatCard({
           </div>
         </div>
         <div className="mt-4 flex items-baseline justify-between gap-2">
-          <p className="text-[26px] font-semibold tracking-tight text-white tabular-nums">{value}</p>
+          <CountUp text={value} className="block text-[26px] font-semibold tracking-tight text-white tabular-nums" />
           {badge && (
             <span className="inline-flex items-center gap-1.5 rounded-md border border-[var(--line-strong)] bg-[var(--panel-2)] px-2 py-0.5 text-[11px] font-medium text-muted">
               <span className={cx("size-1.5 rounded-full shrink-0", good ? "bg-[var(--good)]" : "bg-[var(--warning)]")} />
@@ -286,14 +289,15 @@ function RecentActivity() {
           <option value="failed">Failed</option>
         </select>
       </div>
-      <table className="w-full text-left text-sm">
+      {/* fixed layout: a long command truncates instead of pushing Date/Time/Status off the card */}
+      <table className="w-full table-fixed text-left text-sm">
         <thead className="border-y border-[var(--line)] bg-white/[0.015] text-xs text-muted">
           <tr>
             <th className="px-5 py-2.5 font-medium">Activity</th>
-            <th className="px-3 py-2.5 font-medium">Machine</th>
-            <th className="px-3 py-2.5 font-medium">Date</th>
-            <th className="px-3 py-2.5 font-medium">Time</th>
-            <th className="px-5 py-2.5 font-medium">Status</th>
+            <th className="w-[76px] px-3 py-2.5 font-medium">Machine</th>
+            <th className="w-[72px] px-3 py-2.5 font-medium">Date</th>
+            <th className="w-[60px] px-3 py-2.5 font-medium">Time</th>
+            <th className="w-[112px] px-5 py-2.5 font-medium">Status</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-[var(--line)]">
@@ -310,7 +314,7 @@ function RecentActivity() {
               return (
                 <tr key={`${vm}-${j.id}`} onClick={() => openJob({ vm, id: j.id, title: j.meta.label })} className="cursor-pointer hover:bg-white/[0.02]">
                   <td className="px-5 py-3">
-                    <span className="flex items-center gap-2.5">
+                    <span className="flex min-w-0 items-center gap-2.5" title={j.meta.label}>
                       <span className="grid size-7 shrink-0 place-items-center rounded-md border border-[var(--line)] bg-[var(--panel-2)]">
                         {j.meta.kind === "deploy" ? <Rocket className="size-3.5 text-[var(--accent)]" /> : <SquareTerminal className="size-3.5 text-[var(--accent)]" />}
                       </span>
@@ -332,11 +336,11 @@ function RecentActivity() {
                     </span>
                   </td>
                   <td className="px-3 py-3 font-mono text-xs text-zinc-400">{vm}</td>
-                  <td className="px-3 py-3 text-xs text-zinc-400">{d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</td>
-                  <td className="px-3 py-3 text-xs text-zinc-400">{d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</td>
+                  <td className="px-3 py-3 text-xs whitespace-nowrap text-zinc-400">{d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</td>
+                  <td className="px-3 py-3 text-xs whitespace-nowrap text-zinc-400">{d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</td>
                   <td className="px-5 py-3">
-                    <span className="flex items-center gap-1.5 text-xs text-zinc-300">
-                      <span className={cx("size-1.5 rounded-full", s.cls)} /> {s.text}
+                    <span className="flex items-center gap-1.5 text-xs whitespace-nowrap text-zinc-300">
+                      <span className={cx("size-1.5 shrink-0 rounded-full", s.cls)} /> <span className="truncate">{s.text}</span>
                     </span>
                   </td>
                 </tr>

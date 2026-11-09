@@ -7,8 +7,10 @@ import type { BannerPhoto } from "@/lib/types";
 
 const UTM = "utm_source=hosting_control&utm_medium=referral";
 
-/** Art styles served by /api/banner (see lib/unsplash.ts). */
-const STYLES = ["oil", "art", "render", "fluid", "waves"];
+/** Art styles served by /api/banner (see lib/unsplash.ts): dark art for the dark theme, bright art for the light one. */
+const DARK_STYLES = ["oil", "art", "render", "fluid", "waves"];
+const LIGHT_STYLES = ["pastel", "airy", "soft", "pearl", "bloom"];
+const isLight = () => typeof document !== "undefined" && document.documentElement.dataset.theme === "light";
 const FALLBACK_HUES = [225, 265, 310, 352, 24, 46, 145, 178];
 
 interface ThemeState {
@@ -66,7 +68,8 @@ function applyHue(h: number) {
 }
 
 export async function shuffleTheme(): Promise<void> {
-  const choices = STYLES.filter((t) => t !== state.tone);
+  const styles = isLight() ? LIGHT_STYLES : DARK_STYLES;
+  const choices = styles.filter((t) => t !== state.tone);
   const tone = choices[Math.floor(Math.random() * choices.length)];
   const list = await photosFor(tone);
   const others = list.filter((p) => p.id !== state.photo?.id);
@@ -87,6 +90,13 @@ export function useTheme(): ThemeState {
     if (started) return;
     started = true;
     void shuffleTheme();
+    // switching light/dark swaps the art for one that suits the new theme
+    let wasLight = isLight();
+    new MutationObserver(() => {
+      if (isLight() === wasLight) return;
+      wasLight = isLight();
+      void shuffleTheme();
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
   }, []);
   return s;
 }

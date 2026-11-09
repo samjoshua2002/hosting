@@ -164,7 +164,7 @@ export default function RunPage() {
       />
 
       {/* the terminal */}
-      <div className="overflow-hidden rounded-2xl border border-white/10 bg-[hsl(var(--h)_30%_4%)] shadow-2xl">
+      <div className="overflow-hidden rounded-2xl border border-white/10 bg-term shadow-2xl">
         <div className="flex items-center gap-3 border-b border-white/[0.06] bg-white/[0.02] px-4 py-2.5">
           <span className="flex gap-1.5">
             {[0, 1, 2].map((i) => (

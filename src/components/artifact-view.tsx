@@ -86,11 +86,11 @@ function csvRows(text: string): string[][] {
 }
 
 /** Side panel: preview / source, versions, copy, download. */
-export function ArtifactView({ versions, onClose }: { versions: Artifact[]; onClose: () => void }) {
+export function ArtifactView({ versions, onClose, initialTab }: { versions: Artifact[]; onClose: () => void; initialTab?: "preview" | "source" }) {
   const [v, setV] = useState(versions.length - 1);
   const a = versions[Math.min(v, versions.length - 1)];
   const previewable = a.type !== "code" && a.type !== "text";
-  const [tab, setTab] = useState<"preview" | "source">(previewable ? "preview" : "source");
+  const [tab, setTab] = useState<"preview" | "source">(previewable && initialTab !== "source" ? "preview" : "source");
   const Icon = ICON[a.type];
   const rows = useMemo(() => (a.type === "csv" ? csvRows(a.content).slice(0, 2000) : []), [a]);
   // designs: see them at the sizes people will
