@@ -44,6 +44,12 @@ export const GET = handle(async (req: NextRequest) => {
   const p = req.nextUrl.searchParams;
   const file = await loadAttachment(p.get("session") ?? "", p.get("id") ?? "");
   if (!file) throw new HttpError(404, "not found");
+  // ?inline=1 shows pictures in the page (screenshots in the chat); everything else downloads
+  const image = /\.(png|jpe?g|webp|gif)$/i.exec(file.name)?.[1]?.toLowerCase();
+  if (p.get("inline") === "1" && image)
+    return new Response(new Uint8Array(file.data), {
+      headers: { "Content-Type": `image/${image === "jpg" ? "jpeg" : image}`, "Content-Disposition": "inline", "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=86400" },
+    });
   return new Response(new Uint8Array(file.data), {
     headers: { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename="${file.name}"` },
   });

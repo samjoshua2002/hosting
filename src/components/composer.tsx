@@ -220,7 +220,7 @@ export function Composer({
   busy: boolean;
   disabled?: boolean;
   uploading: boolean;
-  staged: Att[];
+  staged: (Att & { pending?: boolean; pct?: number; preview?: string; error?: string })[];
   review: "auto" | "manual";
   placeholder: string;
   onSend: (text: string) => void;
@@ -298,7 +298,7 @@ export function Composer({
   };
 
   const submit = () => {
-    if ((!text.trim() && !staged.length) || busy || disabled) return;
+    if ((!text.trim() && !staged.length) || staged.some((f) => f.pending) || busy || disabled) return;
     onSend(text.trim());
     setText("");
     setCaret(0);
@@ -377,14 +377,37 @@ export function Composer({
       )}
 
       {staged.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
+        <div className="mb-2 flex flex-wrap gap-2">
           {staged.map((f) => (
-            <span key={f.id} className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-panel px-2 py-1 text-xs text-ink">
-              <FileText className="size-3.5" /> {f.name}
+            <div
+              key={f.id}
+              title={f.error ? `${f.name}: ${f.error}` : f.pending ? `Uploading ${f.name}…` : f.name}
+              className={cx(
+                "relative flex items-center gap-2 overflow-hidden rounded-xl border bg-panel text-xs text-ink",
+                f.error ? "border-[var(--critical)]/50" : "border-white/10",
+                f.preview ? "p-1 pr-2" : "px-2.5 py-1.5",
+              )}
+            >
+              {f.preview ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={f.preview} alt="" className={cx("size-12 rounded-lg object-cover transition-opacity", f.pending && "opacity-40")} />
+              ) : (
+                <FileText className={cx("size-4 shrink-0", f.pending && "opacity-40")} />
+              )}
+              <span className={cx("max-w-40 truncate", f.pending && "text-zinc-500")}>
+                {f.name}
+                <span className="block text-[10.5px] text-zinc-500">{f.error ? "couldn't upload" : f.pending ? `uploading ${f.pct ?? 0}%` : fmtBytes(f.size)}</span>
+              </span>
+              {f.pending && <Loader2 className="size-3.5 animate-spin text-zinc-400" />}
               <button onClick={() => onUnstage(f.id)} className="text-muted hover:text-white" aria-label="Remove">
                 <X className="size-3" />
               </button>
-            </span>
+              {f.pending && (
+                <span className="absolute inset-x-0 bottom-0 h-0.5 bg-white/[0.06]">
+                  <span className="block h-full bg-[var(--accent)] transition-[width] duration-300" style={{ width: `${f.pct ?? 0}%` }} />
+                </span>
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -432,7 +455,7 @@ export function Composer({
             <button
               type="button"
               onClick={submit}
-              disabled={(!text.trim() && !staged.length) || disabled}
+              disabled={(!text.trim() && !staged.some((f) => !f.pending && !f.error)) || staged.some((f) => f.pending) || disabled}
               className="grid size-9 place-items-center rounded-full bg-white text-black transition-opacity hover:bg-white/90 disabled:bg-white/[0.08] disabled:text-zinc-500"
               aria-label="Send"
             >
@@ -443,4 +466,8 @@ export function Composer({
       </div>
     </div>
   );
+}
+
+function fmtBytes(n: number): string {
+  return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 }

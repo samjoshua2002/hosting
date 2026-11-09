@@ -103,3 +103,27 @@ export async function chat(opts: {
   }
   throw new Error(`AI request failed (${lastError})`);
 }
+
+/** Look at an image (a screenshot) with the vision deployment and answer a question about it. */
+export async function describeImage(image: Buffer, question: string, mime = "image/png"): Promise<string> {
+  if (!aiConfigured()) throw new Error("Azure OpenAI is not configured");
+  const deployments = [...new Set([process.env.AZURE_OPENAI_VISION_DEPLOYMENT, "gpt-4o", agentModel()].filter((m): m is string => Boolean(m)))];
+  let last = "";
+  for (const d of deployments) {
+    const res = await fetch(`${base()}/openai/deployments/${encodeURIComponent(d)}/chat/completions?api-version=${version()}`, {
+      method: "POST",
+      headers: { "api-key": key(), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        max_completion_tokens: 500,
+        messages: [{ role: "user", content: [{ type: "text", text: question }, { type: "image_url", image_url: { url: `data:${mime};base64,${image.toString("base64")}` } }] }],
+      }),
+      signal: AbortSignal.timeout(60_000),
+    }).catch((e: Error) => ({ ok: false, status: 0, text: async () => e.message }) as unknown as Response);
+    if (res.ok) {
+      const data = (await res.json()) as { choices: { message: { content: string | null } }[] };
+      return (data.choices[0]?.message.content ?? "").trim();
+    }
+    last = `${d}: ${res.status} ${(await res.text()).slice(0, 160)}`;
+  }
+  throw new Error(`couldn't look at the image (${last})`);
+}

@@ -2,7 +2,7 @@
 
 import { LOCAL_URL, useNiceLink } from "@/components/nice-links";
 
-import { ArrowUpRight, Brain, FileText, GraduationCap, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
+import { ArrowDown, ArrowUpRight, Brain, FileText, GraduationCap, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { addFiles, currentDoc, editSession, hydrate, loadList, newSession, openSession, removeSession, send, setModel, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
 import { ArtifactView } from "@/components/artifact-view";
@@ -52,6 +52,9 @@ type SkillList = {
   installed: { slug: string; name: string; description: string; author: string; aiVerdict: string | null; installedAt: number }[];
 };
 
+/** A file in the chat box: uploading (pending, pct), ready, or failed; images carry a local preview. */
+export type Staged = Att & { pending?: boolean; pct?: number; preview?: string; error?: string };
+
 export default function AssistantPage() {
   const { vms, status, refresh, reloadVms } = useCluster();
   const st = useAssistant();
@@ -60,7 +63,7 @@ export default function AssistantPage() {
   const { items, files, title } = doc;
   const busy = doc.busy || doc.remote;
   const [query, setQuery] = useState("");
-  const [staged, setStaged] = useState<Att[]>([]);
+  const [staged, setStaged] = useState<Staged[]>([]);
   const [uploading, setUploading] = useState(false);
   const [configured, setConfigured] = useState(true);
   const [models, setModels] = useState<ModelChoice[]>([]);
@@ -108,9 +111,40 @@ export default function AssistantPage() {
       .catch(() => setConfigured(false));
   }, [loadAutopilot]);
 
+  // Follow new messages only while the reader is at the bottom; otherwise show a "new messages" button.
+  const scroller = useRef<HTMLDivElement>(null);
+  const [atBottom, setAtBottom] = useState(true);
+  const [unseen, setUnseen] = useState(false);
+  const onScroll = () => {
+    const el = scroller.current;
+    if (!el) return;
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    setAtBottom(near);
+    if (near) setUnseen(false);
+  };
+  const toBottom = (smooth = true) => {
+    bottom.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
+    setUnseen(false);
+  };
+  const lastLen = useRef(0);
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const grew = items.length > lastLen.current;
+    const mine = items[items.length - 1]?.kind === "user";
+    lastLen.current = items.length;
+    // after paint: the new message is in the DOM, so scrolling (or flagging it) is accurate
+    if (atBottom || mine) requestAnimationFrame(() => toBottom());
+    else if (grew) requestAnimationFrame(() => setUnseen(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items.length, busy]);
+  // a new session or switching sessions starts at the latest message
+  useEffect(() => {
+    lastLen.current = 0;
+    requestAnimationFrame(() => {
+      setAtBottom(true);
+      toBottom(false);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sid]);
 
   // when a run finishes, refresh machine status (it probably changed something)
   const [wasBusy, setWasBusy] = useState(false);
@@ -127,7 +161,9 @@ export default function AssistantPage() {
   const mentionNames = useMemo(() => new Set(entities.map((e) => e.name)), [entities]);
 
   const submit = async (raw: string) => {
-    if ((!raw && !staged.length) || busy) return;
+    if (staged.some((f) => f.pending)) return; // Send is off until every file is stored
+    const ready = staged.filter((f) => !f.pending && !f.error).map(({ id, name, size, type }) => ({ id, name, size, type }));
+    if ((!raw && !ready.length) || busy) return;
     // machine tokens never go to the AI: the dashboard adds the machine itself, and every copy is hidden
     let text = raw;
     if (/ibssh_[A-Za-z0-9]{4,}/.test(raw)) {
@@ -144,53 +180,70 @@ export default function AssistantPage() {
       setNote(null);
       text = `${raw.replace(/ibssh_[A-Za-z0-9]{4,}/g, "ibssh_••••(hidden)")}\n\n${outcome}`;
     }
-    if (!items.length) setTitle(sid, (text || staged[0]?.name || "New session").slice(0, 70));
-    const withFiles = staged.length ? `${text}\n\n${staged.map((f) => `[Attached: ${f.name} (id ${f.id}, ${fmtSize(f.size)})]`).join("\n")}` : text;
+    if (!items.length) setTitle(sid, (text || ready[0]?.name || "New session").slice(0, 70));
+    const withFiles = ready.length ? `${text}\n\n${ready.map((f) => `[Attached: ${f.name} (id ${f.id}, ${fmtSize(f.size)})]`).join("\n")}` : text;
     updateItems(sid, (x) => [
       ...x.map((i) => (i.kind === "approval" && i.decision === undefined ? { ...i, decision: false } : i.kind === "question" && i.answer === undefined ? { ...i, answer: text } : i)),
       // secrets never show, even for the moment before the server answers
-      { kind: "user", text: hideSecrets(text), files: staged.length ? staged : undefined },
+      { kind: "user", text: hideSecrets(text), files: ready.length ? ready : undefined },
     ]);
+    for (const f of staged) if (f.preview) URL.revokeObjectURL(f.preview);
     setStaged([]);
-    void send(sid, { message: withFiles + contextFor(text, vms, status), display: text, staged });
+    void send(sid, { message: withFiles + contextFor(text, vms, status), display: text, staged: ready });
   };
 
+  // Each file shows at once (image preview or file chip), dimmed with its own progress until it's stored;
+  // Send stays off until every file is ready.
   const upload = async (list: FileList | null) => {
     if (!list?.length) return;
+    const files = Array.from(list);
+    const temps = files.map((f) => ({
+      id: `up-${Math.random().toString(36).slice(2, 10)}`,
+      name: f.name || "pasted",
+      size: f.size,
+      type: f.type,
+      pending: true,
+      pct: 0,
+      preview: f.type.startsWith("image/") ? URL.createObjectURL(f) : undefined,
+    }));
+    setStaged((s) => [...s, ...temps]);
     setUploading(true);
-    try {
-      const CHUNK = 2_500_000; // under Vercel's request limit; bigger files go in pieces
-      const b64 = (blob: Blob) =>
-        new Promise<string>((ok, fail) => {
-          const r = new FileReader();
-          r.onload = () => ok(String(r.result).split(",")[1] ?? "");
-          r.onerror = () => fail(r.error);
-          r.readAsDataURL(blob);
-        });
-      for (const f of Array.from(list)) {
-        if (f.size > 50 * 1024 * 1024) throw new Error(`${f.name} is larger than 50 MB`);
-        const name = f.name || "pasted";
-        let att: Att;
-        if (f.size <= CHUNK) att = await api<Att>("/api/attachments", { session: sid, name, type: f.type, data: await b64(f) });
-        else {
-          const upload = Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
-          const parts = Math.ceil(f.size / CHUNK);
-          for (let i = 0; i < parts; i++) {
-            setProgress(`Uploading ${name}… ${i + 1}/${parts}`);
-            await api("/api/attachments", { session: sid, upload, index: i, data: await b64(f.slice(i * CHUNK, (i + 1) * CHUNK)) });
+    const patch = (id: string, p: Partial<Staged>) => setStaged((s) => s.map((x) => (x.id === id ? { ...x, ...p } : x)));
+    const CHUNK = 2_500_000; // under Vercel's request limit; bigger files go in pieces
+    const b64 = (blob: Blob) =>
+      new Promise<string>((ok, fail) => {
+        const r = new FileReader();
+        r.onload = () => ok(String(r.result).split(",")[1] ?? "");
+        r.onerror = () => fail(r.error);
+        r.readAsDataURL(blob);
+      });
+    await Promise.all(
+      files.map(async (f, n) => {
+        const t = temps[n];
+        try {
+          if (f.size > 50 * 1024 * 1024) throw new Error("larger than 50 MB");
+          let att: Att;
+          if (f.size <= CHUNK) {
+            patch(t.id, { pct: 40 });
+            att = await api<Att>("/api/attachments", { session: sid, name: t.name, type: f.type, data: await b64(f) });
+          } else {
+            const upload = Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+            const parts = Math.ceil(f.size / CHUNK);
+            for (let i = 0; i < parts; i++) {
+              await api("/api/attachments", { session: sid, upload, index: i, data: await b64(f.slice(i * CHUNK, (i + 1) * CHUNK)) });
+              patch(t.id, { pct: Math.round(((i + 1) / parts) * 92) });
+            }
+            att = await api<Att>("/api/attachments", { session: sid, upload, finish: true, parts, size: f.size, name: t.name, type: f.type });
           }
-          setProgress(`Uploading ${name}… putting it together`);
-          att = await api<Att>("/api/attachments", { session: sid, upload, finish: true, parts, size: f.size, name, type: f.type });
+          // keep the local preview: the stored file is the same picture
+          setStaged((s) => s.map((x) => (x.id === t.id ? { ...att, preview: t.preview } : x)));
+          addFiles(sid, [att]);
+        } catch (e) {
+          patch(t.id, { pending: false, error: (e as Error).message });
         }
-        setStaged((s) => [...s, att]);
-        addFiles(sid, [att]);
-      }
-    } catch (e) {
-      setNote((e as Error).message);
-    } finally {
-      setUploading(false);
-      setProgress(null);
-    }
+      }),
+    );
+    setUploading(false);
   };
 
   // ---- right panel ----
@@ -255,8 +308,8 @@ export default function AssistantPage() {
       </aside>
 
       {/* conversation */}
-      <main className="flex min-w-0 flex-1 flex-col">
-        <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
+      <main className="relative flex min-w-0 flex-1 flex-col">
+        <div ref={scroller} onScroll={onScroll} className="scroll-thin min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-3xl space-y-3 px-8 py-8">
             {!configured && <p className="rounded-xl border border-white/10 p-4 text-sm text-ink">Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY to enable the assistant.</p>}
             {items.length === 0 && configured && (
@@ -303,7 +356,18 @@ export default function AssistantPage() {
           </div>
         </div>
 
-        <div className="mx-auto w-full max-w-3xl px-8 pb-6">
+        <div className="relative mx-auto w-full max-w-3xl px-8 pb-6">
+          {!atBottom && (
+            <button
+              onClick={() => toBottom()}
+              className={cx(
+                "absolute -top-12 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs shadow-lg shadow-black/40 backdrop-blur transition-colors",
+                unseen ? "border-[var(--accent)]/50 bg-[var(--accent)] text-[var(--accent-ink)]" : "border-white/10 bg-panel/90 text-zinc-300 hover:text-white",
+              )}
+            >
+              <ArrowDown className="size-3.5" /> {unseen ? "New messages" : "Latest"}
+            </button>
+          )}
           <Composer
             entities={entities}
             busy={busy}

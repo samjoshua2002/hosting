@@ -1,7 +1,7 @@
 // The Assistant: an operator that does the work on the fleet, end to end.
 // It runs commands, starts and watches background jobs, deploys and manages projects, and connects machines
 // to the database machine. Only destructive actions pause for the user's approval; then it carries on.
-import { chat, type ChatMessage, type ToolCall, type ToolDef } from "./ai";
+import { chat, describeImage, type ChatMessage, type ToolCall, type ToolDef } from "./ai";
 import type { ArtifactType, DiagramEdge, DiagramNode, OperatorEvent, Shell } from "./assistant-items";
 import type { CustomServiceInfo, ProjectManifest } from "./types";
 import { cronAction, ensureAgent, fillGenerated, jobLog, listManifests, newJobId, probe, projectAction, saveProject, startDeploy, startJob, PROJECT_NAME_RE, ENV_KEY_RE } from "./agent";
@@ -9,7 +9,7 @@ import { getVm, getVms, type VmConfig } from "./config";
 import { isDestructive } from "./safety";
 import { mapLimit, run, shq, withVm } from "./ssh";
 import { linkTunnel, unlinkTunnel } from "./tunnels";
-import { asText, loadAttachment } from "./attachments";
+import { asText, loadAttachment, saveAttachment } from "./attachments";
 import {
   commitPlan,
   detectFramework,
@@ -209,6 +209,7 @@ When things go wrong (decide like a senior SRE: pick the safest option that gets
 - Database unreachable from an app: check the tunnel (fleet_status tunnels; link_databases) and the env (connect_projects), not the app code.
 - GitHub token expired / 401: ask the user to reconnect GitHub on the Projects page; never ask for the token in chat.
 - Tool errors are information: read them and choose the next best step. Never claim success you didn't verify (curl the link, check the service state).
+- Verify with your eyes: after deploying or changing anything people open in a browser (sites, WordPress, admin tools, dashboards), take a screenshot of the link (and of the key page the user cares about) and check it shows what the user wanted. A 200 status is not proof: a default/placeholder page, an empty theme, a blank page or an error screen means the job isn't done; fix it and look again. Show the final screenshot when you report.
 
 Links and output
 - Always give full https URLs (the UI adds open and copy buttons). Put commands the user may want to run themselves in \`\`\`bash blocks.
@@ -381,6 +382,12 @@ const TOOLS: ToolDef[] = [
     "Start a project on another machine from the settings copy Autopilot keeps on the storage machine (works even when its machine is down or gone): same code (GitHub or Docker image), same env, database tunnels rebuilt, /go link follows. Databases and apps that keep data on the old machine's disk can't move. Leave to empty to pick the best healthy machine.",
     { name: { type: "string" }, to: { type: "string", description: "only if the user named a machine" }, from: { type: "string", description: "which machine's copy, if it ran on several" } },
     ["name"],
+  ),
+  fn(
+    "screenshot",
+    "Open a web page in a real browser (headless Chrome on one of the machines), show the screenshot in the chat, and look at it: says what the page actually shows and whether it looks right/finished. Use it to verify every site you deploy or change (home page, a key page, /wp-admin login), before saying it's done. full_page captures a taller view. question: what to check (e.g. 'Does this look like the Spexo Digital Agency demo, not a default WordPress page?').",
+    { url: { type: "string" }, question: { type: "string" }, full_page: { type: "boolean" } },
+    ["url"],
   ),
   fn(
     "import_zip",
@@ -649,6 +656,8 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Copied attachment ${str(a.id)} to ~/${str(a.path)} on ${on(a.vms)}`, needsApproval: false, detail: "" };
     case "add_service":
       return { label: `Added ${str(a.name) || str(a.template)} from the catalog`, needsApproval: false, detail: "" };
+    case "screenshot":
+      return { label: `Looked at ${clip(str(a.url).replace(/^https?:\/\//, "").replace(/\?.*$/, ""), 70)}`, needsApproval: false, detail: "", readOnly: true };
     case "import_zip":
       return { label: `Created GitHub repo ${str(a.name)} from the zip`, needsApproval: false, detail: `${a.private === false ? "Public" : "Private"} repository in your GitHub account.` };
     case "move_project":
@@ -1305,6 +1314,58 @@ function artifact(call: ToolCall, emit: (e: OperatorEvent) => void): string {
   return `Artifact "${title}" shown to the user (id ${id}). Reuse the id to revise it. Summarise it in a line or two; don't repeat its content.`;
 }
 
+/**
+ * Look at a page like a person would: headless Chrome on the machine with the most free memory takes the
+ * screenshot, it's kept with the conversation's attachments and shown in the chat, and the vision model says
+ * what's on it.
+ */
+async function screenshot(call: ToolCall, input: OperatorInput, emit: (e: OperatorEvent) => void): Promise<{ ok: boolean; output: string }> {
+  let a: Args;
+  try {
+    a = JSON.parse(await revealIn(call.function.arguments || "{}", true)) as Args;
+  } catch {
+    return { ok: false, output: "Arguments were not valid JSON." };
+  }
+  let url = str(a.url).trim();
+  if (url.startsWith("/go/")) url = `${siteUrl()}${url}`;
+  if (!/^https?:\/\/[^\s'"`$]+$/i.test(url)) return { ok: false, output: "url must be a full http(s) link" };
+  const fleet = await mapLimit(getVms(), 12, (vm) => probe(vm, 9_999_999_999));
+  const pick = fleet
+    .filter((s) => s.ok && s.agent && (s.agent.diskTotalKb - s.agent.diskUsedKb) / 1048576 > 1)
+    .sort((x, y) => y.agent!.memAvailKb - x.agent!.memAvailKb)[0];
+  const vm = pick ? getVm(pick.name) : undefined;
+  if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
+  const id = `s${Date.now().toString(36)}`;
+  const size = a.full_page ? "1440,2600" : "1440,900";
+  const cmd = [
+    'D="$HOME/.hosting/shots"; mkdir -p "$D"; chmod 777 "$D"',
+    "docker image inspect zenika/alpine-chrome >/dev/null 2>&1 || docker pull -q zenika/alpine-chrome >/dev/null 2>&1",
+    `timeout 100 docker run --rm --shm-size=1g -v "$D":/out zenika/alpine-chrome --no-sandbox --disable-gpu --hide-scrollbars --ignore-certificate-errors --window-size=${size} --virtual-time-budget=12000 --screenshot=/out/${id}.png ${shq(url)} >/dev/null 2>&1`,
+    `f="$D/${id}.png"; if [ -s "$f" ]; then base64 -w0 "$f"; rm -f "$f"; else echo NOSHOT; fi`,
+  ].join("; ");
+  const r = await withVm(vm, (c) => run(c, cmd, { timeoutMs: 240_000, maxBytes: 12 * 1024 * 1024 })).catch((e: Error) => ({ code: 1, stdout: "", stderr: e.message, truncated: false }));
+  const out = r.stdout.trim();
+  if (!out || out === "NOSHOT") return { ok: false, output: `the browser on ${vm.name} couldn't load ${url} (timeout, crash or no answer)${r.stderr ? `: ${r.stderr.slice(0, 200)}` : ""}` };
+  const png = Buffer.from(out, "base64");
+  const shown = url.replace(/\?.*$/, "");
+  let src = "";
+  if (input.sessionId) {
+    const att = await saveAttachment(input.sessionId, `screenshot-${shown.replace(/^https?:\/\//, "").replace(/[^A-Za-z0-9.-]+/g, "-").slice(0, 50)}.png`, "image/png", png);
+    src = `/api/attachments?session=${input.sessionId}&id=${att.id}&inline=1`;
+  }
+  const question =
+    str(a.question) ||
+    "Describe what this web page shows in 3-5 short sentences: the visible content and layout, whether it looks like a finished, designed site, or a default/placeholder page (e.g. WordPress 'Hello world', an empty theme, 'It works', directory listing), an error (404, 500, database connection error, blank page) or a login screen. Be concrete.";
+  let seen = "";
+  try {
+    seen = await describeImage(png, question);
+  } catch (e) {
+    seen = `(couldn't analyse the image: ${(e as Error).message})`;
+  }
+  if (src) emit({ type: "image", id: call.id, title: `Screenshot of ${shown}`, src, url: shown, caption: seen });
+  return { ok: true, output: `Screenshot of ${shown} taken on ${vm.name}${src ? " and shown to the user" : ""}.\nWhat it shows: ${seen}` };
+}
+
 /** The live checklist: same title = same card, updated in place. */
 function plan(call: ToolCall, emit: (e: OperatorEvent) => void): string {
   let a: Args;
@@ -1492,6 +1553,12 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
         if (call.function.name === "create_artifact") {
           const r = artifact(call, emit);
           return { role: "tool" as const, tool_call_id: call.id, content: r };
+        }
+        if (call.function.name === "screenshot") {
+          emit({ type: "tool", id: call.id, label: d.label });
+          const r = await screenshot(call, input, emit);
+          emit({ type: "tool_result", id: call.id, ok: r.ok, output: clip(r.output, 3000) });
+          return { role: "tool" as const, tool_call_id: call.id, content: clip(r.output) };
         }
         if (call.function.name === "update_plan") {
           const r = plan(call, emit);

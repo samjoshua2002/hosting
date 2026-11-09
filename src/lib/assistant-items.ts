@@ -36,7 +36,8 @@ export type Item =
   | { kind: "question"; id: string; question: string; options: string[]; answer?: string }
   | { kind: "diagram"; id: string; title: string; nodes: DiagramNode[]; edges: DiagramEdge[] }
   | { kind: "artifact"; id: string; title: string; type: ArtifactType; language?: string; content: string; version: number }
-  | { kind: "plan"; id: string; title: string; steps: PlanStep[] };
+  | { kind: "plan"; id: string; title: string; steps: PlanStep[] }
+  | { kind: "image"; id: string; title: string; src: string; url?: string; caption?: string };
 
 /** One line of the Assistant's live plan (a checklist that updates in place while it works). */
 export interface PlanStep {
@@ -58,6 +59,7 @@ export type OperatorEvent =
   | { type: "diagram"; id: string; title: string; nodes: DiagramNode[]; edges: DiagramEdge[] }
   | { type: "artifact"; id: string; title: string; artType: ArtifactType; language?: string; content: string }
   | { type: "plan"; id: string; title: string; steps: PlanStep[] }
+  | { type: "image"; id: string; title: string; src: string; url?: string; caption?: string }
   // transcript is the model-side history (ChatMessage[]), opaque to the UI
   | { type: "done"; transcript: unknown[]; waiting: boolean; paused: boolean };
 
@@ -75,6 +77,8 @@ export function applyEvent(items: Item[], e: OperatorEvent): Item[] {
       return [...items, { kind: "question", id: e.id, question: e.question, options: e.options }];
     case "diagram":
       return [...items, { kind: "diagram", id: e.id, title: e.title, nodes: e.nodes, edges: e.edges }];
+    case "image":
+      return [...items, { kind: "image", id: e.id, title: e.title, src: e.src, url: e.url, caption: e.caption }];
     case "plan": {
       // the same plan again updates the card in place, so progress reads like a checklist
       const at = items.findIndex((i) => i.kind === "plan" && i.id === e.id);

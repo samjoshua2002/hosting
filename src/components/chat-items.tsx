@@ -166,6 +166,24 @@ function Bubble({
   }
   if (item.kind === "step" && item.shell) return <TerminalBlock shell={item.shell} output={item.output} running={item.running} ok={item.ok} />;
   if (item.kind === "plan") return <PlanCard plan={item} />;
+  if (item.kind === "image")
+    return (
+      <figure className="overflow-hidden rounded-xl border border-white/[0.08] bg-black/30">
+        <a href={item.src} target="_blank" rel="noreferrer" title="Open full size">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={item.src} alt={item.title} className="max-h-[420px] w-full object-cover object-top" loading="lazy" />
+        </a>
+        <figcaption className="flex items-center gap-2 border-t border-white/[0.06] px-3 py-2 text-xs text-zinc-400">
+          <span className="truncate text-zinc-300">{item.title}</span>
+          {item.url && (
+            <a href={item.url} target="_blank" rel="noreferrer" className="ml-auto shrink-0 text-accent-soft hover:underline">
+              open page
+            </a>
+          )}
+        </figcaption>
+        {item.caption && <p className="border-t border-white/[0.06] px-3 py-2 text-xs leading-relaxed text-zinc-400">{item.caption}</p>}
+      </figure>
+    );
   if (item.kind === "diagram") return <FlowDiagram title={item.title} nodes={item.nodes} edges={item.edges} />;
   if (item.kind === "artifact") return <ArtifactCard a={item} onOpen={() => onOpenArtifact?.(item.id)} />;
   if (item.kind === "question")

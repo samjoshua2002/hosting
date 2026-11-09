@@ -21,8 +21,83 @@ export const SKILLS: Skill[] = [
 3. Decide, don't ask: choose machines, ports, names, versions, passwords ("generate") yourself. Only ask_user for things only the user can know or approve (their secrets, a destructive choice, a paid account, a provider dashboard click).
 4. Execute in small verified steps. After each action check the result (exit code, service state, curl the URL, read the log). Background anything slow (deploy_project/start_job) and follow it with job_log.
 5. When something fails: read the real error, form a hypothesis, fix the cause, retry. Try a different approach after 2 failures of the same one. After 3 distinct approaches, stop and explain precisely what blocks you and what you need.
-6. Verify the goal end to end like a user would (open the link, log in, call the API, query the data). Never report success you didn't see.
+6. Verify the goal end to end like a user would: load_skill "definition-of-done" and do its checks for this kind of project, including a screenshot of every page people open. Never report success you didn't see. If something fails twice, load_skill "troubleshooting".
 7. Finish with: what you built, the links (short /go links), where credentials are (Services page), what you checked, and 1-3 sensible next steps. Save a lesson (remember) if you learned something reusable.`,
+  },
+  {
+    id: "definition-of-done",
+    title: "Definition of done: prove it works",
+    when: "before saying any deploy, fix, migration or site is finished; load at the end of every goal",
+    body: `A job is done only when you have seen it work the way the user will use it. Do every check that applies, show the evidence, and fix anything that fails before reporting.
+Website / web app (any stack):
+- curl -s -o /dev/null -w '%{http_code} %{time_total}' the link (expect 200, under ~3 s), and a second key page (e.g. /about, /login, /products).
+- screenshot the home page and the page the user cares about; read what the screenshot shows. Not done if it shows: a default page (WordPress "Hello world"/"Archives", "Welcome to nginx", "It works!", "Index of /", Next.js/Vite starter), a blank or white page, an error (404, 500, 502, "Error establishing a database connection", stack trace), unstyled HTML (CSS missing: check asset URLs and the site URL setting), or a login wall the user didn't ask for.
+- If the user gave a reference (theme demo, design, screenshot, old site), compare: same sections, imagery and layout? Say what still differs.
+- Mobile: screenshot with full_page; nothing obviously broken.
+API / backend: call a real endpoint (GET health or a list endpoint) and check the JSON; for writes, create then read back test data and remove it; check CORS from the frontend's origin if there is one.
+Database-backed apps: the page that reads data shows data; db_query the tables you created/imported with row counts; the app's env points at the right database.
+Workers / bots / cron: logs show a successful run after your change (project_action logs, schedule_task run_now, job_log); no restart loop (systemctl state stays active for 60 s).
+Services from the catalog: use_service status (port answers), sign-in details on the Services page, one real action works (e.g. a backup, a monitor added).
+WordPress: home and a page render the theme with real content (not the default post), /wp-admin login page loads, use_service check shows no PHP errors, permalinks work (open a post URL).
+After any change to an existing project: what worked before still works (home page, login, one data page).
+Report: links (short /go), what you checked and saw (status codes, screenshot verdicts, row counts), anything left for the user, and the final screenshot.`,
+  },
+  {
+    id: "troubleshooting",
+    title: "Troubleshooting: symptom → cause → fix",
+    when: "a deploy fails, a site errors or misbehaves, something worked before and stopped, or the same step failed twice",
+    body: `Match the symptom, check the cause with a read-only command, then fix. Re-verify after each fix (definition-of-done).
+Build / install
+- "npm ERR! ERESOLVE" → npm install --legacy-peer-deps (or the repo's lockfile tool: pnpm/yarn/bun if pnpm-lock/yarn.lock/bun.lockb exists).
+- "Killed" / exit 137 / JavaScript heap out of memory → NODE_OPTIONS=--max-old-space-size=3072, fewer parallel builds, or a machine with more free RAM.
+- "No space left on device" → free disk (docker system prune -f, caches, old logs) or deploy elsewhere.
+- Python "error: externally-managed-environment" → always use .venv; missing headers (mysqlclient, psycopg2) → sudo apt-get install -y build-essential default-libmysqlclient-dev libpq-dev pkg-config, or psycopg2-binary.
+- Java: wrong JDK → install the version in pom.xml/build.gradle (openjdk-17/21); "mvnw: Permission denied" → chmod +x mvnw.
+- PHP/Composer: missing extension (ext-gd, ext-intl, ext-zip, ext-mbstring, pdo_mysql) → sudo apt-get install -y php-<ext>; Laravel: php artisan key:generate, storage:link, migrate --force, chmod -R ug+rw storage bootstrap/cache.
+- Private repo clone fails (403/404) → GitHub not connected or token lacks repo scope: ask the user to reconnect on the Projects page.
+Start / runtime
+- Service "activating"/restart loop → read project_action logs: usually wrong start command, missing env var, or the app ignores $PORT (listen on process.env.PORT / --port $PORT / 0.0.0.0, not 127.0.0.1 or a hard-coded port).
+- "EADDRINUSE"/"address already in use" → another project has the port (ss -ltnp): pick a free one.
+- Next.js "Could not find a production build" → build step missing (npm run build) or wrong start (next start -p $PORT); static export (output: 'export') → serve the out/ folder.
+- Vite/React/Vue SPA shows 404 on refresh → serve with a SPA fallback (npx serve -s dist -l $PORT).
+- Link shows 502/"bad gateway" → the app isn't listening yet or crashed: logs; wait for the deploy job to finish.
+- Site loads but no CSS/JS, or mixed-content warnings → wrong base URL/asset prefix (APP_URL, NEXT_PUBLIC_*, WordPress home/siteurl, Vite base) or http vs https behind the proxy (trust X-Forwarded-Proto).
+- CORS errors → set the API's allowed origin to the frontend's real link; for cookies also credentials and SameSite=None; Secure.
+- Websockets fail → the app must accept the Upgrade on $PORT; long-polling fallback if not.
+- Environment variable undefined in the browser → frameworks only expose prefixed ones (NEXT_PUBLIC_, VITE_, REACT_APP_) and need a rebuild after changing them.
+Data
+- "ECONNREFUSED 127.0.0.1:5432/3306/27017" → database on another machine: connect_projects (opens the tunnel) or link_databases; check the tunnel in fleet_status.
+- "Access denied"/"password authentication failed" → app env doesn't match the database's stored credentials: connect_projects again (it rewrites them).
+- "Unknown database"/"relation does not exist" → create the database / run migrations (artisan migrate, prisma migrate deploy, alembic upgrade head, rails db:migrate) or import the .sql.
+- MySQL "caching_sha2_password" with old clients → ALTER USER ... IDENTIFIED WITH mysql_native_password (only for legacy apps).
+Machines
+- Machine unreachable/"cooling down until …" → InstaBox rest: use another machine for new work, move_project for apps that must stay up, tell the user when it's back.
+- Storage machine resting (store_down) → the dashboard banner offers wait or switch: explain, don't retry in a loop.
+Still stuck after 3 different approaches: stop, show the exact error, what you tried, and the 1-2 options that need the user.`,
+  },
+  {
+    id: "templates-and-themes",
+    title: "Templates, themes and starter kits",
+    when: "the user gives a theme, template, UI kit, HTML template, ThemeForest/Envato package or 'make it look like this site'",
+    body: `The goal is the look the user saw, not just the files installed.
+1. Find out what it is: read the zip/repo (readme, documentation folder, package.json, style.css header, theme.json). Kinds: WordPress theme (+ demo content), HTML/CSS template (static), React/Next/Vue starter (build), Envato package (often a zip containing the real theme zip + documentation + demo data: unpack the inner zip).
+2. Find the demo: where the designed pages come from (WordPress: demo importer plugin, .xml/.wie/.dat files, Elementor kits; HTML: index.html and pages already designed; starters: sample data or seed scripts). If several demos exist and the user didn't say, ask_user with their names.
+3. Install with its own method: WordPress → see the wordpress playbook (theme, required plugins, demo import, front page, menus); HTML → deploy the folder as a static site (npx serve -s . -l $PORT) keeping relative asset paths; starters → install, build, start on $PORT, seed sample data if the template expects it.
+4. Replace placeholders the user gave you (site name, logo, contact details, colors) and nothing else unless asked.
+5. Verify visually (definition-of-done): screenshot home + one inner page and compare to the demo the user saw; list differences honestly (e.g. "premium images aren't included in the free version").
+6. Licensing: premium themes need the user's licence/purchase code for one-click demo import or updates; ask for it (it goes to the vault) instead of working around it.`,
+  },
+  {
+    id: "data-migration",
+    title: "Moving data safely",
+    when: "importing a .sql/.dump/.csv, copying a database between machines or from a cloud provider, restoring a backup",
+    body: `Never lose data; prove the copy is complete.
+1. Before: use_service <db> backup of the target (even if empty), and note row counts of the source (db_query count(*) per table, or the dump's INSERT/COPY counts).
+2. Choose the engine from the dump: backticks/ENGINE=/AUTO_INCREMENT → MySQL/MariaDB; COPY/SERIAL/CREATE EXTENSION/pg_dump header → Postgres; .archive/.bson → MongoDB (mongorestore). Mismatch → convert only if the user agrees (it's lossy).
+3. Import: copy_attachment to imports/<file> on the database's machine, then use_service <db> import_sql {path, database} (MySQL/Postgres) or the matching restore action. Large dumps: run as a job and follow it.
+4. Cloud → here (Atlas, RDS, Supabase, Neon, PlanetScale): dump from the source with the user's connection string (vault placeholder) on one of the machines (mysqldump/pg_dump/mongodump --uri), then import; keep the cloud copy until the user confirms.
+5. After: row counts match per table (report a table of before/after), the app's env points to the new database (connect_projects), the app page that reads data shows it (screenshot), and a backup schedule exists (schedule_task with the backup command).
+6. Problems: encoding (use utf8mb4 / UTF8), definer/privilege errors in MySQL dumps (strip DEFINER=... lines), owner/role errors in Postgres dumps (--no-owner --no-privileges equivalents: remove OWNER TO lines), duplicate keys (import into an empty database).`,
   },
   {
     id: "architecture",
