@@ -36,6 +36,7 @@ import { connectProjects, disconnectProjects } from "./connections";
 import { addMachine, removeMachine, renameMachine } from "./machines";
 import { forget, listMemory, remember } from "./memory";
 import { CATALOG, engineFromStart, serviceIdOf } from "./catalog";
+import { skill, skillIndex, SKILLS } from "./skills";
 import { actionsFor, API_AUTH, COMMON, DRIVERS, driverSummary, type DriverCtx } from "./service-drivers";
 import { createService } from "./services";
 import { maskSecrets, revealIn, secretNames, vaultText } from "./vault";
@@ -164,6 +165,12 @@ Working on code (GitHub)
 - repo_branches, repo_files and repo_read inspect a repo; repo_commit commits one or more files in a single commit (full content, or exact find/replace edits for small changes); repo_pull_request opens a PR. github_api calls any other GitHub REST endpoint the token allows (issues, releases, actions runs, gists, workflows…).
 - Before the first change in a session, call ask_user to pick the branch unless the user already said: offer the default branch (pushes there redeploy projects with auto-deploy) and a new branch like "assistant/<short-topic>" with a pull request. Read the files you change first; keep edits minimal and in the repo's style. After committing, give the commit link; if a project auto-deploys from that branch, follow its deploy (fleet_status shows running deploy jobs) and report the result.
 - Review mode is chosen by the user: in manual mode every action waits for approval (commits show the diff first); in auto mode only destructive actions wait. Either way, never commit secrets.
+
+You are the brain of this platform
+- Act like a senior engineer who owns outcomes: when the user gives a goal (a link, a repo, a template, "make me a site", "move my app"), deliver it working end to end without asking them to do setup steps you can do yourself. Never stop at a plan or a suggestion when you have the tools to do it.
+- For anything with more than ~3 steps: load_skill "goal-mode" plus the skills that match, then update_plan, and keep the plan current (doing → done/failed with notes) so the user sees progress live. Short questions and quick lookups need neither.
+- Skills (playbooks, load with load_skill):
+\${SKILLS_INDEX}
 
 Using the services (they are your tools, not just things to install)
 - If a task needs a service that isn't installed (automation, storage, monitoring, dashboards, local AI), install it yourself with add_service (placement is automatic), wait for it, then use it. Reuse an existing one when there is one.
@@ -358,6 +365,24 @@ const TOOLS: ToolDef[] = [
     ["method", "path"],
   ),
   fn(
+    "update_plan",
+    "Show or update your live plan in the chat: a checklist the user watches while you work. Send the whole list every time (same title updates the same card). Mark the step you're on as doing, finished ones done (or failed/skipped with a short note).",
+    {
+      title: { type: "string", description: "the goal, e.g. 'Launch the blog on WordPress'" },
+      steps: {
+        type: "array",
+        items: { type: "object", properties: { text: { type: "string" }, status: { type: "string", enum: ["todo", "doing", "done", "failed", "skipped"] }, note: { type: "string" } }, required: ["text", "status"] },
+      },
+    },
+    ["title", "steps"],
+  ),
+  fn(
+    "load_skill",
+    "Load a playbook with the senior-level way to do a kind of work on this platform (see Skills in the instructions). Load the matching ones before starting; they're short.",
+    { id: { type: "string", enum: SKILLS.map((x) => x.id) } },
+    ["id"],
+  ),
+  fn(
     "save_service_info",
     "Update what the Services page and you know about a custom service (third-party software you installed that isn't in the catalog): title, category, desc, login, usage steps, docs, and add_note to remember something you learned (an API call that works, a setting, a gotcha). Notes come back to you every time you use_service it.",
     {
@@ -462,7 +487,7 @@ function vmsFrom(v: unknown): VmConfig[] {
 }
 
 /** What a call does in plain words, and whether it must wait for the user. */
-const READ_ONLY = new Set(["fleet_status", "job_log", "ask_user", "read_attachment", "github_repos", "show_diagram", "repo_branches", "repo_files", "repo_read", "create_artifact", "remember", "forget"]);
+const READ_ONLY = new Set(["update_plan", "load_skill", "fleet_status", "job_log", "ask_user", "read_attachment", "github_repos", "show_diagram", "repo_branches", "repo_files", "repo_read", "create_artifact", "remember", "forget"]);
 
 const SQL_WRITE = /\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|replace|merge|copy|vacuum|reindex|rename|lock)\b/i;
 const MONGO_WRITE = /\b(insert\w*|update\w*|delete\w*|remove|drop\w*|replace\w*|create\w*|rename\w*|bulkWrite|findOneAnd\w+|\$out|\$merge)\b/i;
@@ -582,13 +607,21 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Copied attachment ${str(a.id)} to ~/${str(a.path)} on ${on(a.vms)}`, needsApproval: false, detail: "" };
     case "add_service":
       return { label: `Added ${str(a.name) || str(a.template)} from the catalog`, needsApproval: false, detail: "" };
+    case "update_plan":
+      return { label: `Plan: ${str(a.title)}`, needsApproval: false, detail: "" };
+    case "load_skill":
+      return { label: `Using the ${skill(str(a.id))?.title ?? str(a.id)} playbook`, needsApproval: false, detail: "" };
     case "save_service_info":
       return { label: a.add_note ? `Saved a note about ${str(a.name)}` : `Described ${str(a.name)} on the Services page`, needsApproval: false, detail: str(a.add_note) };
     case "use_service": {
       const act = str(a.action);
       const method = str((a.params as { method?: unknown } | undefined)?.method);
       const readOnly = [COMMON, ...Object.values(DRIVERS)].some((d) => d[act]?.readOnly) || (act === "api" && /^(get)?$/i.test(method));
-      const danger = Object.values(DRIVERS).some((d) => d[act]?.danger) || (act === "api" && /^delete$/i.test(method));
+      const wpArgs = act === "wp" ? str((a.params as { args?: unknown } | undefined)?.args) : "";
+      const danger =
+        Object.values(DRIVERS).some((d) => d[act]?.danger) ||
+        (act === "api" && /^delete$/i.test(method)) ||
+        /\b(db\s+(drop|reset|clean|import)|site\s+(empty|delete)|(post|user|term|comment|plugin|theme|option)\s+(delete|uninstall)|search-replace)\b/i.test(wpArgs);
       const shown = a.params && typeof a.params === "object" ? Object.entries(a.params as Record<string, unknown>).filter(([k]) => !/pass|secret|token|key/i.test(k)).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join("\n").slice(0, 2000) : "";
       return { label: `${str(a.service)}: ${act.replace(/_/g, " ")}`, needsApproval: danger, detail: shown, readOnly };
     }
@@ -861,6 +894,10 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
           }
         });
         return { ok: res.every((r) => r.ok), output: clip(res.map((r) => r.line).join("\n\n"), 5000) };
+      }
+      case "load_skill": {
+        const sk = skill(str(a.id));
+        return sk ? { ok: true, output: `# ${sk.title}\n${sk.body}` } : { ok: false, output: `unknown skill; available: ${SKILLS.map((x) => x.id).join(", ")}` };
       }
       case "save_service_info": {
         const name = str(a.name).toLowerCase();
@@ -1150,6 +1187,27 @@ function artifact(call: ToolCall, emit: (e: OperatorEvent) => void): string {
   return `Artifact "${title}" shown to the user (id ${id}). Reuse the id to revise it. Summarise it in a line or two; don't repeat its content.`;
 }
 
+/** The live checklist: same title = same card, updated in place. */
+function plan(call: ToolCall, emit: (e: OperatorEvent) => void): string {
+  let a: Args;
+  try {
+    a = JSON.parse(call.function.arguments || "{}") as Args;
+  } catch {
+    return "Arguments were not valid JSON.";
+  }
+  const title = str(a.title).slice(0, 100) || "Plan";
+  const OK = ["todo", "doing", "done", "failed", "skipped"] as const;
+  const steps = (Array.isArray(a.steps) ? a.steps : [])
+    .slice(0, 20)
+    .map((x: Args) => ({ text: str(x.text).slice(0, 160), status: (OK as readonly string[]).includes(str(x.status)) ? (str(x.status) as (typeof OK)[number]) : "todo", note: str(x.note).slice(0, 200) || undefined }))
+    .filter((x: { text: string }) => x.text);
+  if (!steps.length) return "No steps given.";
+  const id = `plan-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40)}`;
+  emit({ type: "plan", id, title, steps });
+  const doing = steps.find((x: { status: string }) => x.status === "doing");
+  return `Plan shown (${steps.filter((x: { status: string }) => x.status === "done").length}/${steps.length} done${doing ? `, now: ${doing.text}` : ""}). Keep it updated as you go.`;
+}
+
 function diagram(call: ToolCall, emit: (e: OperatorEvent) => void): string {
   let a: Args = {};
   try {
@@ -1215,7 +1273,7 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
   const [gh, memory] = await Promise.all([githubAuth().catch(() => null), listMemory().catch(() => [])]);
   const names = await secretNames().catch(() => []);
   const system = [
-    SYSTEM.replace("${NAMES}", names.length ? names.join(", ") : "none yet").replaceAll("${SITE}", siteUrl()),
+    SYSTEM.replace("${NAMES}", names.length ? names.join(", ") : "none yet").replaceAll("${SITE}", siteUrl()).replace("${SKILLS_INDEX}", skillIndex()),
     gh ? capabilitySummary(gh.login, gh.scopes) : "GitHub: not connected. For repo work, ask the user to click Connect GitHub on the Projects page.",
     `Review mode: ${review === "manual" ? "manual (the user approves every action)" : "auto (only destructive actions wait for approval)"}.`,
     memory.length ? `Memory (things the user asked you to remember):\n${memory.map((m) => `- [${m.id}] ${m.text}`).join("\n")}` : "Memory: nothing saved yet.",
@@ -1314,6 +1372,10 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
         }
         if (call.function.name === "create_artifact") {
           const r = artifact(call, emit);
+          return { role: "tool" as const, tool_call_id: call.id, content: r };
+        }
+        if (call.function.name === "update_plan") {
+          const r = plan(call, emit);
           return { role: "tool" as const, tool_call_id: call.id, content: r };
         }
         emit({ type: "tool", id: call.id, label: d.label, shell: d.shell });

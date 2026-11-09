@@ -24,6 +24,7 @@ import {
   Workflow,
   Zap,
   type LucideIcon,
+  Newspaper,
 } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState, type ReactNode } from "react";
@@ -39,6 +40,7 @@ import { shortLabel, shortLink } from "@/lib/short-link";
 import type { CustomServiceInfo, JobLog, ProjectManifest, ProjectState } from "@/lib/types";
 
 const ICON: Record<string, LucideIcon> = {
+  wordpress: Newspaper,
   postgres: Database,
   mysql: Database,
   mariadb: Database,

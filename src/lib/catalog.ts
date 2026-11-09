@@ -2,7 +2,7 @@
 // containers with data under ~/data/<name>. {name} is replaced by the service's name when it's created.
 // Browser-safe (no secrets): passwords are written as "generate" and filled in on the server.
 
-export type ServiceCategory = "Databases" | "Database tools" | "Storage" | "Monitoring" | "Automation" | "Analytics" | "AI" | "Developer tools";
+export type ServiceCategory = "Websites" | "Databases" | "Database tools" | "Storage" | "Monitoring" | "Automation" | "Analytics" | "AI" | "Developer tools";
 export type DbEngine = "postgres" | "mysql" | "mongo" | "redis";
 
 export interface ServiceTemplate {
@@ -30,6 +30,30 @@ const data = (owner?: string) => `mkdir -p "$HOME/data/{name}"${owner ? ` && sud
 const run = (args: string) => `docker rm -f {name} >/dev/null 2>&1; exec docker run --name {name} ${args}`;
 
 export const CATALOG: ServiceTemplate[] = [
+  // ---- websites ----
+  {
+    id: "wordpress",
+    name: "WordPress",
+    category: "Websites",
+    desc: "A website or blog with PHP, Apache and its own MySQL database. The Assistant installs it, logs in and sets up your theme.",
+    type: "website",
+    port: 8090,
+    link: "public",
+    install: data(),
+    build: `${pull("wordpress:php8.3-apache")} && ${pull("wordpress:cli")}`,
+    // host network so it reaches MySQL on 127.0.0.1; Apache moved from :80 to $PORT; its own database wp_<name>
+    start: run(
+      `--network host -e WORDPRESS_DB_HOST="127.0.0.1:\${DB_PORT:-3306}" -e WORDPRESS_DB_USER="$DB_USERNAME" -e WORDPRESS_DB_PASSWORD="$DB_PASSWORD" -e WORDPRESS_DB_NAME="wp_$(printf %s {name} | tr - _)" -e WORDPRESS_CONFIG_EXTRA="$WP_EXTRA" -v "$HOME/data/{name}":/var/www/html wordpress:php8.3-apache bash -c "sed -i 's/^Listen 80$/Listen $PORT/' /etc/apache2/ports.conf && sed -i 's/:80>/:$PORT>/' /etc/apache2/sites-enabled/000-default.conf && exec docker-entrypoint.sh apache2-foreground"`,
+    ),
+    env: {
+      // behind the HTTPS link: trust the proxy's scheme, install plugins without FTP, room for page builders
+      WP_EXTRA:
+        "if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strpos($_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false) { $_SERVER['HTTPS'] = 'on'; } define('FS_METHOD', 'direct'); define('WP_MEMORY_LIMIT', '256M');",
+    },
+    connects: { engines: ["mysql"] },
+    login: { userEnv: "WP_ADMIN_USER", passEnv: "WP_ADMIN_PASSWORD", note: "Sign in at the link + /wp-admin. The Assistant creates this login when it sets the site up." },
+    ram: "512 MB",
+  },
   // ---- databases ----
   {
     id: "postgres",
@@ -321,7 +345,7 @@ export const CATALOG: ServiceTemplate[] = [
   },
 ];
 
-export const CATEGORIES: ServiceCategory[] = ["Databases", "Database tools", "Storage", "Monitoring", "Automation", "Analytics", "AI", "Developer tools"];
+export const CATEGORIES: ServiceCategory[] = ["Websites", "Databases", "Database tools", "Storage", "Monitoring", "Automation", "Analytics", "AI", "Developer tools"];
 
 export function template(id: string): ServiceTemplate | undefined {
   return CATALOG.find((t) => t.id === id);
@@ -348,6 +372,7 @@ const DETECT: [string, RegExp][] = [
   ["uptime-kuma", /uptime-kuma/],
   ["grafana", /grafana\/grafana/],
   ["n8n", /n8nio\/n8n/],
+  ["wordpress", /wordpress:php|wordpress:\d|wordpress:latest/],
   ["metabase", /metabase\/metabase/],
   ["ollama", /\bollama\b/],
   ["code-server", /code-server/],
@@ -389,6 +414,11 @@ export const USAGE: Record<string, string[]> = {
   ],
   "uptime-kuma": ["First visit: create the admin user.", "Add New Monitor → paste a project's link (Projects page) to get alerts when it goes down."],
   grafana: ["Sign in as admin with the password shown here.", "Connections → Add data source → PostgreSQL/MySQL, host 127.0.0.1 and the Databases section's password."],
+  wordpress: [
+    "Ask the Assistant: \"set up {name} with the theme <link or name>\". It installs WordPress, creates the admin login (shown above) and activates the theme.",
+    "Open the site, or add /wp-admin to the link to edit pages, posts and menus.",
+    "Plugins, demo content, backups: ask the Assistant, or use Plugins in wp-admin.",
+  ],
   n8n: ["First visit: create the owner account.", "Build a workflow; webhook triggers use this service's link."],
   metabase: ["First visit: create the admin user.", "Add your database with host 127.0.0.1 and the Databases section's password, then ask questions."],
   ollama: [

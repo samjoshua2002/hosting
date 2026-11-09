@@ -279,6 +279,117 @@ printf 'MB_ADMIN_EMAIL=admin@hosting.dev\\nMB_ADMIN_PASSWORD=%s\\n' "$PW" >> "$H
   },
 };
 
+/* ---------- websites ---------- */
+
+// WP-CLI in its own container, sharing the site's files and database settings (www-data is 33 in the Apache image)
+const WP_FN = `WPDB="wp_$(printf %s "$S" | tr - _)"
+WP() { docker run --rm -i --network host --user 33:33 -e HOME=/tmp -e WORDPRESS_DB_HOST="127.0.0.1:\${DB_PORT:-3306}" -e WORDPRESS_DB_USER="$DB_USERNAME" -e WORDPRESS_DB_PASSWORD="$DB_PASSWORD" -e WORDPRESS_DB_NAME="$WPDB" -e WORDPRESS_CONFIG_EXTRA="$WP_EXTRA" -v "$HOME/data/$S":/var/www/html wordpress:cli wp "$@"; }
+SITE=$(sed 's/?.*//' "$HOME/.hosting/projects/$S.url" 2>/dev/null); [ -n "$SITE" ] || SITE="http://127.0.0.1:$PORT"`;
+
+/** Split a WP-CLI argument string like a shell would (quotes group words, --opt="two words" stays one), without running anything. */
+export function splitArgs(line: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let has = false;
+  let q: '"' | "'" | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q) {
+      if (ch === q) q = null;
+      else if (ch === "\\" && q === '"' && i + 1 < line.length) cur += line[++i];
+      else cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      q = ch;
+      has = true;
+    } else if (/\s/.test(ch)) {
+      if (has || cur) out.push(cur);
+      cur = "";
+      has = false;
+    } else if (ch === "\\" && i + 1 < line.length) {
+      cur += line[++i];
+      has = true;
+    } else {
+      cur += ch;
+      has = true;
+    }
+  }
+  if (has || cur) out.push(cur);
+  return out;
+}
+const wpSource = (v: string) => /^(https:\/\/\S+|[a-z0-9][a-z0-9-]{0,80})$/i.test(v);
+
+const WORDPRESS: Record<string, Action> = {
+  setup: {
+    about: "params {title, admin_email?, url?}: installs WordPress by command (admin login generated and saved for the Services page), sets the site URL to its link, pretty permalinks",
+    script: (c) => {
+      const title = p(c, "title") || c.name;
+      const email = p(c, "admin_email") || "admin@example.com";
+      const url = p(c, "url");
+      if (url && !/^https?:\/\/[^\s'"]+$/.test(url)) return { error: "params.url must be an http(s) link" };
+      return `${WP_FN}
+${url ? `SITE=${shq(url.replace(/\/$/, ""))}` : ""}
+for i in $(seq 1 40); do [ -f "$HOME/data/$S/wp-config.php" ] && break; sleep 3; done
+[ -f "$HOME/data/$S/wp-config.php" ] || { echo "WordPress files aren't there yet: check status/logs"; exit 1; }
+WP db create >/dev/null 2>&1 || true
+if WP core is-installed 2>/dev/null; then
+  echo "WordPress was already installed; updating its address"
+else
+  grep -q '^WP_ADMIN_PASSWORD=' "$HOME/.hosting/projects/$S.env" 2>/dev/null || printf 'WP_ADMIN_USER=admin\nWP_ADMIN_PASSWORD=%s\n' "$(openssl rand -base64 18 | tr -d '/+=' | head -c 20)" >> "$HOME/.hosting/projects/$S.env"
+  set -a; . "$HOME/.hosting/projects/$S.env"; set +a
+  WP core install --url="$SITE" --title=${shq(title)} --admin_user="$WP_ADMIN_USER" --admin_password="$WP_ADMIN_PASSWORD" --admin_email=${shq(email)} --skip-email || exit 1
+fi
+WP option update home "$SITE" >/dev/null && WP option update siteurl "$SITE" >/dev/null
+WP rewrite structure '/%postname%/' --hard >/dev/null 2>&1; WP rewrite flush --hard >/dev/null 2>&1
+echo "site: $SITE"; echo "admin: $SITE/wp-admin (user and password on the Services page)"; WP core version | sed 's/^/WordPress /'`;
+    },
+  },
+  theme: {
+    about: "params {source: theme zip URL or wordpress.org slug, activate?: true}: installs (replacing an older copy) and activates it",
+    script: (c) => (wpSource(p(c, "source")) ? `${WP_FN}
+WP theme install ${shq(p(c, "source"))} --force ${c.params.activate === false ? "" : "--activate"} && WP theme list --status=active --fields=name,version` : { error: "params.source: an https zip link or a wordpress.org theme slug" }),
+  },
+  plugin: {
+    about: "params {source: plugin zip URL or wordpress.org slug, activate?: true}",
+    script: (c) => (wpSource(p(c, "source")) ? `${WP_FN}
+WP plugin install ${shq(p(c, "source"))} --force ${c.params.activate === false ? "" : "--activate"} && WP plugin list --status=active --fields=name,version` : { error: "params.source: an https zip link or a wordpress.org plugin slug" }),
+  },
+  import: {
+    about: "params {url: WordPress export .xml (demo content)}: imports posts, pages, menus and media",
+    script: (c) =>
+      /^https:\/\/\S+$/.test(p(c, "url"))
+        ? `${WP_FN}
+WP plugin install wordpress-importer --activate >/dev/null && curl -fsSL ${shq(p(c, "url"))} -o "$HOME/data/$S/.import.xml" && sudo chown 33:33 "$HOME/data/$S/.import.xml" 2>/dev/null; WP import /var/www/html/.import.xml --authors=create; rm -f "$HOME/data/$S/.import.xml"`
+        : { error: "params.url: https link to a WordPress export (.xml)" },
+  },
+  wp: {
+    about: "params {args: any WP-CLI command without the leading wp, e.g. \"post list\", \"option get blogname\", \"menu create Main\"}",
+    script: (c) => {
+      const args = splitArgs(p(c, "args").replace(/^\s*wp\s+/, ""));
+      return args.length ? `${WP_FN}
+WP ${args.map(shq).join(" ")}` : { error: "params.args: a WP-CLI command" };
+    },
+  },
+  check: {
+    about: "health check: site and admin respond through the link, WordPress version, site URL, recent PHP errors",
+    readOnly: true,
+    script: () => `${WP_FN}
+LINK=$(cat "$HOME/.hosting/projects/$S.url" 2>/dev/null); [ -n "$LINK" ] || LINK="http://127.0.0.1:$PORT/"
+echo "home page: $(curl -s -o /dev/null -m 20 -L -w '%{http_code} in %{time_total}s' "$LINK")"
+echo "on the machine: $(curl -s -o /dev/null -m 10 -w '%{http_code}' -H "Host: $(printf %s "$SITE" | sed 's#^https*://##; s#/.*##')" "http://127.0.0.1:$PORT/")"
+echo "installed: $(WP core is-installed 2>/dev/null && echo yes || echo no) · $(WP core version 2>/dev/null | sed 's/^/WordPress /')"
+echo "site url: $(WP option get home 2>/dev/null)"
+echo "active theme: $(WP theme list --status=active --field=name 2>/dev/null)"
+echo "plugins: $(WP plugin list --status=active --field=name 2>/dev/null | tr '\n' ' ')"
+echo "recent errors:"; docker logs --tail 200 "$C" 2>&1 | grep -iE 'php (fatal|warning|parse)|error' | tail -n 8 || true`,
+  },
+  backup: {
+    about: "database export + uploads/themes/plugins to ~/data/backups",
+    script: () => `${WP_FN}
+mkdir -p ${BACKUPS}; WP db export - | gzip > ${BACKUPS}/"$S"-db-${stamp}.sql.gz && sudo tar czf ${BACKUPS}/"$S"-files-${stamp}.tgz -C "$HOME/data/$S" wp-content && ls -lh ${BACKUPS}/"$S"-* | tail -n 2`,
+  },
+  backups: POSTGRES.backups,
+};
+
 /* ---------- AI and developer tools ---------- */
 
 const OLLAMA: Record<string, Action> = {
@@ -310,6 +421,7 @@ const PORTAINER: Record<string, Action> = {
 
 /** Actions per catalog service id (on top of COMMON). n8n has its own tool. Admin UIs are for the user: use db_query for data. */
 export const DRIVERS: Record<string, Record<string, Action>> = {
+  wordpress: WORDPRESS,
   postgres: POSTGRES,
   mysql: MYSQL("mysql", "mysqldump"),
   mariadb: MYSQL("mariadb", "mariadb-dump"),

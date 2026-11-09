@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronRight, FileText, Loader2, ShieldAlert, X } from "lucide-react";
+import { Check, ChevronRight, FileText, ListChecks, Loader2, ShieldAlert, X } from "lucide-react";
 import { useState } from "react";
 import type { Item } from "@/lib/assistant-items";
 import { answer, decide } from "./assistant-store";
@@ -165,6 +165,7 @@ function Bubble({
     ) : null;
   }
   if (item.kind === "step" && item.shell) return <TerminalBlock shell={item.shell} output={item.output} running={item.running} ok={item.ok} />;
+  if (item.kind === "plan") return <PlanCard plan={item} />;
   if (item.kind === "diagram") return <FlowDiagram title={item.title} nodes={item.nodes} edges={item.edges} />;
   if (item.kind === "artifact") return <ArtifactCard a={item} onOpen={() => onOpenArtifact?.(item.id)} />;
   if (item.kind === "question")
@@ -224,4 +225,47 @@ function Bubble({
       </div>
     );
   return null;
+}
+
+
+/** The Assistant's live plan: a checklist that ticks itself off while it works. */
+export function PlanCard({ plan, compact }: { plan: Extract<Item, { kind: "plan" }>; compact?: boolean }) {
+  const done = plan.steps.filter((s) => s.status === "done" || s.status === "skipped").length;
+  const pct = plan.steps.length ? Math.round((done / plan.steps.length) * 100) : 0;
+  const failed = plan.steps.some((s) => s.status === "failed");
+  return (
+    <div className={cx("rounded-xl border border-white/[0.07] bg-white/[0.02]", compact ? "p-3" : "p-4")}>
+      <div className="flex items-center gap-2">
+        <ListChecks className="size-4 text-[var(--accent)]" />
+        <p className="flex-1 truncate text-sm font-medium text-white">{plan.title}</p>
+        <span className={cx("text-xs tabular-nums", failed ? "text-[var(--critical-text)]" : "text-muted")}>
+          {done}/{plan.steps.length}
+        </span>
+      </div>
+      <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/[0.06]">
+        <div className={cx("h-full rounded-full transition-[width] duration-500", failed ? "bg-[var(--critical)]" : "bg-[var(--accent)]")} style={{ width: `${pct}%` }} />
+      </div>
+      <ol className="mt-3 space-y-1.5">
+        {plan.steps.map((s, i) => (
+          <li key={i} className="flex items-start gap-2 text-[13px]">
+            <span className="mt-0.5 grid size-4 shrink-0 place-items-center">
+              {s.status === "done" ? (
+                <Check className="size-3.5 text-[var(--good)]" />
+              ) : s.status === "doing" ? (
+                <Loader2 className="size-3.5 animate-spin text-[var(--accent)]" />
+              ) : s.status === "failed" ? (
+                <X className="size-3.5 text-[var(--critical)]" />
+              ) : (
+                <span className={cx("size-1.5 rounded-full", s.status === "skipped" ? "bg-zinc-700" : "bg-zinc-500")} />
+              )}
+            </span>
+            <span className={cx("min-w-0", s.status === "done" || s.status === "skipped" ? "text-zinc-500" : s.status === "doing" ? "text-white" : s.status === "failed" ? "text-[var(--critical-text)]" : "text-zinc-300", s.status === "skipped" && "line-through")}>
+              {s.text}
+              {s.note && <span className="block text-xs text-zinc-500">{s.note}</span>}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
 }

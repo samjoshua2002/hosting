@@ -35,7 +35,15 @@ export type Item =
   | { kind: "approval"; id: string; label: string; detail: string; diff?: boolean; decision?: boolean }
   | { kind: "question"; id: string; question: string; options: string[]; answer?: string }
   | { kind: "diagram"; id: string; title: string; nodes: DiagramNode[]; edges: DiagramEdge[] }
-  | { kind: "artifact"; id: string; title: string; type: ArtifactType; language?: string; content: string; version: number };
+  | { kind: "artifact"; id: string; title: string; type: ArtifactType; language?: string; content: string; version: number }
+  | { kind: "plan"; id: string; title: string; steps: PlanStep[] };
+
+/** One line of the Assistant's live plan (a checklist that updates in place while it works). */
+export interface PlanStep {
+  text: string;
+  status: "todo" | "doing" | "done" | "failed" | "skipped";
+  note?: string;
+}
 
 /** Documents the Assistant makes (reports, scripts, pages, data), shown in a side panel like Claude's. */
 export type ArtifactType = "markdown" | "html" | "code" | "csv" | "json" | "svg" | "text";
@@ -49,6 +57,7 @@ export type OperatorEvent =
   | { type: "question"; id: string; question: string; options: string[] }
   | { type: "diagram"; id: string; title: string; nodes: DiagramNode[]; edges: DiagramEdge[] }
   | { type: "artifact"; id: string; title: string; artType: ArtifactType; language?: string; content: string }
+  | { type: "plan"; id: string; title: string; steps: PlanStep[] }
   // transcript is the model-side history (ChatMessage[]), opaque to the UI
   | { type: "done"; transcript: unknown[]; waiting: boolean; paused: boolean };
 
@@ -66,6 +75,12 @@ export function applyEvent(items: Item[], e: OperatorEvent): Item[] {
       return [...items, { kind: "question", id: e.id, question: e.question, options: e.options }];
     case "diagram":
       return [...items, { kind: "diagram", id: e.id, title: e.title, nodes: e.nodes, edges: e.edges }];
+    case "plan": {
+      // the same plan again updates the card in place, so progress reads like a checklist
+      const at = items.findIndex((i) => i.kind === "plan" && i.id === e.id);
+      const plan: Item = { kind: "plan", id: e.id, title: e.title, steps: e.steps };
+      return at >= 0 ? items.map((i, n) => (n === at ? plan : i)) : [...items, plan];
+    }
     case "artifact": {
       // same id again = a new version of that artifact
       const prev = items.filter((i): i is Extract<Item, { kind: "artifact" }> => i.kind === "artifact" && i.id === e.id);

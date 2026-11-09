@@ -2,11 +2,11 @@
 
 import { LOCAL_URL, useNiceLink } from "@/components/nice-links";
 
-import { ArrowUpRight, Brain, FileText, Layers, Link2, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
+import { ArrowUpRight, Brain, FileText, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { addFiles, currentDoc, editSession, hydrate, loadList, newSession, openSession, removeSession, send, setModel, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
 import { ArtifactView } from "@/components/artifact-view";
-import { ChatItems } from "@/components/chat-items";
+import { ChatItems, PlanCard } from "@/components/chat-items";
 import { CopyButton } from "@/components/chat-blocks";
 import { useCluster } from "@/components/cluster";
 import { Composer, contextFor, entitiesFrom, type ModelChoice } from "@/components/composer";
@@ -166,6 +166,7 @@ export default function AssistantPage() {
   };
 
   // ---- right panel ----
+  const plan = [...items].reverse().find((i): i is Extract<Item, { kind: "plan" }> => i.kind === "plan");
   const nice = useNiceLink();
   const linkSet = new Set<string>();
   for (const i of items) {
@@ -310,6 +311,12 @@ export default function AssistantPage() {
             {stepCount} step{stepCount === 1 ? "" : "s"} · {st.review === "manual" ? "review each step" : "auto"} · saved on box5
           </p>
         </div>
+
+        {plan && (
+          <Section title="Progress" icon={<ListChecks className="size-3.5" />}>
+            <PlanCard plan={plan} compact />
+          </Section>
+        )}
 
         {artifacts.length > 0 && (
           <Section title="Artifacts" icon={<Layers className="size-3.5" />}>
