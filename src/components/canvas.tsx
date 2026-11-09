@@ -14,6 +14,7 @@ import {
   getSmoothStepPath,
   useEdgesState,
   useNodesState,
+  useNodesInitialized,
   useReactFlow,
   type Edge,
   type EdgeProps,
@@ -306,11 +307,14 @@ function CanvasInner() {
     setEdges(graph.edges);
   }, [graph, setNodes, setEdges]);
 
-  // Re-fit only when the set of nodes changes (a VM or project added), not on every status tick.
+  // Re-fit when the set of nodes changes (a machine or project added) and once React Flow has measured them,
+  // not on every status tick. The top padding clears the tabs and the hint above the canvas.
+  const measured = useNodesInitialized();
   useEffect(() => {
-    const t = setTimeout(() => fitView({ padding: { top: "130px", bottom: "110px", left: "40px", right: "40px" }, duration: 400 }), 80);
+    if (!measured) return;
+    const t = setTimeout(() => fitView({ padding: { top: "180px", bottom: "120px", left: "48px", right: "48px" }, duration: 400 }), 120);
     return () => clearTimeout(t);
-  }, [shape, fitView]);
+  }, [shape, measured, fitView]);
 
   const onlineNames = names.filter((n) => status[n]?.ok);
   const targets = selected.length ? selected : onlineNames;

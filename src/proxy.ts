@@ -7,6 +7,16 @@ const PUBLIC = new Set(["/login", "/api/auth/login", "/api/auth/passkey/options"
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  // a backend-only deployment (Render) sends people to the real site: passkeys only work on that domain
+  const front = process.env.PAGES_AT;
+  if (front && !pathname.startsWith("/api/") && !pathname.startsWith("/go/")) {
+    try {
+      const to = new URL(front);
+      if (to.host !== req.headers.get("host")) return NextResponse.redirect(new URL(pathname + req.nextUrl.search, to), 308);
+    } catch {
+      /* ignore a malformed PAGES_AT */
+    }
+  }
   if (PUBLIC.has(pathname) || pathname.startsWith("/api/cron/") || pathname.startsWith("/go/")) return NextResponse.next();
 
   if (await verifySession(req.cookies)) return NextResponse.next();

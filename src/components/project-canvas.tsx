@@ -12,6 +12,7 @@ import {
   ReactFlowProvider,
   getSmoothStepPath,
   useEdgesState,
+  useNodesInitialized,
   useNodesState,
   useReactFlow,
   type Connection,
@@ -349,12 +350,14 @@ function Inner() {
     });
     setEdges(graph.edges);
   }, [graph, setNodes, setEdges]);
+  const measured = useNodesInitialized();
   useEffect(() => {
-    const t = setTimeout(() => fitView({ padding: { top: "90px", bottom: "140px", left: "40px", right: sel ? "420px" : "40px" }, duration: 400 }), 80);
+    if (!measured) return;
+    const t = setTimeout(() => fitView({ padding: { top: "140px", bottom: "140px", left: "48px", right: sel ? "420px" : "48px" }, duration: 400 }), 120);
     return () => clearTimeout(t);
-    // refit when the shape changes, not on every status tick
+    // refit when the shape changes (and once measured), not on every status tick
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph.shape, fitView]);
+  }, [graph.shape, measured, fitView]);
 
   const connect = async () => {
     if (!pending) return;
