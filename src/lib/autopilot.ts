@@ -4,6 +4,7 @@
 import { cronAction, probe, projectAction } from "./agent";
 import { aiConfigured } from "./ai";
 import { getVms } from "./config";
+import { failover, snapshotFleet } from "./failover";
 import { sendAlert } from "./mail";
 import { BusyError, prepareRun, runSession } from "./session-run";
 import { mapLimit, run, withVm } from "./ssh";
@@ -92,6 +93,12 @@ export async function runAutopilot(opts: { force?: boolean } = {}): Promise<Auto
       if (j.state === "done" && j.exitCode !== 0 && j.meta.startedAt * 1000 > since) problems.push(`the last deploy of ${name} on ${s.name} failed (job ${j.id})`);
   }
 
+  // keep a copy of every app's settings, and move apps off machines that stay down
+  await snapshotFleet(fleet).catch((e) => problems.push(`couldn't save the fleet's settings copy: ${(e as Error).message.slice(0, 120)}`));
+  const fo = await failover(fleet).catch((e) => ({ actions: [] as string[], problems: [`failover check failed: ${(e as Error).message.slice(0, 120)}`] }));
+  actions.push(...fo.actions);
+  problems.push(...fo.problems);
+
   // did the restarts hold?
   if (actions.some((x) => x.startsWith("restarted ") && !x.includes("tunnel"))) {
     await new Promise((r) => setTimeout(r, 8000));
@@ -101,7 +108,7 @@ export async function runAutopilot(opts: { force?: boolean } = {}): Promise<Auto
 
   // anything left goes to the Assistant
   let sessionId: string | undefined;
-  const real = problems.filter((p) => !/unreachable/.test(p));
+  const real = problems.filter((p) => !/unreachable|stays there:/.test(p));
   if (real.length && aiConfigured()) {
     sessionId = `autopilot-${today()}`;
     const message = [

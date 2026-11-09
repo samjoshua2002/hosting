@@ -37,6 +37,7 @@ import { addMachine, removeMachine, renameMachine } from "./machines";
 import { forget, listMemory, remember } from "./memory";
 import { CATALOG, engineFromStart, serviceIdOf } from "./catalog";
 import { skill, skillIndex, SKILLS } from "./skills";
+import { moveProject } from "./failover";
 import { actionsFor, API_AUTH, COMMON, DRIVERS, driverSummary, type DriverCtx } from "./service-drivers";
 import { createService } from "./services";
 import { maskSecrets, revealIn, secretNames, vaultText } from "./vault";
@@ -189,6 +190,7 @@ Moving an app off Render, Vercel, Heroku, Netlify or Railway (the user wants eve
 When things go wrong (decide like a senior SRE: pick the safest option that gets the user what they want, do it, then say in one line what you chose and why; only ask_user when the choice really is theirs)
 - Low disk (under ~1.5 GB free, or "No space left on device"): measure first (df -h ~ /; du -xh --max-depth=2 ~ | sort -h | tail; docker system df). Free the safe things yourself: docker image/builder prune (unused only), ~/.cache/pip, ~/.npm/_cacache, ~/.cache/ms-playwright and other caches, sudo journalctl --vacuum-size=100M, sudo apt-get clean, old *.log and finished job logs in ~/.hosting/jobs. Never delete ~/data, project code or anything you can't recreate without approval. If still short: move the next deploy to a machine with room, or propose moving a big project elsewhere (ask_user), or adding a machine.
 - Every machine full: clean the one with the most reclaimable space; if that's not enough, tell the user exactly what is using the space (artifact table) and offer choices (remove X, move Y, add a machine).
+- Failover: Autopilot keeps a sealed copy of every project's settings on the storage machine and, when a machine stays unreachable for 10+ minutes, starts its stateless apps on a healthy machine automatically (the Autopilot summary says so). To do it right away, use move_project (works even though the old machine can't be reached). Databases and apps with data on that disk come back with their machine; say so plainly and suggest replicas/backups for next time.
 - Machine resting / cooling down / unreachable: it's InstaBox's free-plan rest, not a fault. Don't retry in a loop. If the work can run elsewhere, do it there; if a project only runs on that machine, say it is down until the machine is back and offer a second copy on another machine (replicas) so it survives rests. Things that must stay up (databases, the storage machine box5) belong on machines that are used often.
 - Low memory / OOM (exit 137, "Killed", build dies): use a smaller build (npm ci --omit=dev, NODE_OPTIONS=--max-old-space-size=1536, mvn -T1, pip --no-cache-dir, fewer gunicorn workers), stop idle projects on that machine only with approval, or place it on the machine with the most free RAM.
 - Port already in use: pick a free port (ss -ltn), never kill someone else's process without approval.
@@ -363,6 +365,12 @@ const TOOLS: ToolDef[] = [
     "Call any GitHub REST API endpoint the connected token allows, e.g. GET /repos/o/r/issues, POST /repos/o/r/issues, GET /repos/o/r/actions/runs, POST /gists. Returns status and JSON (trimmed).",
     { method: { type: "string", enum: ["GET", "POST", "PATCH", "PUT", "DELETE"] }, path: { type: "string" }, body: { type: "object" } },
     ["method", "path"],
+  ),
+  fn(
+    "move_project",
+    "Start a project on another machine from the settings copy Autopilot keeps on the storage machine (works even when its machine is down or gone): same code (GitHub or Docker image), same env, database tunnels rebuilt, /go link follows. Databases and apps that keep data on the old machine's disk can't move. Leave to empty to pick the best healthy machine.",
+    { name: { type: "string" }, to: { type: "string", description: "only if the user named a machine" }, from: { type: "string", description: "which machine's copy, if it ran on several" } },
+    ["name"],
   ),
   fn(
     "update_plan",
@@ -607,6 +615,8 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Copied attachment ${str(a.id)} to ~/${str(a.path)} on ${on(a.vms)}`, needsApproval: false, detail: "" };
     case "add_service":
       return { label: `Added ${str(a.name) || str(a.template)} from the catalog`, needsApproval: false, detail: "" };
+    case "move_project":
+      return { label: `Started ${str(a.name)} on ${str(a.to) || "a healthy machine"}${a.from ? ` (from ${str(a.from)})` : ""}`, needsApproval: false, detail: "" };
     case "update_plan":
       return { label: `Plan: ${str(a.title)}`, needsApproval: false, detail: "" };
     case "load_skill":
@@ -894,6 +904,15 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
           }
         });
         return { ok: res.every((r) => r.ok), output: clip(res.map((r) => r.line).join("\n\n"), 5000) };
+      }
+      case "move_project": {
+        const fleet = await mapLimit(getVms(), 12, (vm) => probe(vm, 9_999_999_999));
+        try {
+          const mv = await moveProject(str(a.name).toLowerCase(), { fleet, to: str(a.to) || undefined, from: str(a.from) || undefined });
+          return { ok: true, output: `Starting ${mv.project} on ${mv.to} (settings from ${mv.from}), deploy job ${mv.jobId}. Follow it with job_log on ${mv.to}, then check the link; ${siteUrl()}/go/${mv.project} follows it automatically.` };
+        } catch (e) {
+          return { ok: false, output: (e as Error).message };
+        }
       }
       case "load_skill": {
         const sk = skill(str(a.id));
