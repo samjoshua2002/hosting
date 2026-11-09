@@ -50,6 +50,11 @@ interface ClusterCtx {
 
 const Ctx = createContext<ClusterCtx | null>(null);
 
+/** Like useCluster, but null outside the dashboard (for small helpers that also render elsewhere). */
+export function useClusterMaybe(): ClusterCtx | null {
+  return useContext(Ctx);
+}
+
 export function useCluster(): ClusterCtx {
   const c = useContext(Ctx);
   if (!c) throw new Error("useCluster outside ClusterProvider");

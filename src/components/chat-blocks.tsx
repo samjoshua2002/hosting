@@ -1,5 +1,7 @@
 "use client";
 
+import { useNiceLink } from "./nice-links";
+
 import { Check, ChevronDown, Copy, ExternalLink, Loader2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import type { Shell } from "@/lib/assistant-items";
@@ -26,7 +28,11 @@ export function CopyButton({ text, label, className }: { text: string; label?: s
 }
 
 /** A link as a chip: open it, or copy it. */
-export function LinkChip({ href, children }: { href: string; children?: ReactNode }) {
+export function LinkChip({ href: raw, children }: { href: string; children?: ReactNode }) {
+  const nice = useNiceLink();
+  const href = nice(raw);
+  // the model's own label is usually the raw address: show the short link instead when we swapped it
+  if (href !== raw && typeof children === "string" && /instabox\.tech/.test(children)) children = undefined;
   let shown = href;
   try {
     const u = new URL(href);

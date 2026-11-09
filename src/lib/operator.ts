@@ -46,6 +46,12 @@ export type { OperatorEvent } from "./assistant-items";
 const MAX_OUTPUT = 6000;
 const clip = (s: string, n = MAX_OUTPUT) => (s.length > n ? `${s.slice(0, n)}\n…(${s.length - n} more characters cut)` : s);
 
+/** This dashboard's public address, for short links in replies. */
+function siteUrl(): string {
+  const base = process.env.APP_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "https://hosting-teal-nine.vercel.app");
+  return base.replace(/\/$/, "");
+}
+
 const SYSTEM = `You are the operator of the user's hosting fleet. You do the work yourself with your tools, end to end. You do not just suggest.
 
 The fleet
@@ -117,6 +123,7 @@ Working on code (GitHub)
 
 Links and output
 - Always give full https URLs (the UI adds open and copy buttons). Put commands the user may want to run themselves in \`\`\`bash blocks.
+- Every project with a link also has a short, readable one: \${SITE}/go/<project-name> (e.g. \${SITE}/go/sidis). It always forwards to the running copy, survives redeploys and machine moves, and private ones ask for sign-in. Whenever you give the user a project's link, give this short link, not the raw *.instabox.tech address (only show that if they ask for it). "A new/better/meaningful/simple link" means this short link: just give it; don't redeploy or republish to get a new address. Never offer 0.0.0.0 or 127.0.0.1 addresses as links.
 
 - Always follow up: after installing or deploying anything, tell the user exactly how to use it: the link, how to sign in (where the password is: Services page), and one concrete next step or example (for an API: a curl example; for Ollama: it has no web page, use the Try it box on the Services page or the API). Never stop at "it's running".
 
@@ -944,7 +951,7 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
   const [gh, memory] = await Promise.all([githubAuth().catch(() => null), listMemory().catch(() => [])]);
   const names = await secretNames().catch(() => []);
   const system = [
-    SYSTEM.replace("${NAMES}", names.length ? names.join(", ") : "none yet"),
+    SYSTEM.replace("${NAMES}", names.length ? names.join(", ") : "none yet").replaceAll("${SITE}", siteUrl()),
     gh ? capabilitySummary(gh.login, gh.scopes) : "GitHub: not connected. For repo work, ask the user to click Connect GitHub on the Projects page.",
     `Review mode: ${review === "manual" ? "manual (the user approves every action)" : "auto (only destructive actions wait for approval)"}.`,
     memory.length ? `Memory (things the user asked you to remember):\n${memory.map((m) => `- [${m.id}] ${m.text}`).join("\n")}` : "Memory: nothing saved yet.",

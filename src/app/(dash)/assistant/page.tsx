@@ -1,5 +1,7 @@
 "use client";
 
+import { LOCAL_URL, useNiceLink } from "@/components/nice-links";
+
 import { ArrowUpRight, Brain, FileText, Layers, Link2, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { addFiles, currentDoc, editSession, hydrate, loadList, newSession, openSession, removeSession, send, setModel, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
@@ -164,12 +166,13 @@ export default function AssistantPage() {
   };
 
   // ---- right panel ----
+  const nice = useNiceLink();
   const linkSet = new Set<string>();
   for (const i of items) {
     const t = i.kind === "text" ? i.text : i.kind === "step" ? (i.output ?? "") : "";
     for (const m of t.matchAll(URL_RE)) linkSet.add(m[0].replace(/[.,;:!?]+$/, ""));
   }
-  const links = [...linkSet].filter((u) => !/\.git$/.test(u) && !/api\.github\.com/.test(u)).slice(-12);
+  const links = [...new Set([...linkSet].filter((u) => !/\.git$/.test(u) && !/api\.github\.com/.test(u) && !LOCAL_URL.test(u)).map(nice))].slice(-12);
   const lastText = [...items].reverse().find((i): i is Extract<Item, { kind: "text" }> => i.kind === "text");
   const suggestions = !busy && lastText ? splitSuggestions(lastText.text).suggestions : [];
   const machineSet = new Set<string>();
