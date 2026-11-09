@@ -3,9 +3,10 @@
 // Pieces of the Assistant's side panel that load their own data: standing instructions, connectors, live
 // monitoring of the fleet and the list of tools.
 import { Bot, Check, CircleAlert, Cloud, Cpu, Database, Image as ImageIcon, Loader2, Mail, Plug, Search, Server, Sparkles, Wrench, X, type LucideIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "@/lib/client";
 import { timeAgo } from "@/lib/format";
+import { isDestructive } from "@/lib/safety";
 import { useCluster } from "./cluster";
 import { GithubMark } from "./github";
 import { cx } from "./ui";
@@ -565,6 +566,124 @@ export function AutopilotSettings() {
       >
         {checking && <Loader2 className="size-3 animate-spin" />} {checking ? "Checking…" : "Check now"}
       </button>
+    </div>
+  );
+}
+
+/* ---------- terminal ---------- */
+
+interface Line {
+  id: number;
+  vm: string;
+  cmd: string;
+  out?: string;
+  code?: number | null;
+  running: boolean;
+}
+let lineId = 1;
+
+/** A small shell next to the conversation: run a command on one machine (or all), see the output. */
+export function TerminalPanel() {
+  const { vms, status, exec } = useCluster();
+  const online = vms.filter((v) => status[v.name]?.ok).map((v) => v.name);
+  const [vm, setVm] = useState<string>("");
+  const target = vm || online[0] || vms[0]?.name || "";
+  const [cmd, setCmd] = useState("");
+  const [lines, setLines] = useState<Line[]>([]);
+  const [hist, setHist] = useState<string[]>([]);
+  const [hi, setHi] = useState(-1);
+  const end = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "end" });
+  }, [lines]);
+
+  const run = async () => {
+    const c = cmd.trim();
+    if (!c || !target) return;
+    if (/^(clear|cls)$/.test(c)) {
+      setLines([]);
+      setCmd("");
+      return;
+    }
+    if (isDestructive(c) && !confirm(`This command can destroy data:\n\n${c}\n\nRun it on ${target === "*" ? "every online machine" : target}?`)) return;
+    setHist((h) => [c, ...h.filter((x) => x !== c)].slice(0, 50));
+    setHi(-1);
+    setCmd("");
+    const targets = target === "*" ? online : [target];
+    const ids = targets.map((t) => ({ t, id: lineId++ }));
+    setLines((l) => [...l, ...ids.map(({ t, id }) => ({ id, vm: t, cmd: c, running: true }))].slice(-80));
+    await exec(targets, c, (r) => {
+      const id = ids.find((x) => x.t === r.vm)?.id;
+      setLines((l) => l.map((x) => (x.id === id ? { ...x, running: false, code: r.code, out: `${r.stdout}${r.stderr ? `${r.stdout ? "\n" : ""}${r.stderr}` : ""}${r.error ? r.error : ""}`.trimEnd() } : x)));
+    });
+  };
+
+  return (
+    <div className="-m-4 flex h-[calc(100%+2rem)] flex-col bg-[#0a0a0b]">
+      <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2">
+        <select value={target} onChange={(e) => setVm(e.target.value)} className="h-7 rounded-md border border-white/10 bg-[#141416] px-2 font-mono text-[12px] text-zinc-200">
+          {vms.map((v) => (
+            <option key={v.name} value={v.name} disabled={!status[v.name]?.ok}>
+              {v.name}
+              {status[v.name]?.ok ? "" : " (resting)"}
+            </option>
+          ))}
+          {online.length > 1 && <option value="*">all online ({online.length})</option>}
+        </select>
+        <span className="flex-1" />
+        <button onClick={() => setLines([])} className="text-[11px] text-zinc-500 hover:text-white">
+          Clear
+        </button>
+      </div>
+      <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-[12px] leading-relaxed" onClick={() => document.getElementById("term-input")?.focus()}>
+        {lines.length === 0 && <p className="text-zinc-600">Connected to {online.length} of {vms.length} machines. Type a command and press Enter.</p>}
+        {lines.map((l) => (
+          <div key={l.id} className="mb-2">
+            <p className="text-zinc-300">
+              <span className="text-[var(--accent)]">user@{l.vm}</span>
+              <span className="text-zinc-600">:~$ </span>
+              {l.cmd}
+            </p>
+            {l.running ? (
+              <p className="flex items-center gap-1.5 text-zinc-600">
+                <Loader2 className="size-3 animate-spin" /> running…
+              </p>
+            ) : (
+              <pre className={cx("break-all whitespace-pre-wrap", l.code ? "text-[var(--critical-text)]" : "text-zinc-400")}>{l.out || (l.code ? `exit ${l.code}` : "")}</pre>
+            )}
+          </div>
+        ))}
+        <div ref={end} />
+      </div>
+      <div className="flex items-center gap-2 border-t border-white/[0.06] px-3 py-2 font-mono text-[12px]">
+        <span className="shrink-0 text-[var(--accent)]">{target === "*" ? "all" : target}</span>
+        <span className="text-zinc-600">$</span>
+        <input
+          id="term-input"
+          value={cmd}
+          onChange={(e) => setCmd(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void run();
+            } else if (e.key === "ArrowUp" && hist.length) {
+              e.preventDefault();
+              const n = Math.min(hi + 1, hist.length - 1);
+              setHi(n);
+              setCmd(hist[n]);
+            } else if (e.key === "ArrowDown") {
+              e.preventDefault();
+              const n = hi - 1;
+              setHi(Math.max(n, -1));
+              setCmd(n >= 0 ? hist[n] : "");
+            }
+          }}
+          spellCheck={false}
+          autoComplete="off"
+          className="min-w-0 flex-1 bg-transparent text-zinc-100 placeholder:text-zinc-700"
+          placeholder="uptime"
+        />
+      </div>
     </div>
   );
 }

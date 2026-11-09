@@ -1,14 +1,16 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { LOCAL_URL, useNiceLink } from "@/components/nice-links";
 
-import { Activity, ArrowDown, ArrowUpRight, Cpu, FolderOpen, Globe, Hash, MessagesSquare, MoreHorizontal, Settings, Camera, FileText, GitBranch, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
+import { Activity, SquareTerminal, ArrowDown, ArrowUpRight, Cpu, FolderOpen, Globe, Hash, MessagesSquare, MoreHorizontal, Settings, Camera, FileText, GitBranch, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { addFiles, currentDoc, editSession, hydrate, newSession, openSession, removeSession, send, setModel, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
 import { ArtifactView } from "@/components/artifact-view";
-import { Monitor } from "@/components/assistant-panel";
+import { Monitor, TerminalPanel } from "@/components/assistant-panel";
+import { ArtifactsGallery, SearchDialog, type ArtifactEntry } from "@/components/assistant-library";
 import { AttachmentView } from "@/components/attachment-view";
 import { ChatItems, PlanCard } from "@/components/chat-items";
 import { CopyButton } from "@/components/chat-blocks";
@@ -53,9 +55,10 @@ function splitSuggestions(text: string): { body: string; suggestions: string[] }
 
 
 /** A file in the chat box: uploading (pending, pct), ready, or failed; images carry a local preview. */
-type PanelId = "outputs" | "links" | "files" | "monitor";
+type PanelId = "outputs" | "terminal" | "links" | "files" | "monitor";
 const PANELS: [PanelId, string, typeof Layers][] = [
   ["outputs", "Outputs", ListChecks],
+  ["terminal", "Terminal", SquareTerminal],
   ["links", "Links", Globe],
   ["files", "Files", FolderOpen],
   ["monitor", "Machines & jobs", Activity],
@@ -70,7 +73,6 @@ export default function AssistantPage() {
   const sid = st.current;
   const { items, files, title } = doc;
   const busy = doc.busy || doc.remote;
-  const [query, setQuery] = useState("");
   const [staged, setStaged] = useState<Staged[]>([]);
   const [uploading, setUploading] = useState(false);
   const [configured, setConfigured] = useState(true);
@@ -182,7 +184,8 @@ export default function AssistantPage() {
     ]);
     for (const f of staged) if (f.preview) URL.revokeObjectURL(f.preview);
     setStaged([]);
-    void send(sid, { message: withFiles + contextFor(text, vms, status), display: text, staged: ready });
+    const pin = target && vms.some((v) => v.name === target) ? `\n\n[The user chose to work on @${target} for this; use that machine unless it's unreachable.]${contextFor(`@${target}`, vms, status)}` : "";
+    void send(sid, { message: withFiles + contextFor(text, vms, status) + pin, display: text, staged: ready });
   };
 
   // Each file shows at once (image preview or file chip), dimmed with its own progress until it's stored;
@@ -241,7 +244,52 @@ export default function AssistantPage() {
 
   // ---- right panel ----
   const [panel, setPanel] = useStored<PanelId | null>("hosting.assistant.panel", null);
+  const router = useRouter();
   const [infoOpen, setInfoOpen] = useState(false);
+  const [view, setView] = useState<"chat" | "artifacts">("chat");
+  const [searchOpen, setSearchOpen] = useState(false);
+  // an artifact picked from the gallery/search opens once its conversation has loaded
+  const [pendingArt, setPendingArt] = useState<string | null>(null);
+  if (pendingArt && items.some((i) => i.kind === "artifact" && i.id === pendingArt)) {
+    setPendingArt(null);
+    setArt(pendingArt);
+  }
+  const openArtifact = (a: ArtifactEntry) => {
+    setView("chat");
+    if (a.session === sid) setArt(a.id);
+    else {
+      setPendingArt(a.id);
+      void openSession(a.session);
+    }
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "/") {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // the machine chip: "" = the Assistant picks
+  const [target, setTarget] = useStored<string>("hosting.assistant.target", "");
+  const exportChat = () => {
+    const lines = [`# ${title}`, ""];
+    for (const i of items) {
+      if (i.kind === "user") lines.push(`**You:** ${i.text}${i.files?.length ? `\n\n_Attached: ${i.files.map((f) => f.name).join(", ")}_` : ""}`, "");
+      else if (i.kind === "text") lines.push(i.text, "");
+      else if (i.kind === "step") lines.push(`- ${i.ok === false ? "✗" : "✓"} ${i.label}`);
+      else if (i.kind === "artifact") lines.push(`\n### Artifact: ${i.title} (v${i.version})\n\n\`\`\`${i.type === "code" ? (i.language ?? "") : i.type}\n${i.content}\n\`\`\`\n`);
+      else if (i.kind === "plan") lines.push(`\n**Plan: ${i.title}**\n${i.steps.map((x) => `- [${x.status === "done" ? "x" : " "}] ${x.text}`).join("\n")}\n`);
+    }
+    const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/markdown" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${title.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "conversation"}.md`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  };
   const shots = items
     .filter((i): i is Extract<Item, { kind: "image" }> => i.kind === "image")
     .map((i) => ({ ...i, fileId: /[?&]id=([a-z0-9]+)/.exec(i.src)?.[1] }))
@@ -264,7 +312,7 @@ export default function AssistantPage() {
   const artifacts = latestArtifacts(items);
   const outputCount = artifacts.length + shots.length;
   const artVersions = items.filter((i): i is Extract<Item, { kind: "artifact" }> => i.kind === "artifact" && i.id === art);
-  const shown = (st.list ?? []).filter((s) => s.title.toLowerCase().includes(query.toLowerCase()));
+  const shown = st.list ?? [];
 
   const pendingQuestion = items.some((i) => i.kind === "question" && i.answer === undefined);
   const pendingApproval = items.some((i) => i.kind === "approval" && i.decision === undefined);
@@ -273,14 +321,23 @@ export default function AssistantPage() {
     <div className="flex h-[calc(100dvh-49px)]">
       {/* sessions */}
       <aside className="flex w-64 shrink-0 flex-col border-r border-white/[0.06]">
-        <div className="space-y-2 p-3">
-          <button onClick={newSession} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-white hover:bg-white/5">
-            <MessageSquarePlus className="size-4" /> New session
-          </button>
-          <label className="flex items-center gap-2 rounded-lg border border-white/[0.06] px-3 py-1.5 text-sm text-muted">
-            <Search className="size-3.5" />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search" className="min-w-0 flex-1 bg-transparent text-white placeholder:text-muted focus:outline-none" />
-          </label>
+        <div className="space-y-0.5 p-2.5">
+          {(
+            [
+              ["New session", MessageSquarePlus, () => {
+                setView("chat");
+                newSession();
+              }, false],
+              ["Search", Search, () => setSearchOpen(true), false],
+              ["Artifacts", Layers, () => setView(view === "artifacts" ? "chat" : "artifacts"), view === "artifacts"],
+              ["Customize", Settings, () => router.push("/settings"), false],
+            ] as [string, typeof Layers, () => void, boolean][]
+          ).map(([label, Icon, act, on]) => (
+            <button key={label} onClick={act} className={cx("flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-[13.5px] transition-colors", on ? "bg-white/[0.08] text-white" : "text-zinc-300 hover:bg-white/[0.05] hover:text-white")}>
+              <Icon className="size-4 text-zinc-400" strokeWidth={1.75} /> {label}
+              {label === "Search" && <span className="ml-auto text-[11px] text-zinc-600">⌘/</span>}
+            </button>
+          ))}
         </div>
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-3">
           {st.list === null ? (
@@ -288,16 +345,16 @@ export default function AssistantPage() {
               <Loader2 className="size-3 animate-spin" /> Loading history from box5…
             </p>
           ) : shown.length === 0 ? (
-            <p className="px-3 py-2 text-xs text-muted">{query ? "No matches." : "Sessions you start show up here."}</p>
+            <p className="px-3 py-2 text-xs text-muted">Sessions you start show up here.</p>
           ) : (
             <>
-              {shown.some((x) => x.pinned) && <p className="px-3 pt-2 pb-1 text-[11px] font-medium tracking-wide text-muted uppercase">Pinned</p>}
+              {shown.some((x) => x.pinned) && <p className="px-3 pt-3 pb-1 text-[12px] text-zinc-500">Pinned</p>}
               {shown
                 .filter((x) => x.pinned)
                 .map((x) => (
                   <SessionRow key={x.id} s={x} active={x.id === sid} live={Boolean(st.docs[x.id]?.busy || st.docs[x.id]?.remote || x.running)} />
                 ))}
-              <p className="px-3 pt-3 pb-1 text-[11px] font-medium tracking-wide text-muted uppercase">Recents</p>
+              <p className="px-3 pt-3 pb-1 text-[12px] text-zinc-500">Recents</p>
               {shown
                 .filter((x) => !x.pinned)
                 .map((x) => (
@@ -308,6 +365,24 @@ export default function AssistantPage() {
         </div>
       </aside>
 
+      {searchOpen && (
+        <SearchDialog
+          sessions={st.list ?? []}
+          onClose={() => setSearchOpen(false)}
+          onSession={(id) => {
+            setView("chat");
+            void openSession(id);
+          }}
+          onArtifact={openArtifact}
+        />
+      )}
+
+      {view === "artifacts" ? (
+        <main className="scroll-thin min-w-0 flex-1 overflow-y-auto">
+          <ArtifactsGallery onOpen={openArtifact} />
+        </main>
+      ) : (
+      <>
       {/* conversation */}
       <main className="relative flex min-w-0 flex-1 flex-col">
         <div className="flex h-11 shrink-0 items-center gap-1 border-b border-white/[0.05] px-4">
@@ -371,21 +446,15 @@ export default function AssistantPage() {
           </div>
         </div>
         <div ref={scroller} onScroll={onScroll} className="scroll-thin min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-3xl space-y-3 px-8 py-8">
+          <div className={cx("mx-auto max-w-3xl space-y-3 px-8", items.length === 0 ? "flex min-h-full flex-col justify-end pt-8 pb-5" : "py-8")}>
             {!configured && <p className="rounded-xl border border-white/10 p-4 text-sm text-ink">Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY to enable the assistant.</p>}
             {items.length === 0 && configured && (
-              <div className="pt-16">
-                <p className="text-center text-2xl font-bold text-white">What should I do?</p>
-                <p className="mt-2 text-center text-sm text-muted">
-                  Type <kbd className="rounded bg-white/10 px-1 font-mono">/</kbd> for commands or <kbd className="rounded bg-white/10 px-1 font-mono">@</kbd> to tag a project, database or machine. It keeps working if you leave this page.
-                </p>
-                <div className="mt-8 grid grid-cols-2 gap-2">
-                  {STARTERS.map((s) => (
-                    <button key={s} onClick={() => void submit(s)} className="rounded-xl border border-white/[0.08] bg-panel px-4 py-3 text-left text-sm text-zinc-200 hover:border-accent/60">
-                      {s}
-                    </button>
-                  ))}
-                </div>
+              <div className="text-center">
+                <span className="mx-auto mb-4 grid size-10 place-items-center rounded-xl bg-white text-black">
+                  <span className="size-3 rounded-[4px] bg-black" />
+                </span>
+                <p className="text-[26px] font-semibold tracking-tight text-white">What should we build?</p>
+                <p className="mt-1.5 text-sm text-zinc-500">Deploy, fix, design or explain anything on your machines. It keeps working if you leave.</p>
               </div>
             )}
 
@@ -417,7 +486,7 @@ export default function AssistantPage() {
           </div>
         </div>
 
-        <div className="relative mx-auto w-full max-w-3xl px-8 pb-6">
+        <div className={cx("relative mx-auto w-full max-w-3xl px-8 pb-6", items.length === 0 && "flex-1")}>
           {!atBottom && (
             <button
               onClick={() => toBottom()}
@@ -436,17 +505,30 @@ export default function AssistantPage() {
             uploading={uploading}
             staged={staged}
             review={st.review}
-            placeholder={pendingQuestion ? "Type your own answer…" : pendingApproval ? "Approve or decline above, or type to change course…" : "Ask anything, @ to mention, / for actions"}
+            placeholder={pendingQuestion ? "Type your own answer…" : pendingApproval ? "Approve or decline above, or type to change course…" : items.length ? "Reply, or / for commands" : "Describe a task or ask a question"}
             onSend={(t) => void submit(t)}
             onStop={() => void stop(sid)}
             onAttach={(f) => void upload(f)}
             onUnstage={(id) => setStaged((s) => s.filter((x) => x.id !== id))}
             onReview={setReview}
             onNew={newSession}
+            onExport={exportChat}
+            machines={vms.map((v) => ({ name: v.name, ok: Boolean(status[v.name]?.ok) }))}
+            target={target}
+            onTarget={setTarget}
             models={models}
             model={st.model}
             onModel={setModel}
           />
+          {items.length === 0 && configured && (
+            <div className="mt-6 flex flex-wrap justify-center gap-2">
+              {STARTERS.map((x) => (
+                <button key={x} onClick={() => void submit(x)} className="rounded-full border border-white/[0.08] px-3.5 py-1.5 text-[12.5px] text-zinc-400 transition-colors hover:border-white/20 hover:text-white">
+                  {x}
+                </button>
+              ))}
+            </div>
+          )}
           {(note || st.error) && <p className="mt-2 text-xs text-[var(--critical-text)]">{note || st.error}</p>}
         </div>
       </main>
@@ -543,9 +625,12 @@ export default function AssistantPage() {
         </Section>
         )}
         {panel === "monitor" && <Monitor />}
+        {panel === "terminal" && <TerminalPanel />}
         </div>
       </aside>
       ) : null}
+      </>
+      )}
     </div>
   );
 }
