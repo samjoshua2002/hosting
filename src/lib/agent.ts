@@ -225,9 +225,10 @@ async function readManifest(conn: Client, name: string): Promise<ProjectManifest
 
 /** Every project manifest on a machine (cheap: no status probe). */
 export async function listManifests(conn: Client): Promise<ProjectManifest[]> {
-  const r = await run(conn, 'for f in "$HOME"/.hosting/projects/*.json; do [ -e "$f" ] && { cat "$f"; echo; }; done', { timeoutMs: 15_000 });
+  // one file per chunk, so a manifest written across several lines (pretty-printed by hand) still parses
+  const r = await run(conn, 'for f in "$HOME"/.hosting/projects/*.json; do [ -e "$f" ] && { cat "$f"; printf "\\n\\036\\n"; }; done', { timeoutMs: 15_000 });
   return r.stdout
-    .split("\n")
+    .split("\x1e")
     .filter((l) => l.trim().startsWith("{"))
     .flatMap((l) => {
       try {

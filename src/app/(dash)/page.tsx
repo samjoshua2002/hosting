@@ -10,7 +10,9 @@ import { Card, Empty, cx } from "@/components/ui";
 import { METRICS, RANGES, buildBuckets, totals, type Metric, type RangeId } from "@/lib/analytics";
 import { useStored } from "@/lib/client";
 import { fmtKb, vmMetrics, vmState } from "@/lib/format";
-import { findProblems } from "@/lib/health";
+import { findProblems, investigatePrompt } from "@/lib/health";
+import { startChat } from "@/components/assistant-store";
+import { useRouter } from "next/navigation";
 import type { JobState } from "@/lib/types";
 
 const NOUN: Record<Metric, string> = { cpu: "CPU", memory: "Memory", storage: "Storage" };
@@ -36,6 +38,7 @@ export default function OverviewPage() {
   const r = RANGES.find((x) => x.id === range) ?? RANGES[1];
   const buckets = useMemo(() => buildBuckets(names, history, status, metric, r.sec, now), [names, history, status, metric, r.sec, now]);
   const t = useMemo(() => totals(vms, status), [vms, status]);
+  const router = useRouter();
   const problems = useMemo(() => findProblems(vms.filter((v) => status[v.name] && !checking[v.name]).map((v) => status[v.name]!)), [vms, status, checking]);
   const valued = buckets.filter((b) => b.value !== null);
   const avg = valued.length ? valued.reduce((s, b) => s + (b.value ?? 0), 0) / valued.length : 0;
@@ -80,9 +83,15 @@ export default function OverviewPage() {
               ))}
             </ul>
           </div>
-          <Link href="/assistant" className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--accent-ink)] hover:brightness-110">
+          <button
+            onClick={() => {
+              startChat(investigatePrompt(problems), `Investigate: ${problems.map((p) => p.title).join(", ")}`);
+              router.push("/assistant");
+            }}
+            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--accent-ink)] hover:brightness-110"
+          >
             Investigate
-          </Link>
+          </button>
         </Card>
       )}
 

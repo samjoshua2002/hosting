@@ -324,3 +324,12 @@ export async function stop(id: string) {
   streams.get(id)?.abort();
   patchDoc(id, (x) => ({ ...x, remote: false }));
 }
+
+/** Open a fresh chat and send it a first message right away (Investigate buttons, alerts). Returns the session id. */
+export function startChat(message: string, display?: string): string {
+  hydrate();
+  newSession();
+  const id = state.current;
+  void send(id, { message, display: display ?? message });
+  return id;
+}

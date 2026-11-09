@@ -22,3 +22,16 @@ export function findProblems(statuses: VmStatus[]): MailItem[] {
   }
   return items;
 }
+
+/** What Investigate sends the Assistant: the problems, plus how to treat each kind. */
+export function investigatePrompt(problems: MailItem[]): string {
+  const list = problems.map((p) => `- ${p.title}${p.detail ? ` (${p.detail})` : ""}`).join("\n");
+  return [
+    `Investigate ${problems.length === 1 ? "this problem" : `these ${problems.length} problems`} on my fleet and fix what you safely can:`,
+    list,
+    "",
+    "A machine that is \"cooling down\" is InstaBox resting it (usage limit), not a fault: say when it comes back and whether anything that runs only there is down meanwhile.",
+    "For a full disk, find what is using the space (du, docker system df, old logs, caches) and free what is safe; ask me before deleting anything that isn't a cache, log or unused image.",
+    "End with a short summary: what you fixed, what still needs me.",
+  ].join("\n");
+}

@@ -2,12 +2,13 @@
 
 import { Bell, LogOut, Plus, RefreshCw, Search, ShieldCheck, Shuffle } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { serviceIdOf } from "@/lib/catalog";
 import { api } from "@/lib/client";
-import { findProblems } from "@/lib/health";
-import { useAssistantBusy } from "./assistant-store";
+import { findProblems, investigatePrompt } from "@/lib/health";
+import type { MailItem } from "@/lib/mail";
+import { startChat, useAssistantBusy } from "./assistant-store";
 import { useCluster } from "./cluster";
 import { CommandPalette } from "./command-palette";
 import { crumbs, NAV } from "./nav";
@@ -184,14 +185,78 @@ function TopBar({ path }: { path: string | null }) {
       >
         <Shuffle className={cx("size-4", shuffling && "animate-spin")} />
       </IconButton>
-      <Link href="/" className="relative grid size-8 place-items-center rounded-md text-zinc-400 hover:bg-white/[0.05] hover:text-white" aria-label="Alerts" title={problems.length ? `${problems.length} need attention` : "No alerts"}>
-        <Bell className="size-4" />
-        {problems.length > 0 && <span className="absolute top-1 right-1 size-2 rounded-full bg-[var(--critical)] ring-2 ring-[var(--bg)]" />}
-      </Link>
+      <Alerts problems={problems} />
       <Link href="/projects?new=1" className="ml-2 flex h-8 items-center gap-1.5 rounded-md bg-white px-3 text-[13px] font-medium text-black hover:bg-white/90">
         <Plus className="size-3.5" /> Deploy
       </Link>
     </header>
+  );
+}
+
+/** The bell: what needs attention right now, each one a click away from the Assistant looking into it. */
+function Alerts({ problems }: { problems: MailItem[] }) {
+  const [open, setOpen] = useState(false);
+  const router = useRouter();
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+  const ask = (list: MailItem[]) => {
+    startChat(investigatePrompt(list), `Investigate: ${list.map((p) => p.title).join(", ")}`);
+    setOpen(false);
+    router.push("/assistant");
+  };
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={cx("relative grid size-8 place-items-center rounded-md text-zinc-400 hover:bg-white/[0.05] hover:text-white", open && "bg-white/[0.06] text-white")}
+        aria-label="Alerts"
+        aria-expanded={open}
+        title={problems.length ? `${problems.length} need attention` : "No alerts"}
+      >
+        <Bell className="size-4" />
+        {problems.length > 0 && <span className="absolute top-1 right-1 size-2 rounded-full bg-[var(--critical)] ring-2 ring-[var(--bg)]" />}
+      </button>
+      {open && (
+        <div className="absolute top-10 right-0 z-40 w-[380px] overflow-hidden rounded-xl border border-white/[0.08] bg-[var(--panel)] shadow-2xl shadow-black/60">
+          <div className="flex items-center justify-between border-b border-white/[0.06] px-4 py-2.5">
+            <p className="text-[13px] font-medium text-white">{problems.length ? `${problems.length} need${problems.length === 1 ? "s" : ""} attention` : "Alerts"}</p>
+            {problems.length > 1 && (
+              <button onClick={() => ask(problems)} className="rounded-md bg-[var(--accent)] px-2.5 py-1 text-xs font-medium text-[var(--accent-ink)] hover:brightness-110">
+                Investigate all
+              </button>
+            )}
+          </div>
+          {problems.length === 0 ? (
+            <p className="px-4 py-6 text-center text-[13px] text-zinc-500">All clear. Every machine and project looks healthy.</p>
+          ) : (
+            <ul className="max-h-[60vh] divide-y divide-white/[0.05] overflow-y-auto">
+              {problems.map((p) => (
+                <li key={p.title} className="flex items-start gap-3 px-4 py-3">
+                  <span className={cx("mt-1.5 size-1.5 shrink-0 rounded-full", p.tone === "critical" ? "bg-[var(--critical)]" : "bg-[var(--warning)]")} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[13px] text-white">{p.title}</p>
+                    {p.detail && <p className="mt-0.5 line-clamp-2 text-xs text-zinc-500">{p.detail}</p>}
+                  </div>
+                  <button onClick={() => ask([p])} className="shrink-0 rounded-md px-2 py-1 text-xs text-zinc-300 ring-1 ring-white/10 hover:bg-white/[0.06] hover:text-white">
+                    Ask
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
