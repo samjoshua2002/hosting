@@ -433,3 +433,138 @@ export function ToolsList() {
   );
 }
 
+
+/* ---------- memory, skills, autopilot (self-loading, used by Settings) ---------- */
+
+export function MemoryList() {
+  const [memory, setMemory] = useState<{ id: string; text: string }[] | null>(null);
+  useEffect(() => {
+    api<{ memory: { id: string; text: string }[] }>("/api/memory").then((r) => setMemory(r.memory), () => setMemory([]));
+  }, []);
+  if (memory === null) return <p className="text-xs text-muted">Loading…</p>;
+  if (!memory.length) return <p className="text-xs text-muted">Nothing yet. Tell the Assistant a preference (&quot;deploy Java apps on box3&quot;) and it remembers it in every chat; lessons it learns show up here too.</p>;
+  return (
+    <div className="space-y-1">
+      {memory.map((m) => (
+        <div key={m.id} className="group flex items-start gap-2 rounded-lg border border-white/[0.05] bg-white/[0.02] px-3 py-2 text-xs text-zinc-200">
+          <span className="flex-1 leading-relaxed">{m.text}</span>
+          <button
+            onClick={() => void api<{ memory: { id: string; text: string }[] }>("/api/memory", { remove: m.id }).then((r) => setMemory(r.memory))}
+            className="shrink-0 text-zinc-600 opacity-0 hover:text-[var(--critical-text)] group-hover:opacity-100"
+            aria-label="Forget"
+            title="Forget"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+type SkillList = {
+  builtIn: { id: string; title: string }[];
+  installed: { slug: string; name: string; description: string; author: string; aiVerdict: string | null }[];
+};
+
+export function SkillsList() {
+  const [skills, setSkills] = useState<SkillList | null>(null);
+  useEffect(() => {
+    api<SkillList>("/api/skills").then(setSkills, () => setSkills({ builtIn: [], installed: [] }));
+  }, []);
+  if (!skills) return <p className="text-xs text-muted">Loading…</p>;
+  return (
+    <div className="space-y-4">
+      <div>
+        <p className="mb-1.5 text-[11px] font-medium text-zinc-400">Built in ({skills.builtIn.length})</p>
+        <div className="flex flex-wrap gap-1.5">
+          {skills.builtIn.map((b) => (
+            <span key={b.id} className="rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[11.5px] text-zinc-300">
+              {b.title.split(/[:(]/)[0].trim()}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div>
+        <p className="mb-1.5 text-[11px] font-medium text-zinc-400">From skills-hub.ai ({skills.installed.length})</p>
+        {skills.installed.length === 0 ? (
+          <p className="text-xs text-muted">Ask for anything specialised and the Assistant finds a skill on skills-hub.ai (you approve installs).</p>
+        ) : (
+          skills.installed.map((h) => (
+            <div key={h.slug} className="group flex items-start gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-white/[0.03]" title={h.description}>
+              <a href={`https://skills-hub.ai/skills/${h.slug}`} target="_blank" rel="noreferrer" className="min-w-0 flex-1">
+                <span className="block truncate text-zinc-200 hover:underline">{h.name}</span>
+                <span className="block truncate text-[11px] text-zinc-500">
+                  {h.author || "unknown"}
+                  {h.aiVerdict ? ` · security review ${h.aiVerdict}` : ""} · {h.description}
+                </span>
+              </a>
+              <button onClick={() => void api<SkillList>("/api/skills", { remove: h.slug }).then(setSkills)} className="shrink-0 text-zinc-600 opacity-0 hover:text-[var(--critical-text)] group-hover:opacity-100" aria-label="Remove skill">
+                <X className="size-3.5" />
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function AutopilotSettings() {
+  const [a, setA] = useState<{ enabled: boolean; lastRun?: number; lastSummary?: string; sessionId?: string; canEnable?: boolean } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const load = useCallback(() => api<NonNullable<typeof a>>("/api/autopilot").then(setA, () => setA(null)), []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  if (!a) return <p className="text-xs text-muted">Loading…</p>;
+  return (
+    <div className="space-y-3">
+      <label className="flex items-center justify-between gap-3 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-xs text-zinc-200">
+        <span>
+          Check and fix the fleet every 15 minutes
+          <span className="block text-[11px] text-zinc-500">Restarts crashed services and tunnels, clears full disks, keeps a copy of the dashboard&apos;s data, moves apps off machines that stay down, and asks the Assistant to fix the rest.</span>
+        </span>
+        <button
+          role="switch"
+          aria-checked={a.enabled}
+          disabled={!a.canEnable}
+          onClick={async () => {
+            setErr(null);
+            try {
+              const r = await api<NonNullable<typeof a>>("/api/autopilot", { enabled: !a.enabled });
+              setA({ ...a, ...r });
+            } catch (e) {
+              setErr((e as Error).message);
+            }
+          }}
+          className={cx("relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-40", a.enabled ? "bg-[var(--accent)]" : "bg-white/15")}
+        >
+          <span className={cx("absolute top-0.5 size-4 rounded-full bg-white transition-all", a.enabled ? "left-[18px]" : "left-0.5")} />
+        </button>
+      </label>
+      {!a.canEnable && <p className="text-[11px] text-muted">Needs CRON_SECRET in the environment.</p>}
+      {err && <p className="text-[11px] text-[var(--critical-text)]">{err}</p>}
+      {a.lastRun ? (
+        <p className="text-xs text-zinc-400">
+          Last check {timeAgo(a.lastRun)}: <span className="text-zinc-300">{(a.lastSummary ?? "").split("\n")[0]}</span>
+        </p>
+      ) : null}
+      <button
+        onClick={async () => {
+          setChecking(true);
+          await api("/api/autopilot", { run: true }).catch(() => null);
+          setTimeout(() => {
+            void load();
+            setChecking(false);
+          }, 25_000);
+        }}
+        disabled={checking}
+        className="flex items-center gap-1.5 rounded-md border border-white/10 px-2.5 py-1 text-xs text-zinc-200 hover:bg-white/[0.05] disabled:opacity-60"
+      >
+        {checking && <Loader2 className="size-3 animate-spin" />} {checking ? "Checking…" : "Check now"}
+      </button>
+    </div>
+  );
+}

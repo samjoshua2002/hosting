@@ -33,28 +33,9 @@ export function Shell({ children }: { children: ReactNode }) {
 
   return (
     <div className="flex min-h-dvh flex-row">
-      <aside className="sticky top-0 flex h-dvh w-56 shrink-0 flex-col border-r border-white/[0.05] bg-[var(--sidebar)] px-2.5 py-3">
-        <Link href="/" className="mb-3 flex h-9 items-center gap-2 px-2">
-          <span className="grid size-6 place-items-center rounded-md bg-white text-black">
-            <span className="size-2 rounded-[3px] bg-black" />
-          </span>
-          <span className="text-sm font-semibold tracking-tight text-white">hosting</span>
-        </Link>
-        <button
-          onClick={() => setPalette(true)}
-          className="mb-4 flex h-8 items-center gap-2 rounded-md bg-white/[0.04] px-2.5 text-[13px] text-zinc-500 transition-colors hover:bg-white/[0.07] hover:text-zinc-300"
-        >
-          <Search className="size-3.5" />
-          <span className="flex-1 text-left">Search</span>
-          <span className="text-[11px] text-zinc-600">⌘K</span>
-        </button>
-        <Suspense fallback={<Nav path={null} />}>
-          <NavWithPath />
-        </Suspense>
-        <div className="flex-1" />
-        <AutopilotCard />
-        <SignOut />
-      </aside>
+      <Suspense fallback={<Sidebar path={null} onSearch={() => setPalette(true)} />}>
+        <SidebarWithPath onSearch={() => setPalette(true)} />
+      </Suspense>
 
       <div className="flex min-w-0 flex-1 flex-col">
         <Suspense fallback={<TopBar path={null} />}>
@@ -73,10 +54,44 @@ export function Shell({ children }: { children: ReactNode }) {
   );
 }
 
-/** Reading the URL makes dynamic routes (e.g. /projects/[name]) suspend, so these live in their own boundaries. */
-function NavWithPath() {
-  return <Nav path={usePathname()} />;
+function SidebarWithPath({ onSearch }: { onSearch: () => void }) {
+  return <Sidebar path={usePathname()} onSearch={onSearch} />;
 }
+
+/** The main menu. On the Assistant it folds into an icon rail so the conversation gets the room. */
+function Sidebar({ path, onSearch }: { path: string | null; onSearch: () => void }) {
+  const compact = Boolean(path?.startsWith("/assistant"));
+  return (
+    <aside className={cx("sticky top-0 flex h-dvh shrink-0 flex-col border-r border-white/[0.05] bg-[var(--sidebar)] py-3 transition-[width] duration-200", compact ? "w-[60px] items-center px-2" : "w-56 px-2.5")}>
+      <Link href="/" className={cx("mb-3 flex h-9 items-center gap-2", compact ? "justify-center" : "px-2")} title="hosting">
+        <span className="grid size-6 place-items-center rounded-md bg-white text-black">
+          <span className="size-2 rounded-[3px] bg-black" />
+        </span>
+        {!compact && <span className="text-sm font-semibold tracking-tight text-white">hosting</span>}
+      </Link>
+      {compact ? (
+        <button onClick={onSearch} className="mb-4 grid size-9 place-items-center rounded-md text-zinc-500 hover:bg-white/[0.06] hover:text-zinc-200" title="Search (⌘K)" aria-label="Search">
+          <Search className="size-4" />
+        </button>
+      ) : (
+        <button
+          onClick={onSearch}
+          className="mb-4 flex h-8 items-center gap-2 rounded-md bg-white/[0.04] px-2.5 text-[13px] text-zinc-500 transition-colors hover:bg-white/[0.07] hover:text-zinc-300"
+        >
+          <Search className="size-3.5" />
+          <span className="flex-1 text-left">Search</span>
+          <span className="text-[11px] text-zinc-600">⌘K</span>
+        </button>
+      )}
+      <Nav path={path} compact={compact} />
+      <div className="flex-1" />
+      <AutopilotCard compact={compact} />
+      <SignOut compact={compact} />
+    </aside>
+  );
+}
+
+/** Reading the URL makes dynamic routes (e.g. /projects/[name]) suspend, so these live in their own boundaries. */
 /** The day's Unsplash photo as a full-width cover fading into the top of each page (not behind the Assistant's columns). */
 function Cover() {
   const path = usePathname();
@@ -89,7 +104,7 @@ function TopBarWithPath() {
   return <TopBar path={usePathname()} />;
 }
 
-function Nav({ path }: { path: string | null }) {
+function Nav({ path, compact }: { path: string | null; compact?: boolean }) {
   const working = useAssistantBusy();
   const { vms, status } = useCluster();
   const counts = useMemo(() => {
@@ -100,26 +115,29 @@ function Nav({ path }: { path: string | null }) {
   }, [vms, status]);
 
   return (
-    <nav className="space-y-4">
+    <nav className={cx(compact ? "space-y-3" : "space-y-4")}>
       {NAV.map((g) => (
-        <div key={g.title}>
-          <p className="mb-1 px-2.5 text-[11px] font-medium text-zinc-600">{g.title}</p>
-          <div className="space-y-px">
+        <div key={g.title} className={cx(compact && "border-t border-white/[0.05] pt-3 first:border-0 first:pt-0")}>
+          {!compact && <p className="mb-1 px-2.5 text-[11px] font-medium text-zinc-600">{g.title}</p>}
+          <div className={cx(compact ? "space-y-1" : "space-y-px")}>
             {g.items.map(({ href, label, icon: Icon }) => {
               const active = path !== null && (href === "/" ? path === "/" : path.startsWith(href));
               return (
                 <Link
                   key={href}
                   href={href}
+                  title={compact ? `${label}${counts[href] ? ` (${counts[href]})` : ""}` : undefined}
+                  aria-label={compact ? label : undefined}
                   className={cx(
-                    "flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] transition-colors",
+                    "relative flex items-center rounded-md text-[13px] transition-colors",
+                    compact ? "size-9 justify-center" : "h-8 gap-2.5 px-2.5",
                     active ? "bg-white/[0.07] text-white" : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100",
                   )}
                 >
                   <Icon className={cx("size-4", active ? "text-[var(--accent)]" : "text-zinc-500")} strokeWidth={1.75} />
-                  <span className="flex-1">{label}</span>
-                  {href === "/assistant" && working && <span className="size-2 animate-pulse rounded-full bg-[var(--accent)]" title="The Assistant is working" />}
-                  {counts[href] ? <span className="text-[11px] tabular-nums text-zinc-600">{counts[href]}</span> : null}
+                  {!compact && <span className="flex-1">{label}</span>}
+                  {href === "/assistant" && working && <span className={cx("size-2 animate-pulse rounded-full bg-[var(--accent)]", compact && "absolute top-1 right-1 size-1.5")} title="The Assistant is working" />}
+                  {!compact && counts[href] ? <span className="text-[11px] tabular-nums text-zinc-600">{counts[href]}</span> : null}
                 </Link>
               );
             })}
@@ -263,7 +281,7 @@ function Alerts({ problems }: { problems: MailItem[] }) {
 }
 
 /** Bottom of the sidebar, like the reference's upgrade card: Autopilot at a glance. */
-function AutopilotCard() {
+function AutopilotCard({ compact }: { compact?: boolean }) {
   const [s, setS] = useState<{ enabled: boolean; lastSummary?: string } | null>(null);
   useEffect(() => {
     let alive = true;
@@ -276,8 +294,15 @@ function AutopilotCard() {
     };
   }, []);
   if (!s) return null;
+  if (compact)
+    return (
+      <Link href="/settings?tab=autopilot" className="relative mb-1 grid size-9 place-items-center rounded-md text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-100" title={`Autopilot ${s.enabled ? "on" : "off"}`} aria-label="Autopilot">
+        <ShieldCheck className="size-4" strokeWidth={1.75} />
+        <span className={cx("absolute top-1.5 right-1.5 size-1.5 rounded-full", s.enabled ? "bg-[var(--good)]" : "bg-zinc-600")} />
+      </Link>
+    );
   return (
-    <Link href="/assistant" className="mb-1 flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100" title={s.lastSummary ?? undefined}>
+    <Link href="/settings?tab=autopilot" className="mb-1 flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100" title={s.lastSummary ?? undefined}>
       <ShieldCheck className="size-4 text-zinc-500" strokeWidth={1.75} />
       <span className="flex-1">Autopilot</span>
       <span className={cx("size-1.5 rounded-full", s.enabled ? "bg-[var(--good)]" : "bg-zinc-600")} />
@@ -286,11 +311,17 @@ function AutopilotCard() {
   );
 }
 
-function SignOut() {
+function SignOut({ compact }: { compact?: boolean }) {
   const logout = async () => {
     await api("/api/auth/logout", {}).catch(() => {});
     window.location.href = "/login";
   };
+  if (compact)
+    return (
+      <button onClick={logout} className="grid size-9 place-items-center rounded-md text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-100" title="Log out" aria-label="Log out">
+        <LogOut className="size-4" strokeWidth={1.75} />
+      </button>
+    );
   return (
     <button onClick={logout} className="flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100">
       <LogOut className="size-4 text-zinc-500" strokeWidth={1.75} /> Log out

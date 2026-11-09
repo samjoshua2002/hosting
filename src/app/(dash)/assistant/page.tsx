@@ -1,12 +1,14 @@
 "use client";
 
+import Link from "next/link";
+
 import { LOCAL_URL, useNiceLink } from "@/components/nice-links";
 
-import { Activity, ArrowDown, ArrowUpRight, BookOpen, Brain, Camera, FileText, GitBranch, GraduationCap, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Plug, ScrollText, Search, Server, Settings2, ShieldCheck, Sparkles, Trash2, Workflow, Wrench, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { addFiles, currentDoc, editSession, hydrate, loadList, newSession, openSession, removeSession, send, setModel, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
+import { Activity, ArrowDown, ArrowUpRight, Cpu, FolderOpen, Globe, Hash, MessagesSquare, MoreHorizontal, Settings, Camera, FileText, GitBranch, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { addFiles, currentDoc, editSession, hydrate, newSession, openSession, removeSession, send, setModel, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
 import { ArtifactView } from "@/components/artifact-view";
-import { Connectors, InstructionsEditor, Monitor, ToolsList } from "@/components/assistant-panel";
+import { Monitor } from "@/components/assistant-panel";
 import { AttachmentView } from "@/components/attachment-view";
 import { ChatItems, PlanCard } from "@/components/chat-items";
 import { CopyButton } from "@/components/chat-blocks";
@@ -49,19 +51,14 @@ function splitSuggestions(text: string): { body: string; suggestions: string[] }
   return { body, suggestions };
 }
 
-type SkillList = {
-  builtIn: { id: string; title: string }[];
-  installed: { slug: string; name: string; description: string; author: string; aiVerdict: string | null; installedAt: number }[];
-};
 
 /** A file in the chat box: uploading (pending, pct), ready, or failed; images carry a local preview. */
-type PanelTab = "outputs" | "context" | "connectors" | "monitor" | "tools";
-const PANEL_TABS: [PanelTab, string, typeof Layers][] = [
-  ["outputs", "Outputs", Layers],
-  ["context", "Context", BookOpen],
-  ["connectors", "Connectors", Plug],
-  ["monitor", "Monitor", Activity],
-  ["tools", "Tools", Wrench],
+type PanelId = "outputs" | "links" | "files" | "monitor";
+const PANELS: [PanelId, string, typeof Layers][] = [
+  ["outputs", "Outputs", ListChecks],
+  ["links", "Links", Globe],
+  ["files", "Files", FolderOpen],
+  ["monitor", "Machines & jobs", Activity],
 ];
 
 export type Staged = Att & { pending?: boolean; pct?: number; preview?: string; error?: string };
@@ -78,16 +75,7 @@ export default function AssistantPage() {
   const [uploading, setUploading] = useState(false);
   const [configured, setConfigured] = useState(true);
   const [models, setModels] = useState<ModelChoice[]>([]);
-  const [autopilot, setAutopilot] = useState<{ enabled: boolean; lastRun?: number; lastSummary?: string; sessionId?: string; canEnable?: boolean } | null>(null);
-  const loadAutopilot = useCallback(
-    () =>
-      api<{ enabled: boolean; lastRun?: number; lastSummary?: string; sessionId?: string; canEnable?: boolean }>("/api/autopilot")
-        .then(setAutopilot)
-        .catch(() => setAutopilot(null)),
-    [],
-  );
   const [note, setNote] = useState<string | null>(null);
-  const [progress, setProgress] = useState<string | null>(null);
   const [art, setArtRaw] = useState<string | null>(null);
   const [file, setFile] = useState<{ id: string; name: string } | null>(null);
   // one side view at a time: an artifact or a file preview
@@ -99,23 +87,10 @@ export default function AssistantPage() {
     setFile(f);
     if (f) setArtRaw(null);
   };
-  const [memory, setMemory] = useState<{ id: string; text: string }[] | null>(null);
-  const loadMemory = () =>
-    api<{ memory: { id: string; text: string }[] }>("/api/memory")
-      .then((r) => setMemory(r.memory))
-      .catch(() => setMemory([]));
-  const [skills, setSkills] = useState<SkillList | null>(null);
-  const loadSkills = () =>
-    api<SkillList>("/api/skills")
-      .then(setSkills)
-      .catch(() => setSkills({ builtIn: [], installed: [] }));
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     hydrate();
-    void loadMemory();
-    void loadSkills();
-    void loadAutopilot();
     fetch("/api/ai/models", { cache: "no-store" })
       .then((r) => r.json())
       .then((d: { configured: boolean; models?: { id: string; model: string }[]; agent?: string; local?: { id: string; model: string; vm: string; service: string; sizeGb: number }[] }) => {
@@ -130,7 +105,7 @@ export default function AssistantPage() {
         setModels([...cloud, ...local]);
       })
       .catch(() => setConfigured(false));
-  }, [loadAutopilot]);
+  }, []);
 
   // Follow new messages only while the reader is at the bottom; otherwise show a "new messages" button.
   const scroller = useRef<HTMLDivElement>(null);
@@ -164,7 +139,6 @@ export default function AssistantPage() {
       setAtBottom(true);
       toBottom(false);
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid]);
 
   // when a run finishes, refresh machine status (it probably changed something)
@@ -173,8 +147,6 @@ export default function AssistantPage() {
     setWasBusy(busy);
     if (!busy) {
       void refresh();
-      void loadMemory();
-      void loadSkills();
     }
   }
 
@@ -268,7 +240,8 @@ export default function AssistantPage() {
   };
 
   // ---- right panel ----
-  const [panelTab, setPanelTab] = useStored<PanelTab>("hosting.assistant.tab", "outputs");
+  const [panel, setPanel] = useStored<PanelId | null>("hosting.assistant.panel", null);
+  const [infoOpen, setInfoOpen] = useState(false);
   const shots = items
     .filter((i): i is Extract<Item, { kind: "image" }> => i.kind === "image")
     .map((i) => ({ ...i, fileId: /[?&]id=([a-z0-9]+)/.exec(i.src)?.[1] }))
@@ -337,6 +310,66 @@ export default function AssistantPage() {
 
       {/* conversation */}
       <main className="relative flex min-w-0 flex-1 flex-col">
+        <div className="flex h-11 shrink-0 items-center gap-1 border-b border-white/[0.05] px-4">
+          <p className="min-w-0 flex-1 truncate text-[13px] text-zinc-300">{items.length ? title : "New conversation"}</p>
+          {PANELS.map(([id, label, Icon]) => {
+            const count = id === "outputs" ? outputCount : id === "links" ? links.length : id === "files" ? files.length : 0;
+            const on = panel === id && !art && !file;
+            return (
+              <button
+                key={id}
+                onClick={() => {
+                  setArt(null);
+                  openFile(null);
+                  setPanel(on ? null : id);
+                }}
+                title={label}
+                aria-label={label}
+                aria-pressed={on}
+                className={cx("relative grid size-8 place-items-center rounded-md transition-colors", on ? "bg-white/[0.09] text-white" : "text-zinc-500 hover:bg-white/[0.05] hover:text-zinc-200")}
+              >
+                <Icon className="size-[17px]" strokeWidth={1.75} />
+                {count > 0 && <span className="absolute top-1 right-1 size-1.5 rounded-full bg-[var(--accent)]" />}
+              </button>
+            );
+          })}
+          <div className="relative">
+            <button
+              onClick={() => setInfoOpen((o) => !o)}
+              title="Environment and context"
+              aria-label="Environment and context"
+              aria-expanded={infoOpen}
+              className={cx("grid size-8 place-items-center rounded-md transition-colors", infoOpen ? "bg-white/[0.09] text-white" : "text-zinc-500 hover:bg-white/[0.05] hover:text-zinc-200")}
+            >
+              <MoreHorizontal className="size-[17px]" />
+            </button>
+            {infoOpen && (
+              <>
+                <button className="fixed inset-0 z-30 cursor-default" aria-label="Close" onClick={() => setInfoOpen(false)} />
+                <div className="absolute top-10 right-0 z-40 w-80 rounded-xl border border-white/[0.08] bg-[#141416] p-3 shadow-2xl shadow-black/60">
+                  <p className="px-1 pb-1.5 text-[11px] font-medium text-zinc-500">Environment</p>
+                  <InfoRow icon={Cpu} label="Model" value={st.model || "default (best available)"} />
+                  <InfoRow icon={ShieldCheck} label="Review" value={st.review === "manual" ? "you approve every step" : "auto · risky steps ask first"} />
+                  <InfoRow icon={Server} label="Machines" value={machines.length ? machines.join(", ") : "none yet"} />
+                  {repos.map((r) => (
+                    <InfoRow key={r} icon={GitBranch} label="Repository" value={r} href={`https://github.com/${r}`} />
+                  ))}
+                  <div className="my-2 border-t border-white/[0.06]" />
+                  <p className="px-1 pb-1.5 text-[11px] font-medium text-zinc-500">Context</p>
+                  <InfoRow icon={MessagesSquare} label="Messages" value={`${items.filter((i) => i.kind === "user").length} from you · ${stepCount} steps`} />
+                  <InfoRow icon={Paperclip} label="Files" value={`${files.length}`} />
+                  <InfoRow icon={Layers} label="Outputs" value={`${artifacts.length} artifacts · ${shots.length} screenshots`} />
+                  <InfoRow icon={Hash} label="Session" value={sid} mono />
+                  <div className="my-2 border-t border-white/[0.06]" />
+                  <Link href="/settings" className="flex items-center gap-2 rounded-md px-1 py-1.5 text-xs text-zinc-300 hover:bg-white/[0.05] hover:text-white">
+                    <Settings className="size-3.5 text-zinc-500" /> Connectors, instructions, memory and skills
+                    <ArrowUpRight className="ml-auto size-3.5 text-zinc-500" />
+                  </Link>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
         <div ref={scroller} onScroll={onScroll} className="scroll-thin min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-3xl space-y-3 px-8 py-8">
             {!configured && <p className="rounded-xl border border-white/10 p-4 text-sm text-ink">Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY to enable the assistant.</p>}
@@ -414,7 +447,6 @@ export default function AssistantPage() {
             model={st.model}
             onModel={setModel}
           />
-          {progress && <p className="mt-2 text-xs text-zinc-400">{progress}</p>}
           {(note || st.error) && <p className="mt-2 text-xs text-[var(--critical-text)]">{note || st.error}</p>}
         </div>
       </main>
@@ -427,31 +459,16 @@ export default function AssistantPage() {
         <aside className="w-[min(760px,48%)] shrink-0 border-l border-white/[0.06] bg-panel/60">
           <ArtifactView key={`${art}-${artVersions.length}`} versions={artVersions} onClose={() => setArt(null)} />
         </aside>
-      ) : (
-      <aside className="flex w-[340px] shrink-0 flex-col border-l border-white/[0.06]">
-        <div className="border-b border-white/[0.06] px-4 pt-4">
-          <p className="truncate text-sm font-semibold text-white">{title}</p>
-          <p className="mt-0.5 text-[11px] text-muted">
-            {stepCount} step{stepCount === 1 ? "" : "s"} · {st.review === "manual" ? "review each step" : "auto"} · {st.model || "default model"}
-          </p>
-          <div className="-mb-px mt-3 flex gap-0.5 overflow-x-auto">
-            {PANEL_TABS.map(([id, label, Icon]) => (
-              <button
-                key={id}
-                onClick={() => setPanelTab(id)}
-                className={cx(
-                  "flex shrink-0 items-center gap-1.5 border-b-2 px-2 pb-2 text-xs transition-colors",
-                  panelTab === id ? "border-[var(--accent)] text-white" : "border-transparent text-zinc-500 hover:text-zinc-200",
-                )}
-              >
-                <Icon className="size-3.5" /> {label}
-                {id === "outputs" && outputCount > 0 && <span className="rounded bg-white/[0.08] px-1 text-[10px] tabular-nums text-zinc-300">{outputCount}</span>}
-              </button>
-            ))}
-          </div>
+      ) : panel ? (
+      <aside className="flex w-[360px] shrink-0 flex-col border-l border-white/[0.06] bg-[#0b0b0d]">
+        <div className="flex h-11 items-center gap-2 border-b border-white/[0.06] px-4">
+          <p className="flex-1 text-[13px] font-medium text-white">{PANELS.find((x) => x[0] === panel)?.[1]}</p>
+          <button onClick={() => setPanel(null)} className="rounded-md p-1 text-zinc-500 hover:bg-white/[0.06] hover:text-white" aria-label="Close panel">
+            <X className="size-4" />
+          </button>
         </div>
         <div className="scroll-thin min-h-0 flex-1 space-y-6 overflow-y-auto p-4">
-        {panelTab === "outputs" && (
+        {panel === "outputs" && (
           <>
             {plan && (
               <Section title="Progress" icon={<ListChecks className="size-3.5" />}>
@@ -485,6 +502,17 @@ export default function AssistantPage() {
                 </div>
               </Section>
             )}
+        <Section title="Suggestions" icon={<Sparkles className="size-3.5" />}>
+          {(suggestions.length ? suggestions : items.length ? [] : STARTERS.slice(0, 2)).map((s) => (
+            <button key={s} onClick={() => void submit(s)} disabled={busy} className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-ink hover:bg-white/5 disabled:opacity-40">
+              {s}
+            </button>
+          ))}
+          {items.length > 0 && !suggestions.length && <p className="text-xs text-muted">Next steps appear when it finishes.</p>}
+        </Section>
+          </>
+        )}
+        {panel === "links" && (
         <Section title="Links" icon={<Link2 className="size-3.5" />}>
           {links.length === 0 ? (
             <p className="text-xs text-muted">URLs it creates or finds show up here.</p>
@@ -499,18 +527,8 @@ export default function AssistantPage() {
             ))
           )}
         </Section>
-        <Section title="Suggestions" icon={<Sparkles className="size-3.5" />}>
-          {(suggestions.length ? suggestions : items.length ? [] : STARTERS.slice(0, 2)).map((s) => (
-            <button key={s} onClick={() => void submit(s)} disabled={busy} className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-ink hover:bg-white/5 disabled:opacity-40">
-              {s}
-            </button>
-          ))}
-          {items.length > 0 && !suggestions.length && <p className="text-xs text-muted">Next steps appear when it finishes.</p>}
-        </Section>
-          </>
         )}
-        {panelTab === "context" && (
-          <>
+        {panel === "files" && (
         <Section title="Files" icon={<Paperclip className="size-3.5" />}>
           {files.length === 0 ? (
             <p className="text-xs text-muted">Files you attach show up here; click one to preview it.</p>
@@ -523,148 +541,29 @@ export default function AssistantPage() {
             ))
           )}
         </Section>
-            <Section title="Instructions" icon={<ScrollText className="size-3.5" />}>
-              <InstructionsEditor />
-            </Section>
-            <Section title="Repository" icon={<GitBranch className="size-3.5" />}>
-              {repos.length === 0 ? (
-                <p className="text-xs text-muted">GitHub repos this conversation works on show up here.</p>
-              ) : (
-                repos.map((r) => (
-                  <a key={r} href={`https://github.com/${r}`} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-accent-soft hover:bg-white/5">
-                    <GitBranch className="size-3.5 shrink-0" /> <span className="truncate">{r}</span>
-                  </a>
-                ))
-              )}
-            </Section>
-            <Section title="Environment" icon={<Settings2 className="size-3.5" />}>
-              <dl className="grid grid-cols-[84px_1fr] gap-y-1 px-2 text-xs">
-                <dt className="text-muted">Model</dt>
-                <dd className="truncate text-ink">{st.model || "default (best available)"}</dd>
-                <dt className="text-muted">Review</dt>
-                <dd className="text-ink">{st.review === "manual" ? "you approve every step" : "auto · risky steps ask first"}</dd>
-                <dt className="text-muted">Machines</dt>
-                <dd className="truncate text-ink">{machines.length ? machines.join(", ") : "none yet"}</dd>
-                <dt className="text-muted">Session</dt>
-                <dd className="truncate font-mono text-[11px] text-zinc-500">{sid}</dd>
-              </dl>
-            </Section>
-        <Section title="Memory" icon={<Brain className="size-3.5" />}>
-          {memory === null ? (
-            <p className="text-xs text-muted">Loading…</p>
-          ) : memory.length === 0 ? (
-            <p className="text-xs text-muted">Tell it a preference (&quot;deploy Java apps on box3&quot;) and it remembers it in every session.</p>
-          ) : (
-            memory.map((m) => (
-              <div key={m.id} className="group flex items-start gap-1.5 rounded-md px-2 py-1 text-xs text-ink hover:bg-white/5">
-                <span className="flex-1">{m.text}</span>
-                <button
-                  onClick={() => void api<{ memory: { id: string; text: string }[] }>("/api/memory", { remove: m.id }).then((r) => setMemory(r.memory))}
-                  className="hidden text-muted hover:text-[var(--critical-text)] group-hover:block"
-                  aria-label="Forget"
-                >
-                  <X className="size-3" />
-                </button>
-              </div>
-            ))
-          )}
-        </Section>
-        <Section title="Skills" icon={<GraduationCap className="size-3.5" />}>
-          {skills === null ? (
-            <p className="text-xs text-muted">Loading…</p>
-          ) : (
-            <div className="space-y-2">
-              <p className="px-2 text-xs leading-relaxed text-muted">
-                {skills.builtIn.length} built in: {skills.builtIn.map((b) => b.title.split(/[:(]/)[0].trim()).join(", ")}.
-              </p>
-              {skills.installed.map((h) => (
-                <div key={h.slug} className="group flex items-start gap-1.5 rounded-md px-2 py-1 text-xs hover:bg-white/5" title={h.description}>
-                  <a href={`https://skills-hub.ai/skills/${h.slug}`} target="_blank" rel="noreferrer" className="min-w-0 flex-1 text-ink hover:underline">
-                    <span className="block truncate">{h.name}</span>
-                    <span className="block truncate text-[11px] text-muted">skills-hub · {h.author || "unknown"}{h.aiVerdict ? ` · review ${h.aiVerdict}` : ""}</span>
-                  </a>
-                  <button
-                    onClick={() => void api<SkillList>("/api/skills", { remove: h.slug }).then(setSkills)}
-                    className="hidden text-muted hover:text-[var(--critical-text)] group-hover:block"
-                    aria-label="Remove skill"
-                  >
-                    <X className="size-3" />
-                  </button>
-                </div>
-              ))}
-              <p className="px-2 text-[11px] text-muted">Ask for anything specialised and it finds a skill on skills-hub.ai (you approve installs).</p>
-            </div>
-          )}
-        </Section>
-          </>
         )}
-        {panelTab === "connectors" && <Connectors />}
-        {panelTab === "monitor" && (
-          <>
-            <Monitor />
-        <Section title="Autopilot" icon={<ShieldCheck className="size-3.5" />}>
-          {autopilot === null ? (
-            <p className="text-xs text-muted">Loading…</p>
-          ) : (
-            <div className="space-y-2 px-2">
-              <label className="flex items-center justify-between gap-2 text-xs text-ink">
-                <span>Check and fix the fleet every 15 min</span>
-                <button
-                  role="switch"
-                  aria-checked={autopilot.enabled}
-                  disabled={!autopilot.canEnable}
-                  onClick={async () => {
-                    try {
-                      const r = await api<typeof autopilot>("/api/autopilot", { enabled: !autopilot.enabled });
-                      setAutopilot({ ...autopilot, ...r });
-                    } catch (e) {
-                      setNote((e as Error).message);
-                    }
-                  }}
-                  className={cx("relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-40", autopilot.enabled ? "bg-accent" : "bg-white/15")}
-                >
-                  <span className={cx("absolute top-0.5 size-4 rounded-full bg-white transition-all", autopilot.enabled ? "left-[18px]" : "left-0.5")} />
-                </button>
-              </label>
-              {!autopilot.canEnable && <p className="text-[11px] text-muted">Needs CRON_SECRET in the environment.</p>}
-              {autopilot.lastRun ? (
-                <p className="text-[11px] text-muted">
-                  Last check {timeAgo(autopilot.lastRun)}: {(autopilot.lastSummary ?? "").split("\n")[0]}
-                </p>
-              ) : (
-                <p className="text-[11px] text-muted">Restarts crashed services and tunnels, clears full disks, and asks the Assistant to fix the rest. Emails you what it did.</p>
-              )}
-              <div className="flex gap-3 text-[11px]">
-                <button
-                  onClick={async () => {
-                    await api("/api/autopilot", { run: true }).catch(() => null);
-                    setNote("Autopilot is checking the fleet…");
-                    setTimeout(() => {
-                      void loadAutopilot();
-                      setNote(null);
-                      void loadList();
-                    }, 25_000);
-                  }}
-                  className="text-accent-soft hover:text-white"
-                >
-                  Check now
-                </button>
-                {autopilot.sessionId && (
-                  <button onClick={() => void openSession(autopilot.sessionId!)} className="text-accent-soft hover:text-white">
-                    Open its session
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-        </Section>
-          </>
-        )}
-        {panelTab === "tools" && <ToolsList />}
+        {panel === "monitor" && <Monitor />}
         </div>
       </aside>
-      )}
+      ) : null}
     </div>
+  );
+}
+
+function InfoRow({ icon: Icon, label, value, href, mono }: { icon: typeof Layers; label: string; value: string; href?: string; mono?: boolean }) {
+  const body = (
+    <>
+      <Icon className="size-3.5 shrink-0 text-zinc-500" />
+      <span className="w-20 shrink-0 text-zinc-500">{label}</span>
+      <span className={cx("min-w-0 flex-1 truncate text-right", mono ? "font-mono text-[11px] text-zinc-400" : "text-zinc-200", href && "text-accent-soft")}>{value}</span>
+    </>
+  );
+  return href ? (
+    <a href={href} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-md px-1 py-1 text-xs hover:bg-white/[0.04]">
+      {body}
+    </a>
+  ) : (
+    <div className="flex items-center gap-2 px-1 py-1 text-xs">{body}</div>
   );
 }
 
