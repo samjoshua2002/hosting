@@ -6,7 +6,7 @@ import type { ArtifactType, DiagramEdge, DiagramNode, OperatorEvent, Shell } fro
 import { cronAction, ensureAgent, fillGenerated, jobLog, listManifests, newJobId, probe, projectAction, saveProject, startDeploy, startJob, PROJECT_NAME_RE, ENV_KEY_RE } from "./agent";
 import { getVm, getVms, type VmConfig } from "./config";
 import { isDestructive } from "./safety";
-import { mapLimit, run, withVm } from "./ssh";
+import { mapLimit, run, shq, withVm } from "./ssh";
 import { linkTunnel, unlinkTunnel } from "./tunnels";
 import { asText, loadAttachment } from "./attachments";
 import {
@@ -120,6 +120,19 @@ Working on code (GitHub)
 - repo_branches, repo_files and repo_read inspect a repo; repo_commit commits one or more files in a single commit (full content, or exact find/replace edits for small changes); repo_pull_request opens a PR. github_api calls any other GitHub REST endpoint the token allows (issues, releases, actions runs, gists, workflows…).
 - Before the first change in a session, call ask_user to pick the branch unless the user already said: offer the default branch (pushes there redeploy projects with auto-deploy) and a new branch like "assistant/<short-topic>" with a pull request. Read the files you change first; keep edits minimal and in the repo's style. After committing, give the commit link; if a project auto-deploys from that branch, follow its deploy (fleet_status shows running deploy jobs) and report the result.
 - Review mode is chosen by the user: in manual mode every action waits for approval (commits show the diff first); in auto mode only destructive actions wait. Either way, never commit secrets.
+
+Using the services (they are your tools, not just things to install)
+- If a task needs a service that isn't installed (automation, storage, monitoring, dashboards, local AI), install it yourself with add_service (placement is automatic), wait for it, then use it. Reuse an existing one when there is one.
+- n8n: build and run automations with the n8n tool: write the workflow JSON yourself (Webhook, Schedule Trigger, HTTP Request, Code, IF, Set, MongoDB/Postgres, email, Slack… nodes), import it, add credentials (secrets as {{secret:NAME}}), activate it, test it (run, or curl its webhook), and give the user the workflow name and its webhook URL. n8n webhooks live at <n8n link>/webhook/<path>; set WEBHOOK_URL in n8n's env to its real link if webhooks show localhost.
+- Other services through their CLI/API on the machine with run_command: docker exec <service> … (MinIO: mc; databases: db_query), or curl http://127.0.0.1:<port> with the admin login loaded from the service's env without printing it (set -a; . ~/.hosting/projects/<service>.env; set +a; curl -u "admin:$GF_SECURITY_ADMIN_PASSWORD" …). Grafana and Metabase have HTTP APIs; Ollama: curl /api/generate; Uptime Kuma has no simple API, so tell the user the 3 clicks to add a monitor.
+- Anything not in the catalog (any open-source tool or Docker image): deploy it yourself with deploy_project the same way (Docker, port on 127.0.0.1, data in ~/data/<name>, passwords "generate", link private unless it's meant to be public, type "tool" or "service"), and connect it with connect_projects.
+
+Moving an app off Render, Vercel, Heroku, Netlify or Railway (the user wants everything on their own machines)
+- Read the repo first (README, package.json/requirements, .env.example, vercel.json/render.yaml/Procfile). A repo with a backend at the root and a frontend in a folder (frontend/, client/, web/) becomes two projects: <repo>-api (service) and <repo>-web (website), each with its own install/build/start and root folder (cd frontend && …).
+- Databases and caches it used in the cloud (MongoDB Atlas, Redis Cloud, Supabase/Neon Postgres): use the user's own (connect_projects to mongodb/redis/postgres) unless the user wants to keep the cloud one; offer to copy the data over (mongodump/pg_dump) with ask_user.
+- Env: ask the user to paste their .env (it is hidden from you as {{secret:NAME}} placeholders) or attach it; list exactly which keys are missing (from .env.example). Never guess secrets. Platform variables: set RENDER_EXTERNAL_URL / VERCEL_URL / BACKEND_URL / FRONTEND_URL / NEXT_PUBLIC_API_URL to the new projects' real https links (deploy the API first, then the web app with the API's link baked in, then update the API's FRONTEND_URL/CORS and redeploy it).
+- Webhooks and OAuth callbacks (Meta/Instagram, Stripe, GitHub, Google sign-in) must use the project's real https link, not the /go short link (providers don't follow redirects for POST). Tell the user exactly what to paste into the provider's dashboard (callback URL, webhook URL, verify token) — that step is theirs.
+- Background jobs or schedules the old platform ran (Render cron, Vercel cron): schedule_task, or an n8n workflow when it is an automation the user wants to see and edit visually.
 
 When things go wrong (decide like a senior SRE: pick the safest option that gets the user what they want, do it, then say in one line what you chose and why; only ask_user when the choice really is theirs)
 - Low disk (under ~1.5 GB free, or "No space left on device"): measure first (df -h ~ /; du -xh --max-depth=2 ~ | sort -h | tail; docker system df). Free the safe things yourself: docker image/builder prune (unused only), ~/.cache/pip, ~/.npm/_cacache, ~/.cache/ms-playwright and other caches, sudo journalctl --vacuum-size=100M, sudo apt-get clean, old *.log and finished job logs in ~/.hosting/jobs. Never delete ~/data, project code or anything you can't recreate without approval. If still short: move the next deploy to a machine with room, or propose moving a big project elsewhere (ask_user), or adding a machine.
@@ -285,6 +298,18 @@ const TOOLS: ToolDef[] = [
     "Call any GitHub REST API endpoint the connected token allows, e.g. GET /repos/o/r/issues, POST /repos/o/r/issues, GET /repos/o/r/actions/runs, POST /gists. Returns status and JSON (trimmed).",
     { method: { type: "string", enum: ["GET", "POST", "PATCH", "PUT", "DELETE"] }, path: { type: "string" }, body: { type: "object" } },
     ["method", "path"],
+  ),
+  fn(
+    "n8n",
+    "Operate an installed n8n service through its own CLI (no API key needed). list: workflows with ids and active state. export: one workflow's JSON (id). import: create or update a workflow from JSON you write (n8n workflow format: name, nodes[{id,name,type,typeVersion,position,parameters}], connections, settings); it returns the id. activate/deactivate: switch triggers (webhooks, schedules) on or off (n8n restarts briefly). run: execute a workflow once now (id). credentials: create credentials from [{name, type, data}] (e.g. type httpHeaderAuth, mongoDb, openAiApi); put real secrets as {{secret:NAME}} placeholders. Install n8n with add_service first if there is none.",
+    {
+      action: { type: "string", enum: ["list", "export", "import", "activate", "deactivate", "run", "credentials"] },
+      service: { type: "string", description: "n8n project name (default: the first n8n found)" },
+      id: { type: "string" },
+      workflow: { type: "object", description: "for import" },
+      credentials: { type: "array", items: { type: "object" }, description: "for credentials" },
+    },
+    ["action"],
   ),
   fn(
     "add_service",
@@ -467,6 +492,11 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Copied attachment ${str(a.id)} to ~/${str(a.path)} on ${on(a.vms)}`, needsApproval: false, detail: "" };
     case "add_service":
       return { label: `Added ${str(a.name) || str(a.template)} from the catalog`, needsApproval: false, detail: "" };
+    case "n8n": {
+      const act = str(a.action);
+      const what = act === "import" ? `Saved n8n workflow ${str((a.workflow as { name?: unknown } | undefined)?.name) || ""}` : act === "credentials" ? "Saved credentials in n8n" : act === "list" ? "Listed n8n workflows" : `${act[0]?.toUpperCase() ?? ""}${act.slice(1)} n8n workflow ${str(a.id)}`;
+      return { label: what.trim(), needsApproval: false, detail: act === "import" ? JSON.stringify(a.workflow ?? {}, null, 2).slice(0, 3000) : "", readOnly: act === "list" || act === "export" };
+    }
     case "create_artifact":
       return { label: `Made ${str(a.title) || "an artifact"}`, needsApproval: false, detail: "" };
     case "remember":
@@ -729,6 +759,46 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
           }
         });
         return { ok: res.every((r) => r.ok), output: clip(res.map((r) => r.line).join("\n\n"), 5000) };
+      }
+      case "n8n": {
+        const want = str(a.service).toLowerCase();
+        let found: { vm: VmConfig; name: string } | null = null;
+        for (const vm of getVms()) {
+          const ms = await withVm(vm, (c) => listManifests(c)).catch(() => []);
+          const m = ms.find((x) => (want ? x.name === want : /n8nio\/n8n/.test(x.start)));
+          if (m) {
+            found = { vm, name: m.name };
+            break;
+          }
+        }
+        if (!found) return { ok: false, output: want ? `no project named ${want}` : "n8n is not installed: add it with add_service template n8n, then retry." };
+        const box = shq(found.name);
+        const cli = (args: string) => `docker exec ${box} n8n ${args}`;
+        const act = str(a.action);
+        const id = str(a.id);
+        if (["export", "activate", "deactivate", "run"].includes(act) && !/^[A-Za-z0-9]{1,40}$/.test(id)) return { ok: false, output: "give the workflow id (from action list)" };
+        const put = (json: string, file: string) => `printf %s ${shq(Buffer.from(json).toString("base64"))} | base64 -d | docker exec -i ${box} sh -c 'cat > ${file}'`;
+        let cmd: string;
+        if (act === "list") cmd = cli("list:workflow");
+        else if (act === "export") cmd = cli(`export:workflow --id=${id} --pretty`);
+        else if (act === "run") cmd = cli(`execute --id=${id}`);
+        else if (act === "activate" || act === "deactivate")
+          // n8n 2.x: publish/unpublish; older versions: update:workflow --active
+          cmd = `{ ${cli(`${act === "activate" ? "publish" : "unpublish"}:workflow --id=${id}`)} || ${cli(`update:workflow --id=${id} --active=${act === "activate"}`)}; } && docker restart ${box} >/dev/null && sleep 8 && ${cli("list:workflow")}`;
+        else if (act === "import") {
+          const wf = a.workflow as Record<string, unknown> | undefined;
+          if (!wf || !Array.isArray(wf.nodes)) return { ok: false, output: "workflow must be n8n JSON with nodes and connections" };
+          const doc = { active: false, settings: {}, connections: {}, ...wf };
+          cmd = `${put(JSON.stringify([doc]), "/tmp/wf.json")} && ${cli("import:workflow --input=/tmp/wf.json")} ; docker exec ${box} rm -f /tmp/wf.json; ${cli("list:workflow")}`;
+        } else if (act === "credentials") {
+          const list = Array.isArray(a.credentials) ? a.credentials : [];
+          if (!list.length) return { ok: false, output: "give credentials: [{name, type, data}]" };
+          // plain data objects are encrypted by n8n on import; the file is removed right after
+          cmd = `${put(JSON.stringify(list), "/tmp/cred.json")} && ${cli("import:credentials --input=/tmp/cred.json")} ; docker exec ${box} rm -f /tmp/cred.json`;
+        } else return { ok: false, output: "unknown action" };
+        const r = await withVm(found.vm, (c) => run(c, cmd, { timeoutMs: 120_000 }));
+        const out = `${r.stdout}\n${r.stderr}`.replace(/\n{3,}/g, "\n\n").trim();
+        return { ok: r.code === 0, output: clip(`n8n on ${found.vm.name} (${found.name}):\n${out || "done"}`, 8000) };
       }
       case "db_query": {
         const name = str(a.database).toLowerCase();
