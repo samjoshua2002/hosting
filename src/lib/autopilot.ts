@@ -8,7 +8,8 @@ import { failover, snapshotFleet } from "./failover";
 import { sendAlert } from "./mail";
 import { BusyError, prepareRun, runSession } from "./session-run";
 import { mapLimit, run, withVm } from "./ssh";
-import { storeGetJson, storePut, storeVm } from "./store";
+import { storeGetJson, storePut } from "./store";
+import type { VmConfig } from "./config";
 import type { VmStatus } from "./types";
 
 const PATH = "assistant/autopilot.json";
@@ -19,6 +20,8 @@ export interface AutopilotState {
   lastSummary?: string;
   lastActions?: string[];
   sessionId?: string;
+  /** the dashboard's address the machines ping */
+  appUrl?: string;
 }
 
 export async function getAutopilot(): Promise<AutopilotState> {
@@ -29,22 +32,45 @@ async function save(s: AutopilotState) {
   await storePut(PATH, JSON.stringify(s));
 }
 
-/** Turn it on or off: the schedule lives on the storage machine, with the secret in a private file. */
+const CRON_NAME = "autopilot";
+/** Each machine pings at its own minute; runs closer than this are skipped, so it's one pass per 15 minutes. */
+const MIN_GAP_MS = 10 * 60_000;
+
+function pingCommand(appUrl: string): string {
+  const url = `${appUrl.replace(/\/$/, "")}/api/cron/autopilot`;
+  return `curl -fsS -m 290 -H "Authorization: Bearer $(cat "$HOME/.hosting/autopilot.secret")" "${url}" >/dev/null`;
+}
+
+/** Install (or refresh) the Autopilot ping on one machine; minute offset spreads machines over the 15 minutes. */
+async function installPing(vm: VmConfig, appUrl: string, offset: number): Promise<void> {
+  const secret = process.env.CRON_SECRET!;
+  await withVm(vm, async (c) => {
+    const r = await run(c, 'mkdir -p "$HOME/.hosting" && umask 077 && cat > "$HOME/.hosting/autopilot.secret"', { stdin: secret, timeoutMs: 15_000 });
+    if (r.code !== 0) throw new Error("couldn't store the Autopilot secret");
+  });
+  const m = offset % 15;
+  await cronAction(vm, "add", CRON_NAME, `${m},${m + 15},${m + 30},${m + 45} * * * *`, pingCommand(appUrl));
+}
+
+/**
+ * Turn it on or off. Every reachable machine gets a small ping that calls the dashboard every 15 minutes
+ * (staggered), so Autopilot keeps running as long as any one machine is up; no machine is special.
+ * Servers that stay running (Render, a VPS) also run it on an internal timer (see instrumentation.ts).
+ */
 export async function setAutopilot(enabled: boolean, appUrl: string): Promise<AutopilotState> {
-  const secret = process.env.CRON_SECRET;
-  if (enabled && !secret) throw new Error("Set CRON_SECRET in the environment first (it signs Autopilot's calls)");
-  const vm = storeVm();
-  if (enabled) {
-    await withVm(vm, async (c) => {
-      const r = await run(c, 'mkdir -p "$HOME/.hosting" && umask 077 && cat > "$HOME/.hosting/autopilot.secret"', { stdin: secret, timeoutMs: 15_000 });
-      if (r.code !== 0) throw new Error("couldn't store the Autopilot secret");
-    });
-    const url = `${appUrl.replace(/\/$/, "")}/api/cron/autopilot`;
-    await cronAction(vm, "add", "autopilot", "*/15 * * * *", `curl -fsS -m 290 -H "Authorization: Bearer $(cat "$HOME/.hosting/autopilot.secret")" "${url}" >/dev/null`);
-  } else {
-    await cronAction(vm, "remove", "autopilot").catch(() => "");
-  }
-  const s = { ...(await getAutopilot()), enabled };
+  if (enabled && !process.env.CRON_SECRET) throw new Error("Set CRON_SECRET in the environment first (it signs Autopilot's calls)");
+  const vms = getVms();
+  const results = await mapLimit(vms, 6, async (vm) => {
+    try {
+      if (enabled) await installPing(vm, appUrl, vms.indexOf(vm) * 4 + 1);
+      else await cronAction(vm, "remove", CRON_NAME);
+      return true;
+    } catch {
+      return false; // resting machines get it on a later pass
+    }
+  });
+  if (enabled && !results.some(Boolean) && !process.env.INTERNAL_SCHEDULER) throw new Error("no machine is reachable to run Autopilot's schedule; try again in a minute");
+  const s = { ...(await getAutopilot()), enabled, appUrl: appUrl.replace(/\/$/, "") };
   await save(s);
   return s;
 }
@@ -52,9 +78,22 @@ export async function setAutopilot(enabled: boolean, appUrl: string): Promise<Au
 const today = () => new Date().toISOString().slice(0, 10).replace(/-/g, "");
 
 /** One check-and-fix pass. */
+let running = false;
+
 export async function runAutopilot(opts: { force?: boolean } = {}): Promise<AutopilotState> {
   const state = await getAutopilot();
   if (!state.enabled && !opts.force) return state;
+  // several machines ping it (and maybe an internal timer): one pass per window is enough
+  if (!opts.force && (running || (state.lastRun && Date.now() - state.lastRun < MIN_GAP_MS))) return state;
+  running = true;
+  try {
+    return await pass(state);
+  } finally {
+    running = false;
+  }
+}
+
+async function pass(state: AutopilotState): Promise<AutopilotState> {
   const since = state.lastRun ?? Date.now() - 60 * 60_000;
   const actions: string[] = [];
   const problems: string[] = [];
@@ -66,6 +105,11 @@ export async function runAutopilot(opts: { force?: boolean } = {}): Promise<Auto
     if (!s.ok || !a) {
       problems.push(`${s.name} is unreachable (${s.error ?? "no answer"})`);
       continue;
+    }
+    // the ping that keeps Autopilot running: machines added later (or reset) get it here
+    if (state.appUrl && process.env.CRON_SECRET && !a.cron.some((t) => t.name === CRON_NAME)) {
+      await installPing(vm, state.appUrl, getVms().findIndex((v) => v.name === s.name) * 4 + 1).catch(() => null);
+      actions.push(`set up the Autopilot schedule on ${s.name}`);
     }
     // crashed services: one restart each
     for (const p of a.projects.filter((x) => x.active === "failed")) {

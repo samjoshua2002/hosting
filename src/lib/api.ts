@@ -55,7 +55,14 @@ function checkOrigin(req: NextRequest): void {
   } catch {
     throw new HttpError(403, "bad origin");
   }
-  if (originHost !== host) throw new HttpError(403, "cross-site request blocked");
+  // behind the Vercel front door the backend may see its own host: the dashboard's public address counts too
+  let front = "";
+  try {
+    front = process.env.APP_URL ? new URL(process.env.APP_URL).host : "";
+  } catch {
+    /* ignore a malformed APP_URL */
+  }
+  if (originHost !== host && originHost !== front) throw new HttpError(403, "cross-site request blocked");
 }
 
 export function handle(fn: (req: NextRequest) => Promise<Response>) {

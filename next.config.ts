@@ -19,7 +19,25 @@ const csp = [
   ...(httpsOnly ? ["upgrade-insecure-requests"] : []),
 ].join("; ");
 
+// Split deployment: when BACKEND_URL is set (the Vercel front end), every API call and /go link is served by the
+// backend (Render), which owns the data, the schedule and the SSH connections to the machines. The browser only
+// ever talks to this site, so sign-in cookies and the origin stay the same.
+const backend = (process.env.BACKEND_URL ?? "").replace(/\/$/, "");
+
 const nextConfig: NextConfig = {
+  async rewrites() {
+    if (!backend) return [];
+    return {
+      beforeFiles: [
+        { source: "/api/:path*", destination: `${backend}/api/:path*` },
+        { source: "/go/:name", destination: `${backend}/go/:name` },
+      ],
+      afterFiles: [],
+      fallback: [],
+    };
+  },
+  // a second build folder lets one checkout run as both front end and backend (local testing)
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   cacheComponents: true,
   partialPrefetching: true,
   // ssh2 ships optional native addons; load it from node_modules at runtime instead of bundling it.
