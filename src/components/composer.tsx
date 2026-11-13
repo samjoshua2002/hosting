@@ -626,6 +626,7 @@ export function Composer({
           context={entities.slice(0, 120).map((e) => `${e.name}: ${e.sub}`).join("\n")}
           onDone={(turns, plan) => {
             setVoice(false);
+            requestAnimationFrame(() => area.current?.focus());
             // the conversation goes into the chat first (and the server's transcript), then the plan runs with it
             void appendVoice(sessionId, turns).then(() => plan && onSend(plan));
           }}

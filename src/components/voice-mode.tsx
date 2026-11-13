@@ -6,6 +6,7 @@
 // listens and warms up while it speaks.
 import { AudioLines, Check, Loader2, Mic, MicOff, Play, SlidersHorizontal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "@/lib/client";
 import { cx } from "./ui";
 
@@ -103,6 +104,9 @@ function pickVoice(name?: string): SpeechSynthesisVoice | null {
   return list.find((v) => v.name === name) ?? list.find((v) => voiceGender(v) === "female") ?? list[0] ?? null;
 }
 
+/** Saying one of these while it talks stops it. */
+const STOP_WORDS = /\b(stop|wait|hold on|pause|enough|quiet|shut up|cancel|be quiet)\b/;
+
 /** Words that appear one by one with a soft fade (for live captions). */
 export function FadeWords({ text, className }: { text: string; className?: string }) {
   const words = text.split(/\s+/).filter(Boolean);
@@ -134,6 +138,9 @@ export function VoiceMode({
   const [phase, setPhase] = useState<Phase>("starting");
   const [heard, setHeard] = useState(""); // what you're saying right now
   const [said, setSaid] = useState(""); // what it last said
+  const [parts, setParts] = useState<string[]>([]); // that reply, sentence by sentence
+  const [at, setAt] = useState(-1); // the sentence being spoken
+  const [lastYou, setLastYou] = useState(""); // your last sentence, shown above its reply
   const [err, setErr] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
   const [level, setLevel] = useState(0); // 0..1 mic level, drives the glow
@@ -155,36 +162,87 @@ export function VoiceMode({
   }, []);
 
   /* ---------- speaking ---------- */
-  // speak sentence by sentence with a short breath in between, so it's easy to follow (one long utterance runs on)
+  /** While it speaks, listen for "stop", "wait"…: say one and it stops talking (its own words don't count). */
+  const watchForStop = useCallback((own: string, onStop: () => void) => {
+    const W = window as unknown as { SpeechRecognition?: new () => Rec; webkitSpeechRecognition?: new () => Rec };
+    const Ctor = W.SpeechRecognition ?? W.webkitSpeechRecognition;
+    if (!Ctor || mutedRef.current) return null;
+    const r = new Ctor();
+    r.lang = navigator.language || "en-US";
+    r.interimResults = true;
+    r.continuous = true;
+    let done = false;
+    r.onresult = (ev) => {
+      let t = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++) t += `${ev.results[i][0].transcript} `;
+      const m = t.toLowerCase().match(STOP_WORDS);
+      if (m && !own.includes(m[0]) && !done) {
+        done = true;
+        onStop();
+      }
+    };
+    r.onerror = () => {};
+    r.onend = () => {
+      if (!done && phaseRef.current === "speaking")
+        try {
+          r.start();
+        } catch {
+          /* already running */
+        }
+    };
+    try {
+      r.start();
+    } catch {
+      return null;
+    }
+    return r;
+  }, []);
+
+  // speak sentence by sentence with a short breath in between, so it's easy to follow (one long utterance runs on).
+  // Resolves true when it said everything, false when you stopped or interrupted it.
   const speak = useCallback(
-    async (text: string) => {
+    async (text: string): Promise<boolean> => {
       const synth = window.speechSynthesis;
       synth.cancel();
       go("speaking");
       setSaid(text);
       const clean = text.replace(/\s+/g, " ").replace(/\s*[—–]\s*/g, ", ").trim();
-      const parts = clean.match(/[^.!?;:]+[.!?;:]+["')\]]*|[^.!?;:]+$/g)?.map((p) => p.trim()).filter(Boolean) ?? [clean];
+      const list = clean.match(/[^.!?;:]+[.!?;:]+["')\]]*|[^.!?;:]+$/g)?.map((p) => p.trim()).filter(Boolean) ?? [clean];
+      setParts(list);
+      setAt(0);
       const v = pickVoice(prefsRef.current.voice);
       if (v && !prefsRef.current.voice) prefsRef.current = { ...prefsRef.current, voice: v.name };
-      for (let i = 0; i < parts.length; i++) {
-        if (!alive.current || phaseRef.current !== "speaking") return;
-        await new Promise<void>((resolve) => {
-          const u = new SpeechSynthesisUtterance(parts[i]);
-          if (v) {
-            u.voice = v;
-            u.lang = v.lang; // Safari otherwise falls back to the default voice for the page language
-          }
-          u.rate = prefsRef.current.rate;
-          u.pitch = 1;
-          u.onend = () => resolve();
-          u.onerror = () => resolve();
-          synth.speak(u);
-        });
-        // a breath between sentences (longer after a question)
-        if (i < parts.length - 1) await new Promise((r) => setTimeout(r, /[?]$/.test(parts[i]) ? 380 : 260));
+      let stopped = false;
+      const watch = watchForStop(clean.toLowerCase(), () => {
+        stopped = true;
+        synth.cancel();
+      });
+      try {
+        for (let i = 0; i < list.length; i++) {
+          if (stopped || !alive.current || phaseRef.current !== "speaking") return false;
+          setAt(i);
+          await new Promise<void>((resolve) => {
+            const u = new SpeechSynthesisUtterance(list[i]);
+            if (v) {
+              u.voice = v;
+              u.lang = v.lang; // Safari otherwise falls back to the default voice for the page language
+            }
+            u.rate = prefsRef.current.rate;
+            u.pitch = 1;
+            u.onend = () => resolve();
+            u.onerror = () => resolve();
+            synth.speak(u);
+          });
+          // a breath between sentences (longer after a question)
+          if (i < list.length - 1 && !stopped) await new Promise((r) => setTimeout(r, /[?]$/.test(list[i]) ? 380 : 260));
+        }
+        if (!stopped) setAt(list.length);
+        return !stopped && phaseRef.current === "speaking";
+      } finally {
+        watch?.abort();
       }
     },
-    [go],
+    [go, watchForStop],
   );
 
   /* ---------- listening ---------- */
@@ -249,13 +307,17 @@ export function VoiceMode({
     if (silence.current) clearTimeout(silence.current);
     rec.current?.abort();
     turns.current.push({ role: "user", text });
+    setLastYou(text);
+    setParts([]);
     go("thinking");
     try {
       const r = await api<{ say: string; stage: string; plan?: string }>("/api/ai/voice", { turns: turns.current, context, sessionId, persona: prefsRef.current.persona });
       if (!alive.current) return;
       turns.current.push({ role: "assistant", text: r.say });
-      await speak(r.say);
+      const finished = await speak(r.say);
       if (!alive.current) return;
+      // you said "stop" (or tapped): don't carry on with a plan it was announcing, just listen
+      if (!finished) return listen();
       if (r.stage === "go" && r.plan) return onDone([...turns.current], r.plan);
       if (r.stage === "end") return onDone([...turns.current]);
       listen();
@@ -345,6 +407,15 @@ export function VoiceMode({
     void speak(`Hi, I'm ${v.name.split(/[ (]/)[0]}. This is how I'll sound.`).then(() => alive.current && !mutedRef.current && listen());
   };
 
+  // Esc ends voice mode
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onDone([...turns.current]);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onDone]);
+
   const toggleMute = () => {
     const m = !mutedRef.current;
     mutedRef.current = m;
@@ -366,13 +437,14 @@ export function VoiceMode({
     phase === "starting" ? "Starting…" : phase === "listening" ? "Listening…" : phase === "thinking" ? "Thinking…" : phase === "speaking" ? "Speaking…" : phase === "paused" ? "Mic off" : "Voice mode stopped";
   const glow = phase === "speaking" ? 0.9 : phase === "listening" ? 0.35 + level * 0.65 : phase === "thinking" ? 0.5 : 0.2;
 
-  return (
-    <div className="relative">
-      {/* the glow, rising from behind the bar */}
-      {/* faded at every edge (mask), so it reads as light, never as a box */}
-      <div aria-hidden className="voice-glow-wrap pointer-events-none absolute inset-x-[-12%] bottom-6 h-[300px] overflow-hidden">
+  return createPortal(
+    <div className="voice-in fixed inset-0 z-[70] flex flex-col" role="dialog" aria-modal="true" aria-label="Voice mode">
+      {/* the app behind, frosted */}
+      <div aria-hidden className="absolute inset-0 bg-[var(--bg)]/60 backdrop-blur-2xl backdrop-saturate-150" />
+      {/* the glow, rising from the bottom; faded at every edge (mask), so it reads as light, never as a box */}
+      <div aria-hidden className="voice-glow-wrap pointer-events-none absolute inset-x-0 bottom-0 h-[460px] overflow-hidden">
         <div
-          className={cx("voice-glow absolute inset-x-0 bottom-[-120px] h-[320px] rounded-[50%] blur-3xl transition-[opacity,transform,background] duration-500", phase === "thinking" && "voice-glow-think")}
+          className={cx("voice-glow absolute inset-x-[8%] bottom-[-140px] h-[380px] rounded-[50%] blur-3xl transition-[opacity,transform,background] duration-500", phase === "thinking" && "voice-glow-think")}
           style={{
             opacity: glow,
             transform: `scale(${0.92 + (phase === "listening" ? level * 0.18 : 0)}, ${0.85 + glow * 0.3})`,
@@ -385,16 +457,39 @@ export function VoiceMode({
         <div className="voice-grain absolute inset-0" />
       </div>
 
-      {/* captions */}
-      <div className="relative mb-3 min-h-[3.5rem] px-2 text-center">
-        {phase === "speaking" || (phase === "thinking" && said) ? (
-          <FadeWords key={said} text={said} className="text-[15px] leading-relaxed text-zinc-200" />
-        ) : heard ? (
-          <FadeWords text={heard} className="text-[15px] leading-relaxed text-white" />
-        ) : null}
-        {err && <p className="mt-1 text-[13px] text-[var(--critical-text)]">{err}</p>}
+      {/* captions, in the middle of the screen */}
+      <div className="relative flex flex-1 items-center justify-center overflow-y-auto px-8 py-16">
+        <div className="w-full max-w-3xl text-center">
+          {lastYou && (phase === "thinking" || phase === "speaking") && (
+            <p key={lastYou} className="word-in mb-6 text-[15px] leading-relaxed text-zinc-500">
+              {lastYou}
+            </p>
+          )}
+          {phase === "speaking" || (phase === "thinking" && parts.length) ? (
+            <p className="text-[26px] leading-[1.45] font-medium tracking-[-0.01em]">
+              {parts.map((p, i) => (
+                <span key={`${said}-${i}`} className={cx("word-in transition-colors duration-500", i < at ? "text-zinc-300" : i === at ? "text-white" : "text-zinc-600")} style={{ animationDelay: `${i * 60}ms` }}>
+                  {p}{" "}
+                </span>
+              ))}
+            </p>
+          ) : phase === "thinking" ? (
+            <p className="voice-dots text-[26px] text-zinc-500" aria-label="Thinking">
+              <span>•</span>
+              <span>•</span>
+              <span>•</span>
+            </p>
+          ) : heard ? (
+            <FadeWords text={heard} className="text-[26px] leading-[1.45] font-medium tracking-[-0.01em] text-white" />
+          ) : (
+            <p className="text-[22px] text-zinc-500">{phase === "listening" ? "Go ahead, I'm listening." : phase === "paused" ? "Mic is off." : ""}</p>
+          )}
+          {err && <p className="mt-4 text-[14px] text-[var(--critical-text)]">{err}</p>}
+          {phase === "speaking" && <p className="mt-6 text-[12.5px] text-zinc-500">Say “stop” or tap the bar to interrupt</p>}
+        </div>
       </div>
 
+      <div className="relative mx-auto w-full max-w-[760px] px-4 pb-8">
       <div className="relative flex items-center gap-2 rounded-2xl border border-white/[0.09] bg-pop/90 px-3 py-2.5 shadow-lg shadow-black/20 backdrop-blur" onClick={interrupt}>
         <span className="flex size-8 items-center justify-center">
           {phase === "thinking" || phase === "starting" ? (
@@ -501,6 +596,8 @@ export function VoiceMode({
           <AudioLines className="size-4" /> End
         </button>
       </div>
-    </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
