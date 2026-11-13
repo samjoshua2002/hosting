@@ -92,16 +92,6 @@ export function VoiceWaves({ phase, level = 0, width = 620, height = 240, mini =
       const mid = height / 2;
       ctx.clearRect(0, 0, width, height);
 
-      // a soft halo behind the waves
-      if (!mini) {
-        const g = ctx.createRadialGradient(width / 2, mid, 0, width / 2, mid, width * 0.42);
-        g.addColorStop(0, `hsla(${hue}, 80%, 60%, ${0.22 * st.glow})`);
-        g.addColorStop(0.5, `hsla(${hue + 30}, 80%, 50%, ${0.08 * st.glow})`);
-        g.addColorStop(1, "hsla(0,0%,0%,0)");
-        ctx.fillStyle = g;
-        ctx.fillRect(0, 0, width, height);
-      }
-
       ctx.globalCompositeOperation = "lighter";
       for (const r of ribbons) {
         const amp = live * r.a * (height * 0.42);
@@ -147,5 +137,18 @@ export function VoiceWaves({ phase, level = 0, width = 620, height = 240, mini =
     return () => gsap.ticker.remove(draw);
   }, [width, height, mini]);
 
-  return <canvas ref={canvas} aria-hidden style={{ width, height }} className="block max-w-full" />;
+  // the halo lives outside the canvas (a blurred layer that fades out on every side), so there's never an edge
+  const glow = phase === "speaking" ? 0.85 : phase === "thinking" || phase === "starting" ? 0.6 : phase === "listening" ? 0.4 + level * 0.4 : 0.2;
+  return (
+    <div className="relative" style={{ width, height }}>
+      {!mini && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute top-1/2 left-1/2 size-[70%] -translate-x-1/2 -translate-y-1/2 rounded-full blur-3xl transition-opacity duration-700"
+          style={{ opacity: glow, background: "radial-gradient(closest-side, hsl(var(--h) 80% 60% / .35), hsl(calc(var(--h) + 30) 80% 50% / .12) 60%, transparent)" }}
+        />
+      )}
+      <canvas ref={canvas} aria-hidden style={{ width, height }} className="relative block max-w-full" />
+    </div>
+  );
 }
