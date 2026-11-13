@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "@/lib/client";
 import { UnsplashLayer, useTheme } from "./theme";
+import { VoiceWaves } from "./voice-waves";
 import { cx } from "./ui";
 
 type Phase = "starting" | "listening" | "thinking" | "speaking" | "paused" | "error";
@@ -121,26 +122,6 @@ function pickVoice(name?: string): SpeechSynthesisVoice | null {
 
 /** Saying one of these while it talks stops it. */
 const STOP_WORDS = /\b(stop|wait|hold on|pause|enough|quiet|shut up|cancel|be quiet)\b/;
-
-/**
- * The voice orb: a glossy chrome sphere with an iridescent band of light in the theme's colours. It swells with your
- * voice while listening, swirls while thinking and pulses while speaking.
- */
-export function VoiceOrb({ phase, level = 0, size = 132 }: { phase: string; level?: number; size?: number }) {
-  const scale = phase === "listening" ? 1 + level * 0.08 : 1;
-  return (
-    <span
-      aria-hidden
-      className={cx("voice-orb relative block shrink-0 rounded-full", `voice-orb--${phase}`)}
-      style={{ width: size, height: size, transform: `scale(${scale})` }}
-    >
-      <span className="voice-orb__body absolute inset-0 rounded-full" />
-      <span className="voice-orb__band absolute inset-0 rounded-full" />
-      <span className="voice-orb__glint absolute inset-0 rounded-full" />
-      <span className="voice-orb__rim absolute inset-0 rounded-full" />
-    </span>
-  );
-}
 
 /** Words that appear one by one with a soft fade (for live captions). */
 export function FadeWords({ text, className }: { text: string; className?: string }) {
@@ -561,8 +542,8 @@ export function VoiceMode({
       {/* captions, in the middle of the screen */}
       <div className="relative flex flex-1 items-center justify-center overflow-y-auto px-8 py-16">
         <div className="w-full max-w-3xl text-center">
-          <div className="mb-10 flex justify-center">
-            <VoiceOrb phase={phase} level={level} />
+          <div className="mb-8 flex justify-center">
+            <VoiceWaves phase={phase} level={level} />
           </div>
           {lastYou && (phase === "thinking" || phase === "speaking") && (
             <p key={lastYou} className="word-in mb-6 text-[15px] leading-relaxed text-zinc-500">
@@ -608,7 +589,7 @@ export function VoiceMode({
       <div className="relative flex items-center gap-2 rounded-2xl border border-white/[0.09] bg-pop/90 px-3 py-2.5 shadow-lg shadow-black/20 backdrop-blur" onClick={interrupt}>
         <span className="flex size-8 items-center justify-center">
           {phase === "thinking" || phase === "starting" ? (
-            <VoiceOrb phase="thinking" size={22} />
+            <VoiceWaves phase="thinking" mini width={30} height={20} />
           ) : (
             <span className="flex h-4 items-end gap-[3px]" aria-hidden>
               {[0, 1, 2, 3].map((i) => (
