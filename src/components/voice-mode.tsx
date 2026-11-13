@@ -46,12 +46,14 @@ interface VoicePrefs {
   voice?: string;
   persona: Persona;
   rate: number;
+  /** don't listen while it speaks: background noise (or you) can't interrupt it; tapping still does */
+  holdMic?: boolean;
 }
 const PREFS = "hosting.voice";
 function loadPrefs(): VoicePrefs {
   try {
     const p = JSON.parse(localStorage.getItem(PREFS) ?? "{}") as Partial<VoicePrefs>;
-    return { voice: p.voice, persona: PERSONAS.some((x) => x.id === p.persona) ? p.persona! : "warm", rate: typeof p.rate === "number" && p.rate !== 1.03 ? p.rate : 0.97 };
+    return { voice: p.voice, persona: PERSONAS.some((x) => x.id === p.persona) ? p.persona! : "warm", rate: typeof p.rate === "number" && p.rate !== 1.03 ? p.rate : 0.97, holdMic: p.holdMic === true };
   } catch {
     return { persona: "warm", rate: 0.97 };
   }
@@ -155,6 +157,8 @@ export function VoiceMode({
   const audio = useRef<{ ctx: AudioContext; stream: MediaStream; raf: number } | null>(null);
   // listen() hands your finished sentence to respond(); a ref breaks the circle between the two
   const respondRef = useRef<() => Promise<void>>(async () => {});
+  // words you said while interrupting it, carried into the next turn
+  const carry = useRef("");
 
   const go = useCallback((p: Phase) => {
     phaseRef.current = p;
@@ -162,23 +166,31 @@ export function VoiceMode({
   }, []);
 
   /* ---------- speaking ---------- */
-  /** While it speaks, listen for "stop", "wait"…: say one and it stops talking (its own words don't count). */
-  const watchForStop = useCallback((own: string, onStop: () => void) => {
+  /**
+   * While it speaks, keep listening: if you start talking it stops and hands over what you said so far ("stop",
+   * "wait"… stop it too). Its own voice coming back through the mic doesn't count: words it is saying are ignored.
+   */
+  const watchForYou = useCallback((own: string, onYou: (said: string) => void) => {
     const W = window as unknown as { SpeechRecognition?: new () => Rec; webkitSpeechRecognition?: new () => Rec };
     const Ctor = W.SpeechRecognition ?? W.webkitSpeechRecognition;
     if (!Ctor || mutedRef.current) return null;
+    const ownWords = new Set(own.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").split(/\s+/).filter(Boolean));
     const r = new Ctor();
     r.lang = navigator.language || "en-US";
     r.interimResults = true;
     r.continuous = true;
     let done = false;
     r.onresult = (ev) => {
+      if (done) return;
       let t = "";
-      for (let i = ev.resultIndex; i < ev.results.length; i++) t += `${ev.results[i][0].transcript} `;
-      const m = t.toLowerCase().match(STOP_WORDS);
-      if (m && !own.includes(m[0]) && !done) {
+      for (let i = 0; i < ev.results.length; i++) t += `${ev.results[i][0].transcript} `;
+      const heardNow = t.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").split(/\s+/).filter(Boolean);
+      const stop = t.toLowerCase().match(STOP_WORDS);
+      const yours = heardNow.filter((w) => !ownWords.has(w));
+      // a stop word, or at least two words of yours that make up most of what was heard
+      if ((stop && !ownWords.has(stop[0])) || (yours.length >= 2 && yours.length / heardNow.length >= 0.5)) {
         done = true;
-        onStop();
+        onYou(stop && yours.length < 3 ? "" : t.trim());
       }
     };
     r.onerror = () => {};
@@ -213,10 +225,13 @@ export function VoiceMode({
       const v = pickVoice(prefsRef.current.voice);
       if (v && !prefsRef.current.voice) prefsRef.current = { ...prefsRef.current, voice: v.name };
       let stopped = false;
-      const watch = watchForStop(clean.toLowerCase(), () => {
-        stopped = true;
-        synth.cancel();
-      });
+      const watch = prefsRef.current.holdMic
+        ? null
+        : watchForYou(clean, (yours) => {
+            stopped = true;
+            carry.current = yours; // what you started saying; listening picks it up from there
+            synth.cancel();
+          });
       try {
         for (let i = 0; i < list.length; i++) {
           if (stopped || !alive.current || phaseRef.current !== "speaking") return false;
@@ -242,7 +257,7 @@ export function VoiceMode({
         watch?.abort();
       }
     },
-    [go, watchForStop],
+    [go, watchForYou],
   );
 
   /* ---------- listening ---------- */
@@ -260,8 +275,11 @@ export function VoiceMode({
     r.lang = navigator.language || "en-US";
     r.interimResults = true;
     r.continuous = true;
-    utter.current = "";
-    setHeard("");
+    // if you interrupted it, start from what you'd already said
+    const seed = carry.current.trim();
+    carry.current = "";
+    utter.current = seed ? `${seed} ` : "";
+    setHeard(seed);
     r.onresult = (ev) => {
       let interim = "";
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
@@ -316,8 +334,12 @@ export function VoiceMode({
       turns.current.push({ role: "assistant", text: r.say });
       const finished = await speak(r.say);
       if (!alive.current) return;
-      // you said "stop" (or tapped): don't carry on with a plan it was announcing, just listen
-      if (!finished) return listen();
+      // you cut in (talking, "stop" or a tap): note it, don't carry on with a plan it was announcing, listen to you
+      if (!finished) {
+        const last = turns.current[turns.current.length - 1];
+        if (last?.role === "assistant") last.text = `${last.text} (the user interrupted before I finished)`;
+        return listen();
+      }
       if (r.stage === "go" && r.plan) return onDone([...turns.current], r.plan);
       if (r.stage === "end") return onDone([...turns.current]);
       listen();
@@ -485,7 +507,9 @@ export function VoiceMode({
             <p className="text-[22px] text-zinc-500">{phase === "listening" ? "Go ahead, I'm listening." : phase === "paused" ? "Mic is off." : ""}</p>
           )}
           {err && <p className="mt-4 text-[14px] text-[var(--critical-text)]">{err}</p>}
-          {phase === "speaking" && <p className="mt-6 text-[12.5px] text-zinc-500">Say “stop” or tap the bar to interrupt</p>}
+          {phase === "speaking" && (
+            <p className="mt-6 text-[12.5px] text-zinc-500">{prefs.holdMic ? "Your mic is muted while it speaks · tap the bar to cut in" : "Just start talking to interrupt"}</p>
+          )}
         </div>
       </div>
 
@@ -508,7 +532,7 @@ export function VoiceMode({
         </span>
         <span className="flex-1 text-[14.5px] text-zinc-400">
           {status}
-          {phase === "speaking" && <span className="ml-2 text-[12px] text-zinc-600">tap to interrupt</span>}
+          {phase === "speaking" && <span className="ml-2 text-[12px] text-zinc-600">{prefs.holdMic ? "mic muted · tap to cut in" : "talk to interrupt"}</span>}
         </span>
         <div className="relative">
           <button
@@ -533,6 +557,22 @@ export function VoiceMode({
                   </button>
                 ))}
               </div>
+              <button
+                onClick={() => update({ holdMic: !prefs.holdMic })}
+                role="switch"
+                aria-checked={Boolean(prefs.holdMic)}
+                className="mt-3 flex w-full items-start gap-3 rounded-lg border border-white/[0.06] px-2.5 py-2 text-left hover:bg-white/[0.04]"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[12.5px] text-white">Mute my mic while it speaks</span>
+                  <span className="block text-[10.5px] leading-snug text-zinc-500">
+                    {prefs.holdMic ? "Noise can't interrupt it. Tap the bar to cut in." : "Start talking any time and it stops to listen."}
+                  </span>
+                </span>
+                <span className={cx("relative mt-0.5 h-[18px] w-8 shrink-0 rounded-full transition-colors", prefs.holdMic ? "bg-[#2b5dd6]" : "bg-white/15")}>
+                  <span className={cx("absolute top-[2px] size-[14px] rounded-full bg-white transition-all", prefs.holdMic ? "left-[16px]" : "left-[2px]")} />
+                </span>
+              </button>
               <p className="mt-3 text-[11.5px] font-medium tracking-wide text-zinc-500 uppercase">Speed</p>
               <div className="mt-2 flex gap-1">
                 {(
