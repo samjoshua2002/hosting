@@ -61,6 +61,24 @@ export interface ChatResult {
   usage?: { total_tokens?: number };
 }
 
+/**
+ * Make a conversation valid for the API: every assistant tool call is followed directly by its tool result. A step
+ * that was interrupted (a stopped run, a voice conversation or a new message added while a step waited) gets a short
+ * "interrupted" result instead of breaking every later request; tool results with no matching call are dropped.
+ */
+export function repairToolPairs(messages: ChatMessage[]): ChatMessage[] {
+  const results = new Map<string, ChatMessage>();
+  for (const m of messages) if (m.role === "tool" && !results.has(m.tool_call_id)) results.set(m.tool_call_id, m);
+  const out: ChatMessage[] = [];
+  for (const m of messages) {
+    if (m.role === "tool") continue; // placed right after its call below
+    out.push(m);
+    if (m.role === "assistant" && m.tool_calls?.length)
+      for (const c of m.tool_calls) out.push(results.get(c.id) ?? { role: "tool", tool_call_id: c.id, content: "(no result: this step was interrupted before it finished)" });
+  }
+  return out;
+}
+
 export async function chat(opts: {
   model?: string;
   messages: ChatMessage[];
@@ -76,7 +94,7 @@ export async function chat(opts: {
   const startTime = new Date();
   for (const deployment of chain) {
     const body: Record<string, unknown> = {
-      messages: opts.messages,
+      messages: repairToolPairs(opts.messages),
       max_completion_tokens: opts.maxTokens ?? 2500,
     };
     if (opts.tools?.length) {

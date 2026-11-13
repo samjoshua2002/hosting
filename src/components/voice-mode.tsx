@@ -84,6 +84,19 @@ export function usableVoices(): SpeechSynthesisVoice[] {
   return [...(mine.length ? mine : voices)].sort((a, b) => quality(b) - quality(a));
 }
 
+/** Voices load late (Safari, Chrome): wait for them, up to 2 s, so the first sentence already has the right voice. */
+function voicesReady(): Promise<void> {
+  if (window.speechSynthesis.getVoices().length) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      window.speechSynthesis.removeEventListener("voiceschanged", done);
+      resolve();
+    };
+    window.speechSynthesis.addEventListener("voiceschanged", done);
+    setTimeout(done, 2000);
+  });
+}
+
 /** The chosen voice if it's here, else the most natural one (a warm female voice first, like most assistants). */
 function pickVoice(name?: string): SpeechSynthesisVoice | null {
   const list = usableVoices();
@@ -149,7 +162,12 @@ export function VoiceMode({
         synth.cancel();
         const u = new SpeechSynthesisUtterance(text);
         const v = pickVoice(prefsRef.current.voice);
-        if (v) u.voice = v;
+        if (v) {
+          u.voice = v;
+          u.lang = v.lang; // Safari otherwise falls back to the default voice for the page language
+          // remember the voice actually used, so every sentence after this one sounds the same
+          if (!prefsRef.current.voice) prefsRef.current = { ...prefsRef.current, voice: v.name };
+        }
         u.rate = prefsRef.current.rate;
         u.pitch = 1;
         u.onend = () => resolve();
@@ -277,8 +295,13 @@ export function VoiceMode({
     // voices load lazily in some browsers
     window.speechSynthesis.getVoices();
     const t = setTimeout(() => {
-      void speak("Hi, I'm listening. What would you like to do?").then(() => alive.current && listen());
-    }, 250);
+      void (async () => {
+        await voicesReady();
+        if (!alive.current) return;
+        await speak("Hi, I'm listening. What would you like to do?");
+        if (alive.current) listen();
+      })();
+    }, 150);
     return () => {
       alive.current = false;
       clearTimeout(t);
