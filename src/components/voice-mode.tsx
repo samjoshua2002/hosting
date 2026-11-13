@@ -232,6 +232,14 @@ export function VoiceMode({
     docRef.current = docs[sessionId];
   }, [docs, sessionId]);
   const runFrom = useRef(0); // where the running task's items start
+  // the chat so far, so a call in an existing conversation picks up where it left off (voice turns of this call
+  // are sent separately, so they're left out here)
+  const chatSoFar = () =>
+    (docRef.current?.items ?? [])
+      .filter((i): i is Extract<Item, { kind: "user" | "text" }> => (i.kind === "user" || i.kind === "text") && !i.voice && i.text.trim() !== "")
+      .slice(-16)
+      .map((i) => ({ role: i.kind === "user" ? "user" : "assistant", text: i.text.slice(0, 1200) }));
+  const history = useRef<{ role: string; text: string }[]>([]);
   const [taskFrom, setTaskFrom] = useState<number | null>(null); // shows the side panel with what it's doing
   const taskPanel = useRef<HTMLElement>(null);
   // the split: the panel grows open from the right (the voice side glides over to make room), then its content fades up
@@ -443,11 +451,13 @@ export function VoiceMode({
         let say = result ? "" : "Done.";
         if (result) {
           go("thinking");
-          say = await api<{ say: string }>("/api/ai/voice", { summarize: result, turns: turns.current, sessionId: ctx.current.sessionId, persona: prefsRef.current.persona })
+          say = await api<{ say: string }>("/api/ai/voice", { summarize: result, turns: turns.current, history: history.current, sessionId: ctx.current.sessionId, persona: prefsRef.current.persona })
             .then((r) => r.say)
             .catch(() => "It's done. The details are in the chat.");
         }
         if (!alive.current) return;
+        // the result is part of the conversation now: follow-up questions ("which is biggest?") can use it
+        history.current = chatSoFar();
         turns.current.push({ role: "assistant", text: say });
         await speak(say);
         if (alive.current) listen();
@@ -520,6 +530,7 @@ export function VoiceMode({
     try {
       const r = await api<{ say: string; stage: string; plan?: string; options?: VoiceOption[] }>("/api/ai/voice", {
         turns: turns.current,
+        history: history.current,
         context: ctx.current.context,
         sessionId: ctx.current.sessionId,
         persona: prefsRef.current.persona,
@@ -587,9 +598,10 @@ export function VoiceMode({
     window.speechSynthesis.getVoices();
     const t = setTimeout(() => {
       void (async () => {
+        history.current = chatSoFar();
         const [, hello] = await Promise.all([
           voicesReady(),
-          api<{ say: string }>("/api/ai/voice", { greet: true, context: ctx.current.context, sessionId: ctx.current.sessionId, persona: prefsRef.current.persona, localTime: localTime(), avoid: lastGreeting() })
+          api<{ say: string }>("/api/ai/voice", { greet: true, history: history.current, context: ctx.current.context, sessionId: ctx.current.sessionId, persona: prefsRef.current.persona, localTime: localTime(), avoid: lastGreeting() })
             .then((r) => {
               rememberGreeting(r.say);
               return r.say;

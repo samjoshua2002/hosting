@@ -38,6 +38,8 @@ const SUMMARY = `You are the voice of the hosting Assistant, on a call. The Assi
 
 const NAME = process.env.OWNER_NAME || "Sam";
 
+const GREET_BACK = `You're picking a voice call back up in an ongoing conversation with \${NAME} (the chat so far is below). Greet them warmly and briefly as a continuation, not a fresh start ("Welcome back, \${NAME}!"), and offer to carry on with what they were last doing, named in a few words. One or two short sentences, positive, upbeat. Return JSON: {"say":"..."}`;
+
 /** One of these is picked at random for each greeting, so no two openings sound alike. */
 const GREET_STYLES = [
   "short and punchy, three to six words then the question",
@@ -101,8 +103,14 @@ function cleanOptions(v: unknown): Option[] {
 export const POST = handle(async (req: NextRequest) => {
   await requireAuth(req);
   if (!aiConfigured()) throw new HttpError(503, "Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY to use voice mode.");
-  const b = await readJson<{ turns?: unknown; context?: unknown; sessionId?: unknown; persona?: unknown; localTime?: unknown; greet?: unknown; summarize?: unknown; avoid?: unknown }>(req, 300_000);
+  const b = await readJson<{ turns?: unknown; context?: unknown; sessionId?: unknown; persona?: unknown; localTime?: unknown; greet?: unknown; summarize?: unknown; avoid?: unknown; history?: unknown }>(req, 400_000);
   const avoid = typeof b.avoid === "string" ? b.avoid.slice(0, 300) : "";
+  // the chat so far (when voice mode opens in a conversation that already has history)
+  const history = (Array.isArray((b as { history?: unknown }).history) ? ((b as { history: unknown[] }).history) : [])
+    .filter((t): t is { role: string; text: string } => !!t && typeof t === "object" && typeof (t as { text?: unknown }).text === "string")
+    .slice(-16)
+    .map((t) => ({ role: t.role === "assistant" ? ("assistant" as const) : ("user" as const), content: t.text.slice(0, 1200) }));
+  const earlier = history.length ? `The conversation so far, before this call (for context; continue from it):\n${history.map((h) => `${h.role === "user" ? NAME : "Assistant"}: ${h.content}`).join("\n")}` : "";
   const summarize = typeof b.summarize === "string" ? b.summarize.slice(0, 12_000) : null;
   const turns = (Array.isArray(b.turns) ? b.turns : [])
     .filter((t): t is { role: string; text: string } => !!t && typeof t === "object" && typeof (t as { text?: unknown }).text === "string")
@@ -126,6 +134,7 @@ export const POST = handle(async (req: NextRequest) => {
     context && !greet ? `What's running right now:\n${context}` : "",
     repos,
     services.length ? `Connected services the Assistant can query: ${services.join(", ")}` : "",
+    earlier,
     boxes.length ? `Connected mailboxes: ${boxes.map((m) => m.email).join(", ")}` : "No mailbox is connected yet (drafting email needs one: Settings → Connectors → Gmail).",
   ]
     .filter(Boolean)
@@ -142,7 +151,7 @@ export const POST = handle(async (req: NextRequest) => {
         ? [
             {
               role: "system",
-              content: `${GREET.replaceAll("${NAME}", NAME)}\n\nThis time make it: ${GREET_STYLES[Math.floor(Math.random() * GREET_STYLES.length)]}.${avoid ? `\nDon't reuse the last greeting's wording: "${avoid}"` : ""}\n\n${about}`,
+              content: `${(history.length ? GREET_BACK : GREET).replaceAll("${NAME}", NAME)}\n\nThis time make it: ${GREET_STYLES[Math.floor(Math.random() * GREET_STYLES.length)]}.${avoid ? `\nDon't reuse the last greeting's wording: "${avoid}"` : ""}\n\n${about}`,
             },
           ]
         : summarize
