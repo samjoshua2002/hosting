@@ -1,10 +1,11 @@
 "use client";
 
-import { ArrowUp, AtSign, Check, ChevronRight, ChevronUp, Cloud, Cpu, Database, FileText, FolderGit2, Globe, LayoutGrid, Laptop, Loader2, Mail, Mic, Paperclip, Plug, Plus, Server, Settings2, Slash, Sparkles, Square, Wrench, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, AtSign, AudioLines, Check, ChevronRight, ChevronUp, Cloud, Cpu, Database, FileText, FolderGit2, Globe, LayoutGrid, Laptop, Loader2, Mail, Mic, Paperclip, Plug, Plus, Server, Settings2, Slash, Sparkles, Square, Wrench, X, type LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import type { Att } from "@/lib/assistant-items";
 import { toggleConnector, useAssistant } from "./assistant-store";
+import { FadeWords, VoiceMode, voiceSupported } from "./voice-mode";
 import { connectorDef } from "@/lib/connector-catalog";
 import { projectType, TYPE_LABEL, type ProjectType } from "@/lib/project-type";
 import type { VmInfo, VmStatus } from "@/lib/types";
@@ -366,6 +367,13 @@ export function Composer({
   }, []);
   const all = useMemo(() => [...BASE, ...COMMANDS.map((c) => ({ ...c, group: c.group ?? ("Commands" as const) })), ...skills], [skills]);
   const [listening, setListening] = useState(false);
+  const [interim, setInterim] = useState("");
+  const [voice, setVoice] = useState(false);
+  const canVoice = useSyncExternalStore(
+    () => () => {},
+    voiceSupported,
+    () => false,
+  );
   const recog = useRef<{ stop: () => void } | null>(null);
   const dictate = () => {
     if (recog.current) {
@@ -377,12 +385,18 @@ export function Composer({
     if (!Ctor) return;
     const r = new Ctor();
     r.lang = navigator.language || "en-US";
-    r.interimResults = false;
+    // words show up while you speak (faded in), and settle into the box when the phrase is final
+    r.interimResults = true;
     r.continuous = true;
     const base = text;
     let said = "";
     r.onresult = (ev) => {
-      for (let i = ev.resultIndex; i < ev.results.length; i++) if (ev.results[i].isFinal) said += `${ev.results[i][0].transcript} `;
+      let live = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        if (ev.results[i].isFinal) said += `${ev.results[i][0].transcript.trim()} `;
+        else live += ev.results[i][0].transcript;
+      }
+      setInterim(live.trim());
       const next = `${base}${base && !base.endsWith(" ") ? " " : ""}${said}`.trimStart();
       setText(next);
       setCaret(next.length);
@@ -390,6 +404,7 @@ export function Composer({
     r.onend = () => {
       recog.current = null;
       setListening(false);
+      setInterim("");
     };
     r.onerror = () => r.stop();
     recog.current = r;
@@ -605,6 +620,14 @@ export function Composer({
           ))}
         </div>
       )}
+      {voice ? (
+        <VoiceMode
+          sessionId={sessionId}
+          context={entities.slice(0, 120).map((e) => `${e.name}: ${e.sub}`).join("\n")}
+          onPlan={(plan) => onSend(plan)}
+          onClose={() => setVoice(false)}
+        />
+      ) : (
       <div className="rounded-2xl border border-white/[0.09] bg-pop shadow-lg shadow-black/20 transition-colors focus-within:border-white/[0.18]">
         <div className="flex items-end gap-1 px-2 py-2">
           <input ref={fileInput} type="file" multiple hidden onChange={(e) => onAttach(e.target.files)} />
@@ -716,6 +739,21 @@ export function Composer({
           >
             <Mic className={cx("size-[17px]", listening && "animate-pulse")} />
           </button>
+          {canVoice && (
+            <button
+              type="button"
+              onClick={() => {
+                recog.current?.stop();
+                setVoice(true);
+              }}
+              disabled={busy || disabled}
+              className="grid size-9 shrink-0 place-items-center rounded-lg bg-white/[0.05] text-zinc-300 transition-colors hover:bg-white/[0.1] hover:text-white disabled:opacity-40"
+              aria-label="Use voice mode"
+              title="Use voice mode"
+            >
+              <AudioLines className="size-[17px]" />
+            </button>
+          )}
           {busy ? (
             <button type="button" onClick={onStop} className="grid size-9 shrink-0 place-items-center rounded-lg bg-white/[0.1] text-white hover:bg-white/[0.16]" aria-label="Stop">
               <Square className="size-3.5 fill-current" />
@@ -732,7 +770,13 @@ export function Composer({
             </button>
           )}
         </div>
+        {listening && interim && (
+          <div className="-mt-1 px-12 pb-2.5 text-[14px] leading-relaxed text-zinc-400">
+            <FadeWords text={interim} />
+          </div>
+        )}
       </div>
+      )}
       <div className="mt-1.5 flex items-center gap-0.5 px-1">
         {onTarget && <MachineChip machines={machines} target={target} onTarget={onTarget} />}
         <ModelPicker value={model} models={models} onChange={onModel} review={review} onReview={onReview} open={modelOpen} setOpen={setModelOpen} />
