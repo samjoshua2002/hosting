@@ -9,6 +9,7 @@ interface Methods {
   configured: boolean;
   password: boolean;
   passkey: boolean;
+  zoho?: boolean;
 }
 
 async function post(path: string, body: unknown): Promise<{ ok: boolean; error?: string }> {
@@ -22,12 +23,17 @@ export default function LoginPage() {
   const [methods, setMethods] = useState<Methods | null>(null);
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"password" | "passkey" | null>(null);
+  const [busy, setBusy] = useState<"password" | "passkey" | "zoho" | null>(null);
 
   useEffect(() => {
     fetch("/api/auth/methods", { cache: "no-store" })
       .then((r) => r.json())
-      .then((m: Methods) => setMethods({ ...m, passkey: m.passkey && browserSupportsWebAuthn() }))
+      .then((m: Methods) => {
+        setMethods({ ...m, passkey: m.passkey && browserSupportsWebAuthn() });
+        // a failed Zoho sign-in comes back as /login?error=…
+        const back = new URLSearchParams(window.location.search).get("error");
+        if (back) setError(back.slice(0, 200));
+      })
       .catch(() => setMethods({ configured: true, password: true, passkey: false }));
   }, []);
 
@@ -68,9 +74,9 @@ export default function LoginPage() {
   };
 
   return (
-    <main className="grid min-h-dvh grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] bg-bg">
-      {/* left: the session's Unsplash gradient art */}
-      <div className="p-3">
+    <main className="grid min-h-dvh grid-cols-1 bg-bg md:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+      {/* left: the session's Unsplash gradient art (hidden on phones, where the form needs the room) */}
+      <div className="hidden p-3 md:block">
         <UnsplashLayer photo={photo} className="login-art h-full min-h-[calc(100dvh-1.5rem)] rounded-[28px]">
           <div className="flex h-full min-h-[calc(100dvh-1.5rem)] flex-col justify-between p-10">
             <div className="flex items-center gap-2.5">
@@ -95,7 +101,7 @@ export default function LoginPage() {
       </div>
 
       {/* right: sign in */}
-      <div className="flex items-center justify-center px-12">
+      <div className="flex items-center justify-center px-5 py-10 sm:px-12">
         <div className="w-full max-w-sm">
           <h2 className="text-3xl font-bold tracking-tight text-white">Welcome back</h2>
           <p className="mt-2 text-sm text-muted">Sign in to your control panel.</p>
@@ -118,7 +124,26 @@ export default function LoginPage() {
               </button>
             )}
 
-            {methods?.passkey && methods.password && (
+            {methods?.zoho && (
+              <a
+                href="/api/auth/zoho/start"
+                onClick={() => setBusy("zoho")}
+                aria-disabled={busy !== null}
+                className={`flex h-12 w-full items-center justify-center gap-2.5 rounded-full text-sm font-semibold transition-colors ${
+                  methods.passkey ? "border border-white/15 text-white hover:bg-white/5" : "bg-white text-black hover:bg-white/85"
+                } ${busy !== null ? "pointer-events-none opacity-60" : ""}`}
+              >
+                {busy === "zoho" ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element -- brand mark from the allowed icon CDN
+                  <img src="https://cdn.simpleicons.org/zoho" alt="" className="size-4" />
+                )}
+                Continue with Zoho
+              </a>
+            )}
+
+            {(methods?.passkey || methods?.zoho) && methods.password && (
               <div className="flex items-center gap-3 text-[11px] text-muted">
                 <span className="h-px flex-1 bg-white/10" /> or with password <span className="h-px flex-1 bg-white/10" />
               </div>
@@ -133,7 +158,7 @@ export default function LoginPage() {
                   <input
                     id="pw"
                     type="password"
-                    autoFocus={!methods?.passkey}
+                    autoFocus={!methods?.passkey && !methods?.zoho}
                     autoComplete="current-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
@@ -152,7 +177,7 @@ export default function LoginPage() {
               </form>
             )}
 
-            {methods && !methods.password && !methods.passkey && (
+            {methods && !methods.password && !methods.passkey && !methods.zoho && (
               <p className="text-sm text-muted">Password sign-in is off and no passkey is registered for this domain.</p>
             )}
             {error && <p className="text-sm text-[var(--critical-text)]">{error}</p>}

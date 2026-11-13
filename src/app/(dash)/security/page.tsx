@@ -157,20 +157,21 @@ export default function SecurityPage() {
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Card className="p-6">
-          <SectionTitle>Email alerts</SectionTitle>
+          <SectionTitle>Email reports</SectionTitle>
           <p className="text-sm text-muted">
             {o?.mail ? (
               <>
-                Alerts go to <b className="text-white">{o.mailTo}</b> (set <code>ALERT_EMAIL_TO</code> to change). You get one for every sign-in,
-                for repeated failed sign-ins, when the dashboard sees a VM go down or a project fail, and from the daily health check.
+                A fleet report goes to <b className="text-white">{o.mailTo}</b> every 5 hours (<code>REPORT_EVERY_HOURS</code> changes it,{" "}
+                <code>ALERT_EMAIL_TO</code> the address): an AI summary, what Autopilot fixed, what needs you, machines, deploys and Assistant
+                activity. Sign-ins still email straight away.
               </>
             ) : (
-              "Set EMAIL_USER and EMAIL_PASS to turn on email alerts."
+              "Set EMAIL_USER and EMAIL_PASS to turn on email reports."
             )}
           </p>
           <div className="mt-4 flex items-center gap-3">
             <Button onClick={testMail} loading={mailState === "sending"} disabled={!o?.mail}>
-              <Mail className="size-4" /> Send test email
+              <Mail className="size-4" /> Send a report now
             </Button>
             {mailState === "sent" && <span className="flex items-center gap-1 text-sm text-[var(--good-text)]"><Check className="size-4" /> Sent</span>}
             {mailState !== "idle" && mailState !== "sending" && mailState !== "sent" && (

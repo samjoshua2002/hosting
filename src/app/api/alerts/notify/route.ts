@@ -1,14 +1,14 @@
 import type { NextRequest } from "next/server";
 import { handle, HttpError, readJson, requireAuth } from "@/lib/api";
-import { mailConfigured, sendAlert, type MailItem } from "@/lib/mail";
+import type { MailItem } from "@/lib/mail";
+import { logEvents } from "@/lib/report";
 
 const recent = new Map<string, number>(); // title → last sent (per instance)
 const QUIET_MS = 30 * 60 * 1000;
 
-/** POST /api/alerts/notify { items } emails new problems the dashboard noticed (deduped for 30 min). */
+/** POST /api/alerts/notify { items }: problems the dashboard noticed go into the next fleet report (no email each time). */
 export const POST = handle(async (req: NextRequest) => {
   await requireAuth(req);
-  if (!mailConfigured()) return Response.json({ sent: false, reason: "mail not configured" });
   const { items } = await readJson<{ items?: unknown }>(req);
   if (!Array.isArray(items)) throw new HttpError(400, "items must be an array");
   const now = Date.now();
@@ -23,11 +23,6 @@ export const POST = handle(async (req: NextRequest) => {
     .filter((i) => now - (recent.get(i.title) ?? 0) > QUIET_MS);
   if (!fresh.length) return Response.json({ sent: false, reason: "duplicate" });
   fresh.forEach((i) => recent.set(i.title, now));
-  const critical = fresh.some((i) => i.tone === "critical");
-  const sent = await sendAlert(
-    critical ? `${fresh.length} problem${fresh.length > 1 ? "s" : ""} need attention` : "Fleet change detected",
-    "Your dashboard just noticed:",
-    fresh,
-  );
-  return Response.json({ sent });
+  await logEvents(fresh.map((i) => ({ kind: i.tone === "good" ? ("fixed" as const) : i.tone === "info" ? ("notice" as const) : ("problem" as const), text: i.detail ? `${i.title}: ${i.detail}` : i.title })));
+  return Response.json({ sent: false, logged: fresh.length });
 });

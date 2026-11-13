@@ -59,7 +59,7 @@ export async function unsign(token: string | undefined): Promise<string | null> 
   }
 }
 
-export function createSession(method: "password" | "passkey"): Promise<string> {
+export function createSession(method: "password" | "passkey" | "zoho"): Promise<string> {
   return sign(`v2-${method}`, SESSION_MAX_AGE);
 }
 
@@ -70,7 +70,7 @@ interface CookieSource {
 export async function verifySession(cookies: CookieSource): Promise<boolean> {
   const token = cookies.get(COOKIE_SECURE)?.value ?? cookies.get(COOKIE_PLAIN)?.value;
   const payload = await unsign(token);
-  return payload === "v2-password" || payload === "v2-passkey";
+  return payload === "v2-password" || payload === "v2-passkey" || payload === "v2-zoho";
 }
 
 export function sessionCookie(value: string, secure: boolean, maxAge = SESSION_MAX_AGE): string {

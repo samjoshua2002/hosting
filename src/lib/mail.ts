@@ -21,16 +21,32 @@ export interface MailItem {
   detail?: string;
 }
 
+function transport(): Transporter {
+  transporter ??= nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    auth: { user: process.env.EMAIL_USER, pass: (process.env.EMAIL_PASS ?? "").replace(/\s+/g, "") },
+  });
+  return transporter;
+}
+
+/** Send a ready-made email (the fleet report). Never throws. */
+export async function sendMail(subject: string, html: string, text: string): Promise<boolean> {
+  if (!mailConfigured()) return false;
+  try {
+    await transport().sendMail({ from: `"hosting" <${process.env.EMAIL_USER}>`, to: alertRecipient(), subject, text, html });
+    return true;
+  } catch (e) {
+    console.error("[mail] send failed:", (e as Error).message);
+    return false;
+  }
+}
+
 /** Sends a styled alert email. Never throws: alerts must not break the request that triggered them. */
 export async function sendAlert(subject: string, intro: string, items: MailItem[] = [], footer?: string): Promise<boolean> {
   if (!mailConfigured()) return false;
   try {
-    transporter ??= nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
-      auth: { user: process.env.EMAIL_USER, pass: (process.env.EMAIL_PASS ?? "").replace(/\s+/g, "") },
-    });
     const color = { critical: "#d03b3b", warning: "#fab219", good: "#0ca30c", info: "#7b88ff" };
     const app = process.env.APP_URL ?? "";
     const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#090b16;padding:24px;color:#eef0ff">
@@ -51,7 +67,7 @@ export async function sendAlert(subject: string, intro: string, items: MailItem[
   </div>
 </div>`;
     const text = [intro, ...items.map((i) => `- [${i.tone}] ${i.title}${i.detail ? `: ${i.detail}` : ""}`), footer ?? "", app].join("\n");
-    await transporter.sendMail({
+    await transport().sendMail({
       from: `"Hosting Control" <${process.env.EMAIL_USER}>`,
       to: alertRecipient(),
       subject: `[hosting] ${subject}`,

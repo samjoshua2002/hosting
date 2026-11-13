@@ -5,7 +5,7 @@ import { cronAction, probe, projectAction } from "./agent";
 import { aiConfigured } from "./ai";
 import { getVms } from "./config";
 import { failover, snapshotFleet } from "./failover";
-import { sendAlert } from "./mail";
+import { logEvents, maybeSendReport } from "./report";
 import { BusyError, prepareRun, runSession } from "./session-run";
 import { mapLimit, run, withVm } from "./ssh";
 import { storeBackend, storeGetJson, storePut } from "./store";
@@ -185,12 +185,9 @@ async function pass(state: AutopilotState): Promise<AutopilotState> {
   }
 
   const summary = !actions.length && !problems.length ? "All healthy." : [...actions, ...problems.map((p) => `needs attention: ${p}`)].join("\n");
-  if (actions.length || real.length)
-    await sendAlert(
-      `Autopilot: ${actions.length} fix${actions.length === 1 ? "" : "es"}${real.length ? `, ${real.length} problem${real.length === 1 ? "" : "s"}` : ""}`,
-      "Autopilot checked your machines.",
-      [...actions.map((t) => ({ tone: "good" as const, title: "Fixed", detail: t })), ...real.map((t) => ({ tone: "warning" as const, title: "Needs attention", detail: t }))],
-    ).catch(() => false);
+  // no email per check: what happened goes into the next fleet report (one every REPORT_EVERY_HOURS)
+  await logEvents([...actions.map((text) => ({ kind: "fixed" as const, text })), ...real.map((text) => ({ kind: "problem" as const, text }))]);
+  await maybeSendReport({ fleet }).catch(() => null);
   // re-read: the user may have switched it off during this pass
   const now = await getAutopilot().catch(() => state);
   const next: AutopilotState = { ...now, lastRun: Date.now(), lastSummary: summary, lastActions: actions, sessionId: sessionId ?? now.sessionId };

@@ -1,14 +1,15 @@
 import type { NextRequest } from "next/server";
 import { handle, HttpError, requireAuth } from "@/lib/api";
-import { alertRecipient, mailConfigured, sendAlert } from "@/lib/mail";
+import { mailConfigured } from "@/lib/mail";
+import { maybeSendReport } from "@/lib/report";
 
-/** POST /api/alerts/test sends a test email. */
+export const maxDuration = 120;
+
+/** POST /api/alerts/test: send the fleet report now (what the regular one looks like). */
 export const POST = handle(async (req: NextRequest) => {
   await requireAuth(req);
   if (!mailConfigured()) throw new HttpError(503, "Set EMAIL_USER and EMAIL_PASS first");
-  const ok = await sendAlert("Test alert", "Email alerts from your hosting dashboard are working.", [
-    { tone: "good", title: "SMTP connection OK", detail: `Delivered to ${alertRecipient()}` },
-  ]);
-  if (!ok) throw new HttpError(502, "Sending failed: check EMAIL_PASS (a Gmail app password) in the server logs");
-  return Response.json({ ok: true });
+  const r = await maybeSendReport({ force: true });
+  if (!r.sent) throw new HttpError(502, `The report didn't go out: ${r.reason ?? "check EMAIL_PASS (a Gmail app password) in the server logs"}`);
+  return Response.json({ ok: true, subject: r.subject });
 });
