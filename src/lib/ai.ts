@@ -87,6 +87,8 @@ export async function chat(opts: {
   maxTokens?: number;
   json?: boolean;
   timeoutMs?: number;
+  /** how hard reasoning models think (gpt-5.x / o-series only; others ignore it): low = fastest answers */
+  reasoning?: "low" | "medium" | "high";
 }): Promise<ChatResult> {
   if (!aiConfigured()) throw new Error("Azure OpenAI is not configured");
   const chain = [...new Set([opts.model, agentModel(), ...fallbacks()].filter((m): m is string => Boolean(m)))];
@@ -102,6 +104,7 @@ export async function chat(opts: {
       body.tool_choice = opts.toolChoice ?? "auto";
     }
     if (opts.json) body.response_format = { type: "json_object" };
+    if (opts.reasoning && /^(gpt-5|o\d)/i.test(deployment)) body.reasoning_effort = opts.reasoning;
     let res: Response;
     try {
       res = await fetch(`${base()}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=${version()}`, {

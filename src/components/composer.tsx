@@ -624,6 +624,7 @@ export function Composer({
         <VoiceMode
           sessionId={sessionId}
           context={entities.slice(0, 120).map((e) => `${e.name}: ${e.sub}`).join("\n")}
+          onAttach={() => fileInput.current?.click()}
           onDone={(turns, plan) => {
             setVoice(false);
             requestAnimationFrame(() => area.current?.focus());

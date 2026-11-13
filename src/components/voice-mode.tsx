@@ -11,6 +11,17 @@ import { api } from "@/lib/client";
 import { cx } from "./ui";
 
 type Phase = "starting" | "listening" | "thinking" | "speaking" | "paused" | "error";
+export interface VoiceOption {
+  label: string;
+  say: string;
+  kind?: "attach";
+}
+
+const localTime = () => new Date().toLocaleString(undefined, { weekday: "long", hour: "numeric", minute: "2-digit" });
+
+/** If the greeting can't be fetched: still never the same line twice in a row. */
+const FALLBACK_GREETINGS = ["Hey! What are we working on?", "Hi there. What's up?", "Hey, I'm here. What do you need?", "Yo! What's on your mind?", "Hey. Ready when you are."];
+
 export interface Turn {
   role: "user" | "assistant";
   text: string;
@@ -36,9 +47,10 @@ export function voiceSupported(): boolean {
 
 /* ---------- voices and personality (remembered in this browser) ---------- */
 
-export type Persona = "warm" | "professional" | "direct";
+export type Persona = "chill" | "warm" | "professional" | "direct";
 export const PERSONAS: { id: Persona; label: string; hint: string }[] = [
-  { id: "warm", label: "Warm", hint: "friendly, encouraging" },
+  { id: "chill", label: "Chill", hint: "easy-going mate" },
+  { id: "warm", label: "Warm", hint: "kind, encouraging" },
   { id: "professional", label: "Professional", hint: "calm consultant" },
   { id: "direct", label: "Direct", hint: "fewest words" },
 ];
@@ -53,9 +65,9 @@ const PREFS = "hosting.voice";
 function loadPrefs(): VoicePrefs {
   try {
     const p = JSON.parse(localStorage.getItem(PREFS) ?? "{}") as Partial<VoicePrefs>;
-    return { voice: p.voice, persona: PERSONAS.some((x) => x.id === p.persona) ? p.persona! : "warm", rate: typeof p.rate === "number" && p.rate !== 1.03 ? p.rate : 0.97, holdMic: p.holdMic === true };
+    return { voice: p.voice, persona: PERSONAS.some((x) => x.id === p.persona) && p.persona !== "warm" ? p.persona! : "chill", rate: typeof p.rate === "number" && p.rate !== 1.03 ? p.rate : 0.97, holdMic: p.holdMic === true };
   } catch {
-    return { persona: "warm", rate: 0.97 };
+    return { persona: "chill", rate: 0.97 };
   }
 }
 function savePrefs(p: VoicePrefs) {
@@ -127,13 +139,16 @@ export function VoiceMode({
   context,
   sessionId,
   onDone,
+  onAttach,
 }: {
   context: string;
   sessionId: string;
   /** voice mode ended: everything said (to put in the chat), and the agreed plan if there is one */
   onDone: (turns: Turn[], plan?: string) => void;
+  /** open the file picker (to upload a project zip) */
+  onAttach?: () => void;
 }) {
-  const [prefs, setPrefs] = useState<VoicePrefs>(() => (typeof window === "undefined" ? { persona: "warm", rate: 0.97 } : loadPrefs()));
+  const [prefs, setPrefs] = useState<VoicePrefs>(() => (typeof window === "undefined" ? { persona: "chill", rate: 0.97 } : loadPrefs()));
   const prefsRef = useRef(prefs);
   const [panel, setPanel] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -143,6 +158,12 @@ export function VoiceMode({
   const [parts, setParts] = useState<string[]>([]); // that reply, sentence by sentence
   const [at, setAt] = useState(-1); // the sentence being spoken
   const [lastYou, setLastYou] = useState(""); // your last sentence, shown above its reply
+  const [options, setOptions] = useState<VoiceOption[]>([]); // choices it offered: tap one or just say it
+  // the fleet summary refreshes every 30 s: read it from a ref so voice mode never restarts because of it
+  const ctx = useRef({ context, sessionId });
+  useEffect(() => {
+    ctx.current = { context, sessionId };
+  }, [context, sessionId]);
   const [err, setErr] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
   const [level, setLevel] = useState(0); // 0..1 mic level, drives the glow
@@ -288,6 +309,8 @@ export function VoiceMode({
         else interim += t;
       }
       setHeard(`${utter.current}${interim}`.trim());
+      setLevel((l) => Math.min(1, l + 0.35));
+      setTimeout(() => setLevel((l) => l * 0.5), 260);
       // a short pause after you finish a sentence = your turn is over
       if (silence.current) clearTimeout(silence.current);
       silence.current = setTimeout(() => {
@@ -327,9 +350,16 @@ export function VoiceMode({
     turns.current.push({ role: "user", text });
     setLastYou(text);
     setParts([]);
+    setOptions([]);
     go("thinking");
     try {
-      const r = await api<{ say: string; stage: string; plan?: string }>("/api/ai/voice", { turns: turns.current, context, sessionId, persona: prefsRef.current.persona });
+      const r = await api<{ say: string; stage: string; plan?: string; options?: VoiceOption[] }>("/api/ai/voice", {
+        turns: turns.current,
+        context: ctx.current.context,
+        sessionId: ctx.current.sessionId,
+        persona: prefsRef.current.persona,
+        localTime: localTime(),
+      });
       if (!alive.current) return;
       turns.current.push({ role: "assistant", text: r.say });
       const finished = await speak(r.say);
@@ -341,13 +371,14 @@ export function VoiceMode({
         return listen();
       }
       if (r.stage === "go" && r.plan) return onDone([...turns.current], r.plan);
+      setOptions(r.options ?? []);
       if (r.stage === "end") return onDone([...turns.current]);
       listen();
     } catch (e) {
       setErr((e as Error).message);
       go("error");
     }
-  }, [context, sessionId, go, speak, listen, onDone]);
+  }, [go, speak, listen, onDone]);
   useEffect(() => {
     respondRef.current = respond;
   }, [respond]);
@@ -355,6 +386,9 @@ export function VoiceMode({
   /* ---------- mic level for the glow ---------- */
   useEffect(() => {
     let cancelled = false;
+    // Safari asks for the mic separately for this stream and for speech recognition: skip it there, so there's
+    // only one prompt (the glow then pulses with the words it hears instead of the sound level)
+    if (/^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.userAgent)) return;
     void navigator.mediaDevices
       ?.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
       .then((stream) => {
@@ -388,9 +422,15 @@ export function VoiceMode({
     window.speechSynthesis.getVoices();
     const t = setTimeout(() => {
       void (async () => {
-        await voicesReady();
+        const [, hello] = await Promise.all([
+          voicesReady(),
+          api<{ say: string }>("/api/ai/voice", { greet: true, context: ctx.current.context, sessionId: ctx.current.sessionId, persona: prefsRef.current.persona, localTime: localTime() })
+            .then((r) => r.say)
+            .catch(() => FALLBACK_GREETINGS[Math.floor(Math.random() * FALLBACK_GREETINGS.length)]),
+        ]);
         if (!alive.current) return;
-        await speak("Hi, I'm listening. What would you like to do?");
+        turns.current.push({ role: "assistant", text: hello });
+        await speak(hello);
         if (alive.current) listen();
       })();
     }, 150);
@@ -427,6 +467,17 @@ export function VoiceMode({
     if (phaseRef.current === "thinking") return;
     rec.current?.abort();
     void speak(`Hi, I'm ${v.name.split(/[ (]/)[0]}. This is how I'll sound.`).then(() => alive.current && !mutedRef.current && listen());
+  };
+
+  // tapping a choice is the same as saying it; "Upload a project" opens the file picker too
+  const pick = (o: VoiceOption) => {
+    window.speechSynthesis.cancel();
+    if (silence.current) clearTimeout(silence.current);
+    rec.current?.abort();
+    if (o.kind === "attach") onAttach?.();
+    utter.current = o.kind === "attach" ? "I'm uploading the project as a zip file now. Deploy it when it's uploaded." : o.say;
+    go("listening"); // respond() only takes a turn from the listening state
+    void respondRef.current();
   };
 
   // Esc ends voice mode
@@ -506,6 +557,21 @@ export function VoiceMode({
           ) : (
             <p className="text-[22px] text-zinc-500">{phase === "listening" ? "Go ahead, I'm listening." : phase === "paused" ? "Mic is off." : ""}</p>
           )}
+          {options.length > 0 && phase !== "thinking" && (
+            <div className="mx-auto mt-8 flex max-w-2xl flex-wrap justify-center gap-2">
+              {options.map((o, i) => (
+                <button
+                  key={`${o.label}-${i}`}
+                  onClick={() => pick(o)}
+                  className="word-in rounded-2xl border border-white/[0.12] bg-white/[0.06] px-4 py-2.5 text-[14px] text-zinc-100 backdrop-blur transition-colors hover:border-white/25 hover:bg-white/[0.11]"
+                  style={{ animationDelay: `${120 + i * 60}ms` }}
+                >
+                  {o.kind === "attach" ? "⬆ " : ""}
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          )}
           {err && <p className="mt-4 text-[14px] text-[var(--critical-text)]">{err}</p>}
           {phase === "speaking" && (
             <p className="mt-6 text-[12.5px] text-zinc-500">{prefs.holdMic ? "Your mic is muted while it speaks · tap the bar to cut in" : "Just start talking to interrupt"}</p>
@@ -549,7 +615,7 @@ export function VoiceMode({
           {panel && (
             <div onClick={(e) => e.stopPropagation()} className="absolute right-0 bottom-11 z-40 w-80 rounded-xl border border-white/[0.09] bg-pop p-3 shadow-2xl shadow-black/50">
               <p className="text-[11.5px] font-medium tracking-wide text-zinc-500 uppercase">Personality</p>
-              <div className="mt-2 grid grid-cols-3 gap-1">
+              <div className="mt-2 grid grid-cols-2 gap-1">
                 {PERSONAS.map((p) => (
                   <button key={p.id} onClick={() => update({ persona: p.id })} className={cx("rounded-lg border px-2 py-1.5 text-left", prefs.persona === p.id ? "border-white/25 bg-white/[0.08]" : "border-white/[0.06] hover:bg-white/[0.04]")}>
                     <span className="block text-[12.5px] text-white">{p.label}</span>
