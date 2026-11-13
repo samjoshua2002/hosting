@@ -27,6 +27,8 @@ const csp = [
 const backend = (process.env.BACKEND_URL ?? "").replace(/\/$/, "");
 
 const nextConfig: NextConfig = {
+  // the commit this build is from (open tabs compare it with /api/version to offer a reload)
+  env: { NEXT_PUBLIC_VERSION: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? "dev" },
   async rewrites() {
     if (!backend) return [];
     return {

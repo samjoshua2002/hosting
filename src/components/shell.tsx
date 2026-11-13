@@ -12,6 +12,7 @@ import { startChat, useAssistantBusy } from "./assistant-store";
 import { useCluster } from "./cluster";
 import { CommandPalette } from "./command-palette";
 import { StorageBanner } from "./storage-banner";
+import { UpdateNotice } from "./update-notice";
 import { crumbs, NAV } from "./nav";
 import { setMode, shuffleTheme, UnsplashLayer, useMode, useTheme, type Mode } from "./theme";
 import { BrandMark } from "./brand";
@@ -54,6 +55,7 @@ export function Shell({ children }: { children: ReactNode }) {
         </main>
       </div>
       <CommandPalette open={palette} onClose={() => setPalette(false)} />
+      <UpdateNotice />
     </div>
   );
 }

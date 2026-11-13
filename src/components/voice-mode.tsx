@@ -7,6 +7,8 @@
 import { AudioLines, Check, GitBranch, Loader2, Mic, MicOff, Play, Plug, Server, SlidersHorizontal, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useGSAP } from "@gsap/react";
+import gsap from "gsap";
 import type { Item } from "@/lib/assistant-items";
 import { api } from "@/lib/client";
 import { appendVoice, decide, useAssistant } from "./assistant-store";
@@ -231,6 +233,24 @@ export function VoiceMode({
   }, [docs, sessionId]);
   const runFrom = useRef(0); // where the running task's items start
   const [taskFrom, setTaskFrom] = useState<number | null>(null); // shows the side panel with what it's doing
+  const taskPanel = useRef<HTMLElement>(null);
+  // the split: the panel grows open from the right (the voice side glides over to make room), then its content fades up
+  useGSAP(
+    () => {
+      const el = taskPanel.current;
+      if (!el || taskFrom === null) return;
+      const w = Math.min(window.innerWidth * 0.44, 560);
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        gsap.set(el, { width: w, opacity: 1 });
+        return;
+      }
+      gsap
+        .timeline()
+        .fromTo(el, { width: 0, opacity: 0, marginRight: 0 }, { width: w, opacity: 1, marginRight: 24, duration: 0.75, ease: "expo.out" })
+        .fromTo(el.querySelectorAll("[data-panel-in]"), { y: 14, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "expo.out", stagger: 0.06 }, "-=0.35");
+    },
+    { dependencies: [taskFrom !== null] },
+  );
   const approval = useRef<{ id: string; label: string } | null>(null);
 
   const go = useCallback((p: Phase) => {
@@ -749,8 +769,8 @@ export function VoiceMode({
 
       {/* while it works: what the Assistant is doing, live, with approvals you can tap */}
       {taskFrom !== null && (
-        <aside className="voice-panel relative my-6 mr-6 flex w-[min(44%,560px)] shrink-0 flex-col overflow-hidden rounded-3xl border border-white/[0.09] bg-[var(--panel)]/70 shadow-2xl shadow-black/40 backdrop-blur-xl">
-          <div className="flex items-center gap-2 border-b border-white/[0.07] px-5 py-3.5">
+        <aside ref={taskPanel} className="relative my-6 flex w-0 shrink-0 flex-col overflow-hidden rounded-3xl border border-white/[0.09] bg-[var(--panel)]/70 opacity-0 shadow-2xl shadow-black/40 backdrop-blur-xl">
+          <div data-panel-in className="flex min-w-[320px] items-center gap-2 border-b border-white/[0.07] px-5 py-3.5">
             {docs[sessionId]?.busy ? <Loader2 className="size-4 animate-spin text-[var(--accent)]" /> : <Check className="size-4 text-[var(--good)]" />}
             <p className="flex-1 text-[13.5px] font-medium text-white">{docs[sessionId]?.busy
                 ? "Working on it"
@@ -761,7 +781,7 @@ export function VoiceMode({
               <X className="size-4" />
             </button>
           </div>
-          <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-4 py-4 text-left">
+          <div data-panel-in className="scroll-thin min-h-0 min-w-[320px] flex-1 overflow-y-auto px-4 py-4 text-left">
             <ChatItems sid={sessionId} items={(docs[sessionId]?.items ?? []).slice(taskFrom)} busy={Boolean(docs[sessionId]?.busy)} mentions={NO_MENTIONS} compact />
           </div>
         </aside>
