@@ -1,23 +1,31 @@
 "use client";
 
-import { ArrowUp, Check, ChevronUp, Cloud, Cpu, Database, FileText, FolderGit2, Globe, Laptop, Loader2, Mic, Plus, Server, Sparkles, Square, Wrench, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, AtSign, Check, ChevronRight, ChevronUp, Cloud, Cpu, Database, FileText, FolderGit2, Globe, LayoutGrid, Laptop, Loader2, Mail, Mic, Paperclip, Plug, Plus, Server, Settings2, Slash, Sparkles, Square, Wrench, X, type LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Att } from "@/lib/assistant-items";
+import { toggleConnector, useAssistant } from "./assistant-store";
+import { connectorDef } from "@/lib/connector-catalog";
 import { projectType, TYPE_LABEL, type ProjectType } from "@/lib/project-type";
 import type { VmInfo, VmStatus } from "@/lib/types";
 import { cx } from "./ui";
 
 export interface Entity {
   name: string;
-  kind: "project" | "database" | "machine";
+  kind: "project" | "database" | "machine" | "connector";
   type?: ProjectType;
   sub: string;
+  /** connectors: ready to use, and the words to put in the message */
+  connected?: boolean;
+  say?: string;
+  mail?: boolean;
+  /** what the + menu switch turns off for this conversation (connector id or email address) */
+  key?: string;
 }
 
 const TYPE_ICON: Record<ProjectType, LucideIcon> = { website: Globe, service: Server, worker: Cpu, database: Database, tool: Wrench };
 
-type Pick = "project" | "database" | "machine";
+type Pick = "project" | "database" | "machine" | "connector";
 interface Command {
   cmd: string;
   hint: string;
@@ -42,7 +50,8 @@ const BASE: Command[] = [
   { group: "Model", cmd: "model", label: "Switch model…", hint: "", action: "model" },
   { group: "Model", cmd: "review", label: "Review mode", hint: "", action: "review" },
   { group: "Customize", cmd: "mcp", label: "MCP servers", hint: "", href: "/settings?tab=connectors" },
-  { group: "Customize", cmd: "connectors", label: "Connectors", hint: "", href: "/settings?tab=connectors" },
+  { group: "Context", cmd: "connectors", label: "Use a connector…", hint: "", pick: "connector" },
+  { group: "Customize", cmd: "connector-settings", label: "Connector settings", hint: "", href: "/settings?tab=connectors" },
   { group: "Customize", cmd: "instructions", label: "Instructions", hint: "", href: "/settings?tab=instructions" },
   { group: "Customize", cmd: "memory", label: "Memory", hint: "", href: "/settings?tab=memory" },
   { group: "Customize", cmd: "skills", label: "Skills", hint: "", href: "/settings?tab=skills" },
@@ -305,6 +314,56 @@ export function Composer({
       alive = false;
     };
   }, []);
+  const [connectors, setConnectors] = useState<Entity[]>([]);
+  const [plus, setPlus] = useState<null | "main" | "connectors">(null);
+  const { current: sessionId, off } = useAssistant();
+  const offHere = off[sessionId] ?? [];
+  const plusAction = (what: "files" | "/" | "@") => {
+    setPlus(null);
+    if (what === "files") fileInput.current?.click();
+    else insertAtCaret(what);
+  };
+  const insertAtCaret = (t: string) => {
+    const pos = area.current?.selectionStart ?? text.length;
+    const lead = pos > 0 && !/\s$/.test(text.slice(0, pos)) ? " " : "";
+    const next = text.slice(0, pos) + lead + t + text.slice(pos);
+    setText(next);
+    const at = pos + lead.length + t.length;
+    setCaret(at);
+    requestAnimationFrame(() => {
+      area.current?.focus();
+      area.current?.setSelectionRange(at, at);
+    });
+  };
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/connectors", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { states?: { id: string; connected: boolean; account?: string; accounts?: { email: string }[] }[] } | null) => {
+        if (!alive || !d?.states) return;
+        const out: Entity[] = [];
+        for (const st of d.states) {
+          const def = connectorDef(st.id);
+          if (!def || def.kind === "builtin") continue;
+          if (def.kind === "mailbox") {
+            for (const a of st.accounts ?? []) out.push({ kind: "connector", name: a.email, sub: def.name, connected: true, mail: true, key: a.email, say: `Using my ${def.name} account ${a.email}, ` });
+            if (!st.accounts?.length) out.push({ kind: "connector", name: def.id, sub: `${def.name} · not connected`, connected: false, mail: true });
+            continue;
+          }
+          out.push(
+            st.connected
+              ? { kind: "connector", name: def.id, sub: `${def.name}${st.account ? ` · ${st.account}` : ""}`, connected: true, key: def.id, say: `Using the ${def.name} connector, ` }
+              : { kind: "connector", name: def.id, sub: `${def.name} · not connected`, connected: false },
+          );
+        }
+        // ready ones first
+        setConnectors(out.sort((a, b) => Number(Boolean(b.connected)) - Number(Boolean(a.connected))));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
   const all = useMemo(() => [...BASE, ...COMMANDS.map((c) => ({ ...c, group: c.group ?? ("Commands" as const) })), ...skills], [skills]);
   const [listening, setListening] = useState(false);
   const recog = useRef<{ stop: () => void } | null>(null);
@@ -344,7 +403,10 @@ export function Composer({
     const withArg = m && all.find((c) => c.cmd === m![1] && c.pick);
     if (m && withArg) {
       const q = m[2].toLowerCase();
-      const items = entities.filter((e) => (withArg.pick === "database" ? e.kind === "database" : withArg.pick === "machine" ? e.kind === "machine" : e.kind !== "machine") && e.name.includes(q));
+      const items =
+        withArg.pick === "connector"
+          ? connectors.filter((e) => `${e.name} ${e.sub}`.toLowerCase().includes(q))
+          : entities.filter((e) => (withArg.pick === "database" ? e.kind === "database" : withArg.pick === "machine" ? e.kind === "machine" : e.kind !== "machine") && e.name.includes(q));
       return { kind: "entities", items, start: before.length - m[0].trimStart().length, end: caret, cmd: withArg };
     }
     m = /(?:^|\s)\/([a-z]*)$/.exec(before);
@@ -361,7 +423,7 @@ export function Composer({
       return { kind: "entities", items: entities.filter((e) => e.name.includes(q)), start: before.length - q.length - 1, end: caret };
     }
     return null;
-  }, [text, caret, entities, all]);
+  }, [text, caret, entities, all, connectors]);
   const key = menu ? `${menu.kind}:${menu.start}` : null;
   const open = Boolean(menu && menu.items.length && key !== dismissed);
   const index = menu ? Math.min(hi, Math.max(0, menu.items.length - 1)) : 0;
@@ -412,6 +474,15 @@ export function Composer({
       return replace(menu.start, menu.end, c.insert?.("") ?? "");
     }
     const e = menu.items[i];
+    if (e.kind === "connector") {
+      // not connected yet: off to Settings to connect it; connected: say which one to use
+      if (!e.connected) {
+        replace(menu.start, menu.end, "");
+        router.push("/settings?tab=connectors");
+        return;
+      }
+      return replace(menu.start, menu.end, e.say ?? `Using ${e.name}, `);
+    }
     if (menu.cmd?.insert) return replace(menu.start, menu.end, menu.cmd.insert(e.name));
     replace(menu.start, menu.end, `@${e.name} `);
   };
@@ -479,7 +550,7 @@ export function Composer({
                   );
                 })
               : menu.items.map((e, i) => {
-                  const Icon = e.kind === "machine" ? Server : e.type ? TYPE_ICON[e.type] : FolderGit2;
+                  const Icon = e.kind === "connector" ? (e.mail ? Mail : Plug) : e.kind === "machine" ? Server : e.type ? TYPE_ICON[e.type] : FolderGit2;
                   return (
                     <button
                       key={`${e.kind}-${e.name}`}
@@ -489,8 +560,9 @@ export function Composer({
                       className={cx("flex w-full items-center gap-2.5 px-4 py-[7px] text-left text-[13.5px]", i === index ? "bg-[#2b5dd6]/90 text-white" : "text-zinc-200")}
                     >
                       <Icon className={cx("size-3.5 shrink-0", i === index ? "text-white/80" : "text-zinc-500")} />
-                      <span className="font-medium">{e.name}</span>
+                      <span className={cx("font-medium", e.kind === "connector" && !e.connected && i !== index && "text-zinc-400")}>{e.name}</span>
                       <span className={cx("truncate text-[12px]", i === index ? "text-white/70" : "text-zinc-500")}>{e.sub}</span>
+                      {e.kind === "connector" && !e.connected && <span className={cx("ml-auto shrink-0 text-[11px]", i === index ? "text-white/80" : "text-accent-soft")}>Connect →</span>}
                     </button>
                   );
                 })}
@@ -536,16 +608,84 @@ export function Composer({
       <div className="rounded-2xl border border-white/[0.09] bg-pop shadow-lg shadow-black/20 transition-colors focus-within:border-white/[0.18]">
         <div className="flex items-end gap-1 px-2 py-2">
           <input ref={fileInput} type="file" multiple hidden onChange={(e) => onAttach(e.target.files)} />
-          <button
-            type="button"
-            onClick={() => fileInput.current?.click()}
-            disabled={uploading}
-            className="grid size-9 shrink-0 place-items-center rounded-lg text-zinc-400 hover:bg-white/[0.06] hover:text-white"
-            aria-label="Add files"
-            title="Add files"
-          >
-            {uploading ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-[18px]" />}
-          </button>
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setPlus((p) => (p ? null : "main"))}
+              disabled={uploading}
+              className={cx("grid size-9 place-items-center rounded-lg text-zinc-400 hover:bg-white/[0.06] hover:text-white", plus && "bg-white/[0.06] text-white")}
+              aria-label="Add files, commands and connectors"
+              aria-expanded={Boolean(plus)}
+              title="Add"
+            >
+              {uploading ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-[18px]" />}
+            </button>
+            {plus && (
+              <>
+                <button className="fixed inset-0 z-30 cursor-default" aria-label="Close menu" onClick={() => setPlus(null)} />
+                <div className="absolute bottom-11 left-0 z-40 flex items-end gap-1.5">
+                  <div className="w-60 rounded-xl border border-white/[0.09] bg-pop p-1.5 shadow-2xl shadow-black/50">
+                    {(
+                      [
+                        [Paperclip, "Add files or photos", "files"],
+                        [Slash, "Slash commands", "/"],
+                        [AtSign, "Mention a project or machine", "@"],
+                      ] as const
+                    ).map(([Icon, label, what]) => (
+                      <button key={label} onClick={() => plusAction(what)} className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-zinc-200 hover:bg-white/[0.06]">
+                        <Icon className="size-4 text-zinc-400" /> {label}
+                      </button>
+                    ))}
+                    <button
+                      onClick={() => setPlus((p) => (p === "connectors" ? "main" : "connectors"))}
+                      onMouseEnter={() => setPlus("connectors")}
+                      className={cx("flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-zinc-200 hover:bg-white/[0.06]", plus === "connectors" && "bg-white/[0.06]")}
+                    >
+                      <Plug className="size-4 text-zinc-400" /> <span className="flex-1">Connectors</span> <ChevronRight className="size-3.5 text-zinc-500" />
+                    </button>
+                  </div>
+                  {plus === "connectors" && (
+                    <div className="w-72 rounded-xl border border-white/[0.09] bg-pop p-1.5 shadow-2xl shadow-black/50">
+                      <button onClick={() => (setPlus(null), router.push("/settings?tab=connectors"))} className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-zinc-200 hover:bg-white/[0.06]">
+                        <LayoutGrid className="size-4 text-zinc-400" /> Browse connectors
+                      </button>
+                      <button onClick={() => (setPlus(null), router.push("/settings?tab=connectors"))} className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-zinc-200 hover:bg-white/[0.06]">
+                        <Settings2 className="size-4 text-zinc-400" /> Manage connectors
+                      </button>
+                      <div className="my-1.5 h-px bg-white/[0.07]" />
+                      {connectors.filter((c) => c.connected && c.key).length === 0 ? (
+                        <p className="px-2.5 py-2 text-[12.5px] text-zinc-500">Nothing connected yet.</p>
+                      ) : (
+                        <div className="max-h-72 overflow-y-auto">
+                          {connectors
+                            .filter((c) => c.connected && c.key)
+                            .map((c) => {
+                              const on = !offHere.includes(c.key!);
+                              return (
+                                <button
+                                  key={c.key}
+                                  onClick={() => toggleConnector(sessionId, c.key!)}
+                                  role="switch"
+                                  aria-checked={on}
+                                  title={on ? "On for this conversation: click to switch off" : "Off for this conversation: click to switch on"}
+                                  className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] text-zinc-200 hover:bg-white/[0.06]"
+                                >
+                                  {c.mail ? <Mail className="size-4 shrink-0 text-zinc-400" /> : <Plug className="size-4 shrink-0 text-zinc-400" />}
+                                  <span className={cx("min-w-0 flex-1 truncate", !on && "text-zinc-500")}>{c.mail ? c.name : c.sub.split(" · ")[0]}</span>
+                                  <span className={cx("relative h-[18px] w-8 shrink-0 rounded-full transition-colors", on ? "bg-[#2b5dd6]" : "bg-white/15")}>
+                                    <span className={cx("absolute top-[2px] size-[14px] rounded-full bg-white transition-all", on ? "left-[16px]" : "left-[2px]")} />
+                                  </span>
+                                </button>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
           <textarea
             ref={area}
             value={text}

@@ -36,15 +36,18 @@ export interface AssistantState {
   review: "auto" | "manual";
   /** "" = the default cloud model; Azure deployment name; or ollama/<service>/<model> */
   model: string;
+  /** per conversation: connectors (ids, or email addresses) switched off in the + menu */
+  off: Record<string, string[]>;
 }
 
 const CACHE = "hosting.assistant.v2";
 const REVIEW = "hosting.assistant.review";
 const MODEL = "hosting.assistant.model";
+const OFF = "hosting.assistant.connectors-off";
 export const newId = () => `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const empty = (): Doc => ({ title: "New session", items: [], transcript: [], files: [], busy: false, remote: false, paused: false });
 
-const SERVER: AssistantState = { current: "s0000000000", docs: {}, list: null, error: null, review: "auto", model: "" };
+const SERVER: AssistantState = { current: "s0000000000", docs: {}, list: null, error: null, review: "auto", model: "", off: {} };
 let state: AssistantState = SERVER;
 let hydrated = false;
 const listeners = new Set<() => void>();
@@ -99,6 +102,7 @@ export function hydrate() {
   let doc = empty();
   let review: "auto" | "manual" = "auto";
   let model = "";
+  let off: Record<string, string[]> = {};
   try {
     const c = JSON.parse(sessionStorage.getItem(CACHE) ?? "null");
     if (c?.current && c.doc) {
@@ -107,10 +111,12 @@ export function hydrate() {
     }
     if (localStorage.getItem(REVIEW) === "manual") review = "manual";
     model = localStorage.getItem(MODEL) ?? "";
+    const o = JSON.parse(localStorage.getItem(OFF) ?? "{}") as unknown;
+    if (o && typeof o === "object") off = o as Record<string, string[]>;
   } catch {
     /* nothing cached */
   }
-  state = { ...state, current, docs: { [current]: doc }, review, model };
+  state = { ...state, current, docs: { [current]: doc }, review, model, off };
   emit();
   void loadList();
   if (doc.items.length) void refreshFromServer(current);
@@ -219,6 +225,22 @@ export function setModel(model: string) {
   set({ model });
 }
 
+/** Switch a connector (id, or an email address) on or off for one conversation. */
+export function toggleConnector(sessionId: string, key: string) {
+  const cur = state.off[sessionId] ?? [];
+  const next = cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key];
+  const off = { ...state.off, [sessionId]: next };
+  if (!next.length) delete off[sessionId];
+  // keep only the 200 most recent conversations' choices
+  const trimmed = Object.fromEntries(Object.entries(off).slice(-200));
+  try {
+    localStorage.setItem(OFF, JSON.stringify(trimmed));
+  } catch {
+    /* blocked */
+  }
+  set({ off: trimmed });
+}
+
 export function setReview(review: "auto" | "manual") {
   try {
     localStorage.setItem(REVIEW, review);
@@ -282,7 +304,7 @@ export async function send(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // the server loads the session from box5 and applies just this change
-      body: JSON.stringify({ session: id, title: d.title, files: d.files, review: state.review, model: state.model || undefined, ...body }),
+      body: JSON.stringify({ session: id, title: d.title, files: d.files, review: state.review, model: state.model || undefined, connectorsOff: state.off[id]?.length ? state.off[id] : undefined, ...body }),
       signal: ctrl.signal,
     });
     if (res.status === 401) return void window.location.replace("/login");

@@ -226,8 +226,9 @@ export async function callUrl(url: string, tool: string, args: Record<string, un
 }
 
 /** For the system prompt: connected servers and their tools, one line each. */
-export async function mcpSummary(): Promise<string> {
-  const list = (await load().catch(() => [] as McpServer[])).filter((s) => s.enabled && s.tools.length);
+export async function mcpSummary(off?: string[]): Promise<string> {
+  const no = new Set((off ?? []).map((x) => x.toLowerCase()));
+  const list = (await load().catch(() => [] as McpServer[])).filter((s) => s.enabled && s.tools.length && !no.has(s.name.toLowerCase()));
   if (!list.length) return "";
   return `MCP connectors (use mcp_call {server, tool, arguments}; mcp_tools {server} shows a tool's input schema):\n${list
     .map((s) => `- ${s.name}: ${s.tools.map((t) => t.name).join(", ").slice(0, 600)}`)

@@ -1,7 +1,7 @@
 "use client";
 
 // Settings → Customize, like Claude's: Connectors / Skills / MCP, each with Yours and Discover, search and Add.
-import { Check, ChevronDown, ExternalLink, Loader2, MoreHorizontal, Plus, Search, SlidersHorizontal, X } from "lucide-react";
+import { Check, ChevronDown, ExternalLink, Loader2, MoreHorizontal, Plus, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/client";
@@ -16,6 +16,7 @@ interface State {
   detail?: string;
   connectedAt?: number;
   tools?: number;
+  accounts?: { id: string; email: string; provider: string }[];
 }
 
 /** A brand logo (Simple Icons), falling back to a lettered tile. */
@@ -224,13 +225,21 @@ function ConnectorsView({ scope, q, onDiscover }: { scope: "yours" | "discover";
                     )}
                   </p>
                 </div>
-                <ConnectorAction def={d} s={s} busy={busy === d.id} onConnect={() => (d.kind === "token" ? setConnecting(d) : void act(d.id, { mcp: d.id }))} onDisconnect={() => void act(d.id, { disconnect: d.id })} />
+                <ConnectorAction def={d} s={s} busy={busy === d.id} onConnect={() => (d.kind === "token" || d.kind === "mailbox" ? setConnecting(d) : void act(d.id, { mcp: d.id }))} onDisconnect={() => void act(d.id, { disconnect: d.id })} />
               </div>
             );
           })}
         </div>
       )}
-      {connecting && (
+      {connecting?.kind === "mailbox" && (
+        <MailboxDialog
+          def={connecting}
+          state={byId.get(connecting.id)}
+          onClose={() => setConnecting(null)}
+          onChange={(st) => setStates(st)}
+        />
+      )}
+      {connecting && connecting.kind !== "mailbox" && (
         <ConnectDialog
           def={connecting}
           onClose={() => setConnecting(null)}
@@ -269,6 +278,12 @@ function ConnectorAction({ def, s, busy, onConnect, onDisconnect }: { def: Conne
       <span className="shrink-0 text-[11px] text-zinc-600 font-mono">.env</span>
     );
   }
+  if (def.kind === "mailbox")
+    return (
+      <button onClick={onConnect} className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-white/10 px-2.5 text-[12px] text-zinc-200 transition-colors hover:border-white/25 hover:bg-white/[0.06]" title={s?.connected ? "Add or remove accounts" : `Connect ${def.name}`}>
+        <Plus className="size-3.5" /> {s?.connected ? "Accounts" : "Connect"}
+      </button>
+    );
   if (s?.connected)
     return (
       <div className="relative shrink-0">
@@ -366,6 +381,132 @@ function ConnectDialog({ def, onClose, onDone }: { def: ConnectorDef; onClose: (
           </button>
           <button onClick={() => void submit()} disabled={!token || busy} className="flex items-center gap-1.5 rounded-lg bg-white px-3.5 py-1.5 text-[13px] font-medium text-black hover:bg-white/90 disabled:bg-white/[0.08] disabled:text-zinc-500">
             {busy && <Loader2 className="size-3.5 animate-spin" />} {busy ? "Checking…" : "Connect"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MailboxDialog({ def, state, onClose, onChange }: { def: ConnectorDef; state?: State; onClose: () => void; onChange: (s: State[]) => void }) {
+  const mb = def.mailbox!;
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [region, setRegion] = useState<"zoho" | "zoho-in">("zoho-in");
+  const [imap, setImap] = useState("");
+  const [smtp, setSmtp] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const provider = mb.provider === "zoho" ? region : mb.provider;
+  const ready = email && password && (mb.provider !== "custom" || (imap && smtp));
+  const call = async (key: string, body: unknown) => {
+    setBusy(key);
+    setErr(null);
+    try {
+      onChange((await api<{ states: State[] }>("/api/connectors", body)).states);
+      return true;
+    } catch (e) {
+      setErr((e as Error).message);
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  };
+  const add = async () => {
+    if (await call("add", { mailbox: { provider, email, password, name, imap, smtp } })) {
+      setEmail("");
+      setPassword("");
+      setName("");
+    }
+  };
+  const field = "mt-1.5 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-[13px] text-white focus:border-white/25";
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 backdrop-blur-[2px]" onMouseDown={onClose}>
+      <div className="max-h-[90vh] w-[500px] max-w-[92vw] overflow-y-auto rounded-2xl border border-white/[0.09] bg-pop p-6 shadow-2xl shadow-black/70" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3.5">
+          <Logo def={def} />
+          <div className="min-w-0 flex-1">
+            <p className="text-[16px] font-semibold text-white">{def.name}</p>
+            <p className="mt-0.5 text-[12.5px] text-zinc-400">{def.desc}</p>
+          </div>
+          <button onClick={onClose} className="text-zinc-500 hover:text-white" aria-label="Close">
+            <X className="size-4" />
+          </button>
+        </div>
+
+        {state?.accounts?.length ? (
+          <div className="mt-5">
+            <p className="text-[12px] font-medium text-zinc-400">Connected accounts</p>
+            <ul className="mt-2 divide-y divide-white/[0.06] rounded-xl border border-white/[0.06]">
+              {state.accounts.map((a) => (
+                <li key={a.id} className="flex items-center gap-2 px-3 py-2.5 text-[13px] text-zinc-200">
+                  <span className="size-1.5 rounded-full bg-[var(--good)]" />
+                  <span className="min-w-0 flex-1 truncate">{a.email}</span>
+                  <button onClick={() => void call(a.id, { removeMailbox: a.id })} disabled={busy !== null} className="flex items-center gap-1 rounded-md px-2 py-1 text-[12px] text-zinc-400 hover:bg-white/[0.06] hover:text-[var(--critical-text)]">
+                    {busy === a.id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />} Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
+        <p className="mt-5 text-[13.5px] font-medium text-white">{state?.accounts?.length ? "Add another account" : "Add an account"}</p>
+        <div className="mt-2 rounded-xl border border-white/[0.06] bg-black/20 p-3.5 text-[12.5px] leading-relaxed text-zinc-400">
+          <p className="text-zinc-300">The Assistant can search and read mail, save drafts into your Drafts folder, and send. Sending always asks you first.</p>
+          <p className="mt-1.5">{mb.steps} The password is checked with the mail server, then stored encrypted; the AI never sees it.</p>
+          {mb.help && (
+            <a href={provider === "zoho" ? "https://accounts.zoho.com/home#security/app_password" : mb.help} target="_blank" rel="noreferrer" className="mt-1.5 inline-flex items-center gap-1 text-accent-soft hover:underline">
+              Create an app password <ExternalLink className="size-3" />
+            </a>
+          )}
+        </div>
+        {mb.provider === "zoho" && (
+          <div className="mt-3 flex gap-1.5 text-[12.5px]">
+            {(
+              [
+                ["zoho-in", "zoho.in (India)"],
+                ["zoho", "zoho.com"],
+              ] as const
+            ).map(([v, l]) => (
+              <button key={v} onClick={() => setRegion(v)} className={cx("rounded-md border px-2.5 py-1", region === v ? "border-white/25 bg-white/[0.08] text-white" : "border-white/10 text-zinc-400 hover:text-white")}>
+                {l}
+              </button>
+            ))}
+          </div>
+        )}
+        <label className="mt-3 block text-[12.5px] text-zinc-300">
+          Email address
+          <input autoFocus type="email" autoComplete="off" value={email} onChange={(e) => setEmail(e.target.value)} className={field} placeholder={mb.provider === "gmail" ? "you@gmail.com" : "you@yourdomain.com"} />
+        </label>
+        <label className="mt-3 block text-[12.5px] text-zinc-300">
+          App password
+          <input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && ready && void add()} className={cx(field, "font-mono")} placeholder="xxxx xxxx xxxx xxxx" />
+        </label>
+        <label className="mt-3 block text-[12.5px] text-zinc-300">
+          Name on sent mail <span className="text-zinc-500">(optional)</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} className={field} placeholder="Sam Joshua" />
+        </label>
+        {mb.provider === "custom" && (
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <label className="block text-[12.5px] text-zinc-300">
+              IMAP server
+              <input value={imap} onChange={(e) => setImap(e.target.value)} className={field} placeholder="imap.example.com" />
+            </label>
+            <label className="block text-[12.5px] text-zinc-300">
+              SMTP server
+              <input value={smtp} onChange={(e) => setSmtp(e.target.value)} className={field} placeholder="smtp.example.com" />
+            </label>
+          </div>
+        )}
+        {err && <p className="mt-3 text-[12.5px] text-[var(--critical-text)]">{err}</p>}
+        <div className="mt-5 flex justify-end gap-2">
+          <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-[13px] text-zinc-300 hover:bg-white/[0.06]">
+            Done
+          </button>
+          <button onClick={() => void add()} disabled={!ready || busy !== null} className="flex items-center gap-1.5 rounded-lg bg-white px-3.5 py-1.5 text-[13px] font-medium text-black hover:bg-white/90 disabled:bg-white/[0.08] disabled:text-zinc-500">
+            {busy === "add" && <Loader2 className="size-3.5 animate-spin" />} {busy === "add" ? "Checking…" : "Add account"}
           </button>
         </div>
       </div>

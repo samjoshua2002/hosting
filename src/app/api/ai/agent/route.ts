@@ -31,6 +31,7 @@ export const POST = handle(async (req: NextRequest) => {
     answers: obj(body.answers) && Object.fromEntries(Object.entries(obj(body.answers)!).map(([k, v]) => [k, String(v).slice(0, 4000)])),
     // Azure deployment names, or local models as ollama/<service>/<model>
     model: typeof body.model === "string" && /^[\w.:/-]{1,120}$/.test(body.model) ? body.model : undefined,
+    connectorsOff: Array.isArray(body.connectorsOff) ? body.connectorsOff.filter((x): x is string => typeof x === "string" && /^[\w@.+-]{1,120}$/.test(x)).slice(0, 60) : undefined,
     review: body.review === "manual" ? "manual" : "auto",
     title: typeof body.title === "string" ? body.title : undefined,
     source: body.source === "pipeline" ? "pipeline" : undefined,

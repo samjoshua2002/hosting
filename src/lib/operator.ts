@@ -44,6 +44,7 @@ import { moveProject } from "./failover";
 import { importZip } from "./zip-import";
 import { callTool, mcpSummary, serverTools, toolIndex } from "./mcp";
 import { callConnector, connectorSummary } from "./connectors";
+import { mailboxConnectorId, mailboxSummary, pickMailbox, readEmail, saveDraft, searchEmail, sendEmail } from "./mailboxes";
 import { DEFAULT_PREFERENCES, getPreferences, preferenceRules } from "./preferences";
 import { actionsFor, API_AUTH, COMMON, DRIVERS, driverSummary, type DriverCtx } from "./service-drivers";
 import { createService } from "./services";
@@ -444,6 +445,27 @@ const TOOLS: ToolDef[] = [
     ["connector", "method", "path"],
   ),
   fn(
+    "email",
+    "Use the user's connected email accounts (Gmail, Zoho Mail, IMAP; see Email accounts in the instructions). accounts: list them. search: recent messages in a folder (INBOX by default), filter by text/from/unseen. read: one message by uid. draft: save a draft in the account's Drafts folder (preferred when the user says draft). send: send now (waits for the user's approval). account is an email address or part of one; omit it to use the first account. Write complete, well-formatted emails in the user's voice; never invent facts.",
+    {
+      action: { type: "string", enum: ["accounts", "search", "read", "draft", "send"] },
+      account: { type: "string" },
+      to: { type: "string", description: "comma-separated addresses" },
+      cc: { type: "string" },
+      bcc: { type: "string" },
+      subject: { type: "string" },
+      body: { type: "string", description: "plain text, or HTML when html is true" },
+      html: { type: "boolean" },
+      query: { type: "string", description: "search: text to look for" },
+      from: { type: "string", description: "search: sender address or name" },
+      unseen: { type: "boolean" },
+      folder: { type: "string" },
+      uid: { type: "number", description: "read: the message uid from search" },
+      limit: { type: "number" },
+    },
+    ["action"],
+  ),
+  fn(
     "mcp_tools",
     "List the tools of a connected MCP server with their input schemas (see MCP connectors in the instructions), before calling one you haven't used.",
     { server: { type: "string" } },
@@ -734,6 +756,17 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       const read = m === "GET" || graphRead;
       return { label: `${str(a.connector)}: ${m} ${clip(str(a.path), 80)}`, needsApproval: !read, detail: a.body ? JSON.stringify(a.body, null, 2).slice(0, 3000) : "", readOnly: read };
     }
+    case "email": {
+      const act = str(a.action);
+      const who = str(a.account) ? ` (${str(a.account)})` : "";
+      if (act === "send" || act === "draft")
+        return {
+          label: `${act === "send" ? "Send email" : "Save draft"} to ${clip(str(a.to), 80)}: ${clip(str(a.subject), 80)}${who}`,
+          needsApproval: act === "send",
+          detail: [`To: ${str(a.to)}`, str(a.cc) ? `Cc: ${str(a.cc)}` : "", str(a.bcc) ? `Bcc: ${str(a.bcc)}` : "", `Subject: ${str(a.subject)}`, "", str(a.body)].filter((x, i) => x || i > 3).join("\n").slice(0, 6000),
+        };
+      return { label: act === "read" ? `Read email ${str(a.uid)}${who}` : act === "search" ? `Searched email${str(a.query) ? ` for "${clip(str(a.query), 60)}"` : ""}${who}` : "Listed email accounts", needsApproval: false, detail: "", readOnly: true };
+    }
     case "mcp_tools":
       return { label: `Looked at the ${str(a.server)} connector's tools`, needsApproval: false, detail: "", readOnly: true };
     case "mcp_call": {
@@ -804,12 +837,34 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
 }
 
 /** Runs a tool with the user's real secrets swapped in, and hides them again in what the model reads back. */
-async function execute(call: ToolCall, ctx: { sessionId?: string }): Promise<{ ok: boolean; output: string }> {
+async function execute(call: ToolCall, ctx: { sessionId?: string; connectorsOff?: string[] }): Promise<{ ok: boolean; output: string }> {
+  const blocked = await switchedOff(call, ctx.connectorsOff);
+  if (blocked) return { ok: false, output: `${blocked} is switched off for this conversation (the + menu → Connectors). Ask the user to switch it on, or do the task another way.` };
   const real: ToolCall = { ...call, function: { ...call.function, arguments: await revealIn(call.function.arguments || "{}", true) } };
   const r = await executeRaw(real, ctx);
   // a pasted/attached .env read here is vaulted too, then anything known is masked
   const out = call.function.name === "read_attachment" ? await vaultText(r.output) : r.output;
   return { ok: r.ok, output: await maskSecrets(out) };
+}
+
+/** The connector a call would use, if the user switched it off for this conversation. */
+async function switchedOff(call: ToolCall, off?: string[]): Promise<string | null> {
+  if (!off?.length) return null;
+  const set = new Set(off.map((x) => x.toLowerCase()));
+  let a: Args;
+  try {
+    a = JSON.parse(call.function.arguments || "{}") as Args;
+  } catch {
+    return null;
+  }
+  const n = call.function.name;
+  if (n === "connector_api" && set.has(str(a.connector).toLowerCase())) return str(a.connector);
+  if ((n === "mcp_call" || n === "mcp_tools") && set.has(str(a.server).toLowerCase())) return str(a.server);
+  if (n === "email" && str(a.action) !== "accounts") {
+    const box = await pickMailbox(str(a.account) || undefined).catch(() => null);
+    if (box && (set.has(box.email) || set.has(mailboxConnectorId(box.provider)))) return box.email;
+  }
+  return null;
 }
 
 async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<{ ok: boolean; output: string }> {
@@ -1049,6 +1104,23 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
         try {
           const r = await callConnector(str(a.connector), str(a.method) || "GET", str(a.path), a.body);
           return { ok: r.status < 400, output: `HTTP ${r.status}\n${r.text}` };
+        } catch (e) {
+          return { ok: false, output: (e as Error).message };
+        }
+      }
+      case "email": {
+        try {
+          const act = str(a.action);
+          const account = str(a.account) || undefined;
+          if (act === "accounts") return { ok: true, output: (await mailboxSummary()) || "No email account is connected. The user can add Gmail or Zoho Mail in Settings → Connectors." };
+          if (act === "search") return { ok: true, output: await searchEmail(account, { text: str(a.query) || undefined, from: str(a.from) || undefined, unseen: a.unseen === true, folder: str(a.folder) || undefined, limit: typeof a.limit === "number" ? a.limit : undefined }) };
+          if (act === "read") return { ok: true, output: clip(await readEmail(account, Number(a.uid), str(a.folder) || "INBOX"), 24_000) };
+          if (act === "draft" || act === "send") {
+            if (!str(a.to) || !str(a.subject)) return { ok: false, output: "to and subject are required" };
+            const d = { to: str(a.to), cc: str(a.cc) || undefined, bcc: str(a.bcc) || undefined, subject: str(a.subject), body: str(a.body), html: a.html === true };
+            return { ok: true, output: act === "send" ? await sendEmail(account, d) : await saveDraft(account, d) };
+          }
+          return { ok: false, output: "action must be accounts, search, read, draft or send" };
         } catch (e) {
           return { ok: false, output: (e as Error).message };
         }
@@ -1395,6 +1467,8 @@ export interface OperatorInput {
   answers?: Record<string, string>;
   sessionId?: string;
   model?: string;
+  /** connectors (ids, or email addresses) the user switched off for this conversation */
+  connectorsOff?: string[];
   /** manual: every action waits for approval; auto: only destructive ones */
   review?: "auto" | "manual";
   /** called between rounds (the route saves progress and checks for Stop) */
@@ -1494,6 +1568,8 @@ function toolTag(call: ToolCall): string {
       return `mcp:${str(a.server)}`;
     case "connector_api":
       return `connector:${str(a.connector)}`;
+    case "email":
+      return `connector:email.${str(a.action)}`;
     case "use_service":
       return `service:${str(a.service)}.${str(a.action)}`;
     case "n8n":
@@ -1619,7 +1695,13 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
   const names = await secretNames().catch(() => []);
   const hubSkills = await installedSkills().catch(() => []);
   const standing = await getInstructions().catch(() => "");
-  const [mcp, fleetNow, connected, prefs] = await Promise.all([mcpSummary().catch(() => ""), fleetSnapshot(), connectorSummary().catch(() => ""), getPreferences().catch(() => DEFAULT_PREFERENCES)]);
+  const [mcp, fleetNow, connected, prefs, mailboxes] = await Promise.all([
+    mcpSummary(input.connectorsOff).catch(() => ""),
+    fleetSnapshot(),
+    connectorSummary(input.connectorsOff).catch(() => ""),
+    getPreferences().catch(() => DEFAULT_PREFERENCES),
+    mailboxSummary(input.connectorsOff).catch(() => ""),
+  ]);
   const system = [
     SYSTEM.replace("${NAMES}", names.length ? names.join(", ") : "none yet").replaceAll("${SITE}", siteUrl()).replace("${SKILLS_INDEX}", skillIndex() + (hubSkills.length ? `\n${hubSkills.map((h) => `- ${h.slug} (installed from skills-hub): ${h.description}`).join("\n")}` : "")),
     gh ? capabilitySummary(gh.login, gh.scopes) : "GitHub: not connected. For repo work, ask the user to click Connect GitHub on the Projects page.",
@@ -1627,6 +1709,8 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
     `Your fleet right now (live; every machine and everything installed on it; call fleet_status for full detail, logs and jobs):\n${fleetNow}`,
     preferenceRules(prefs),
     connected,
+    mailboxes ||
+      "Email accounts: none connected. The server's report sender (EMAIL_USER) is not the user's mailbox and can't be used to draft or send their mail: to email someone, ask the user to add Gmail or Zoho Mail in Settings → Connectors.",
     mcp,
     standing ? `The user's standing instructions (follow them in every conversation unless they conflict with safety rules):\n${standing}` : "",
     memory.length ? `Memory (things the user asked you to remember):\n${memory.map((m) => `- [${m.id}] ${m.text}`).join("\n")}` : "Memory: nothing saved yet.",

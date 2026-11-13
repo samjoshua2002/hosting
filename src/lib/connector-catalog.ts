@@ -15,8 +15,9 @@ export interface ConnectorDef {
    * builtin: set up elsewhere in the dashboard (GitHub, Azure, email…), shown with its real state
    * token:   paste an API token; the Assistant calls the service's REST API with it (connector_api)
    * mcp:     a remote MCP server; its tools become the Assistant's
+   * mailbox: email accounts (several allowed), connected with an app password; the Assistant's email tool
    */
-  kind: "builtin" | "token" | "mcp";
+  kind: "builtin" | "token" | "mcp" | "mailbox";
   token?: {
     label: string;
     /** where to create one */
@@ -31,11 +32,42 @@ export interface ConnectorDef {
     can: string;
   };
   mcp?: { url: string; reuse?: "github" };
+  mailbox?: { provider: "gmail" | "zoho" | "custom"; help: string; steps: string };
 }
 
 export const CONNECTORS: ConnectorDef[] = [
   // ---- code & hosting ----
   { id: "github", name: "GitHub", by: "GitHub", category: "Code", desc: "Repos, branches, pull requests, issues, Actions and auto-deploy on push", logo: { slug: "github", color: "ffffff" }, kind: "builtin" },
+  {
+    id: "gmail",
+    name: "Gmail",
+    by: "Google",
+    category: "Messaging",
+    desc: "Search, read, draft and send from your Gmail accounts. Add as many as you like.",
+    logo: { slug: "gmail", color: "EA4335" },
+    kind: "mailbox",
+    mailbox: { provider: "gmail", help: "https://myaccount.google.com/apppasswords", steps: "Turn on 2-Step Verification, then create an app password (Google Account → Security → App passwords)." },
+  },
+  {
+    id: "zoho-mail",
+    name: "Zoho Mail",
+    by: "Zoho",
+    category: "Messaging",
+    desc: "Search, read, draft and send from your Zoho Mail accounts. Add as many as you like.",
+    logo: { slug: "zoho", color: "E42527" },
+    kind: "mailbox",
+    mailbox: { provider: "zoho", help: "https://accounts.zoho.com/home#security/app_password", steps: "Zoho Mail → Settings → Mail Accounts → IMAP Access: turn it on. Then Zoho Accounts → Security → App Passwords: create one." },
+  },
+  {
+    id: "imap",
+    name: "Other email (IMAP)",
+    by: "IMAP/SMTP",
+    category: "Messaging",
+    desc: "Any mailbox that offers IMAP and SMTP (Fastmail, your own domain…).",
+    logo: { slug: "thunderbird", color: "0A84FF" },
+    kind: "mailbox",
+    mailbox: { provider: "custom", help: "", steps: "Your provider's IMAP and SMTP server names (SSL on ports 993 and 465) and an app password." },
+  },
   {
     id: "vercel",
     name: "Vercel",
@@ -229,7 +261,7 @@ export const CONNECTORS: ConnectorDef[] = [
   // ---- built in (set up in the dashboard) ----
   { id: "azure", name: "Azure OpenAI", by: "Microsoft", category: "AI", desc: "The models the Assistant thinks with", logo: { slug: "openai", color: "ffffff" }, kind: "builtin" },
   { id: "machines", name: "Your machines", by: "SSH", category: "Hosting", desc: "Every InstaBox or SSH machine: deploy, run, monitor", logo: { slug: "linux", color: "ffffff" }, kind: "builtin" },
-  { id: "email", name: "Email alerts", by: "SMTP", category: "Messaging", desc: "Autopilot emails what it fixed", logo: { slug: "gmail", color: "EA4335" }, kind: "builtin" },
+  { id: "email", name: "Report sender", by: "Server", category: "Monitoring", desc: "The address the 5-hour fleet report is sent from (EMAIL_USER on the server). Not your mail: connect Gmail or Zoho Mail for that.", logo: { slug: "minutemailer", color: "ffffff" }, kind: "builtin" },
   { id: "unsplash", name: "Unsplash", by: "Unsplash", category: "Data", desc: "Daily cover photos and theme colors", logo: { slug: "unsplash", color: "ffffff" }, kind: "builtin" },
 ];
 

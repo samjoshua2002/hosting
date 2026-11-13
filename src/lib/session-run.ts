@@ -19,6 +19,8 @@ export interface RunRequest {
   approvals?: Record<string, boolean>;
   answers?: Record<string, string>;
   model?: string;
+  /** connectors (ids, or email addresses) switched off for this conversation */
+  connectorsOff?: string[];
   review: "auto" | "manual";
   title?: string;
   source?: SessionDoc["source"];
@@ -85,7 +87,7 @@ export async function runSession(r: RunRequest, doc: SessionDoc, history: ChatMe
   await updateIndex({ id: doc.id, title: doc.title, updatedAt: Date.now(), running: true, source: doc.source }).catch(() => {});
   try {
     await runOperator(
-      { transcript: history, message: r.message, approvals: r.approvals, answers: r.answers, sessionId: doc.id, model: r.model, review: r.review, onRound: () => save() },
+      { transcript: history, message: r.message, approvals: r.approvals, answers: r.answers, sessionId: doc.id, model: r.model, connectorsOff: r.connectorsOff, review: r.review, onRound: () => save() },
       emit,
       stopper.signal,
     );

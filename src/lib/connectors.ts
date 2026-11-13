@@ -4,6 +4,7 @@ import { aiConfigured } from "./ai";
 import { getVms } from "./config";
 import { CONNECTORS, connectorDef, type ConnectorDef } from "./connector-catalog";
 import { githubAuth, githubToken } from "./github";
+import { listMailboxes, type Mailbox } from "./mailboxes";
 import { addServer, listServers, removeServer } from "./mcp";
 import { storeGetJson, storePut } from "./store";
 import { langfuseBaseUrl } from "./telemetry";
@@ -20,6 +21,8 @@ export interface ConnectorState {
   detail?: string;
   connectedAt?: number;
   tools?: number;
+  /** email accounts under a mailbox connector */
+  accounts?: { id: string; email: string; provider: string }[];
 }
 
 async function meta(): Promise<Meta> {
@@ -88,6 +91,7 @@ export async function disconnect(id: string): Promise<void> {
   const def = connectorDef(id);
   if (!def) throw new Error("unknown connector");
   if (def.kind === "mcp") return removeServer(id);
+  if (def.kind === "mailbox") throw new Error("remove email accounts one at a time");
   if (def.kind !== "token") throw new Error(`${def.name} is set up elsewhere in the dashboard`);
   await forgetSecret(secretName(id));
   const m = await meta();
@@ -106,10 +110,16 @@ export async function connectMcp(id: string): Promise<void> {
 
 /** Every connector's state, for the Customize page and the Assistant. */
 export async function connectorStates(): Promise<ConnectorState[]> {
-  const [m, gh, servers] = await Promise.all([meta(), githubAuth().catch(() => null), listServers().catch(() => [])]);
+  const [m, gh, servers, boxes] = await Promise.all([meta(), githubAuth().catch(() => null), listServers().catch(() => []), listMailboxes().catch(() => [] as Mailbox[])]);
   const vms = getVms();
   return CONNECTORS.map((d): ConnectorState => {
     if (d.kind === "token") return m[d.id] ? { id: d.id, connected: true, account: m[d.id].account, connectedAt: m[d.id].connectedAt } : { id: d.id, connected: false };
+    if (d.kind === "mailbox") {
+      const mine = boxes.filter((b) => (d.mailbox!.provider === "zoho" ? b.provider === "zoho" || b.provider === "zoho-in" : b.provider === d.mailbox!.provider));
+      return mine.length
+        ? { id: d.id, connected: true, account: mine.map((b) => b.email).join(", "), detail: mine.length > 1 ? `${mine.length} accounts` : undefined, accounts: mine.map((b) => ({ id: b.id, email: b.email, provider: b.provider })) }
+        : { id: d.id, connected: false };
+    }
     if (d.kind === "mcp") {
       const s = servers.find((x) => x.name === d.id);
       return s ? { id: d.id, connected: true, account: s.error ? `error: ${s.error}` : `${s.tools.length} tools`, tools: s.tools.length, connectedAt: s.checkedAt } : { id: d.id, connected: false };
@@ -189,9 +199,10 @@ export async function callConnector(id: string, method: string, path: string, bo
 }
 
 /** For the system prompt: what's connected and what it can do. */
-export async function connectorSummary(): Promise<string> {
+export async function connectorSummary(off?: string[]): Promise<string> {
+  const no = new Set((off ?? []).map((x) => x.toLowerCase()));
   const states = await connectorStates().catch(() => [] as ConnectorState[]);
-  const api = states.filter((s) => s.connected && connectorDef(s.id)?.kind === "token");
+  const api = states.filter((s) => s.connected && connectorDef(s.id)?.kind === "token" && !no.has(s.id));
   if (!api.length) return "";
   return `Connected services (call them with connector_api {connector, method, path, body}; the token is added for you):\n${api
     .map((s) => {
