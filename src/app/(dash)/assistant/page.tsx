@@ -40,6 +40,18 @@ function hideSecrets(t: string): string {
 const fmtSize = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
 const URL_RE = /https?:\/\/[^\s)<>"'`\]]+/g;
 
+/** A link you can tell apart at a glance: long machine hosts shortened, the path kept ("8092-agq3…instabox.tech/oto.zip"). */
+function shortLink(u: string): string {
+  try {
+    const x = new URL(u);
+    const host = x.host.length > 26 ? `${x.host.slice(0, 9)}…${x.host.slice(-13)}` : x.host;
+    const path = x.pathname === "/" ? "" : x.pathname;
+    return `${host}${path}`;
+  } catch {
+    return u.replace(/^https?:\/\//, "");
+  }
+}
+
 /** Final replies end with ">> suggestion" lines: show them as chips, not text. */
 function splitSuggestions(text: string): { body: string; suggestions: string[] } {
   const suggestions: string[] = [];
@@ -323,9 +335,10 @@ export default function AssistantPage() {
   const plan = [...items].reverse().find((i): i is Extract<Item, { kind: "plan" }> => i.kind === "plan");
   const nice = useNiceLink();
   const linkSet = new Set<string>();
+  // links the Assistant gave you (not every URL that scrolled past in a command's output: font CDNs, docs…)
   for (const i of items) {
-    const t = i.kind === "text" ? i.text : i.kind === "step" ? (i.output ?? "") : "";
-    for (const m of t.matchAll(URL_RE)) linkSet.add(m[0].replace(/[.,;:!?]+$/, ""));
+    if (i.kind !== "text") continue;
+    for (const m of i.text.matchAll(URL_RE)) linkSet.add(m[0].replace(/[.,;:!?*)]+$/, ""));
   }
   const links = [...new Set([...linkSet].filter((u) => !/\.git$/.test(u) && !/api\.github\.com/.test(u) && !LOCAL_URL.test(u)).map(nice))].slice(-12);
   const lastText = [...items].reverse().find((i): i is Extract<Item, { kind: "text" }> => i.kind === "text");
@@ -681,7 +694,7 @@ export default function AssistantPage() {
             links.map((u) => (
               <div key={u} className="group flex items-center gap-1 rounded-md hover:bg-white/5">
                 <a href={u} target="_blank" rel="noreferrer" onClick={(e) => openInApp(e, u)} className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-xs text-accent-soft">
-                  <ArrowUpRight className="size-3 shrink-0" /> <span className="truncate">{u.replace(/^https?:\/\//, "").replace(/\?.*$/, "")}</span>
+                  <ArrowUpRight className="size-3 shrink-0" /> <span className="truncate">{shortLink(u)}</span>
                 </a>
                 <CopyButton text={u} />
               </div>

@@ -105,7 +105,8 @@ export function inline(s: string, mentions?: Set<string>): ReactNode[] {
     if (part.startsWith("**") && part.endsWith("**"))
       return (
         <b key={i} className="font-semibold text-white">
-          {part.slice(2, -2)}
+          {/* links, code and URLs inside bold work too ("**[Download](https://…)**") */}
+          {inline(part.slice(2, -2), mentions)}
         </b>
       );
     const md = /^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/.exec(part);
