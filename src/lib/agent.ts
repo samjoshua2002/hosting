@@ -158,9 +158,25 @@ function b64(s: string): string {
 }
 
 /** Write the project files on the VM: manifest (for the UI), conf (for the agent), env (secrets, mode 600). */
+/**
+ * The port this project can have on this machine: its own if nobody else uses it, else the next free one. Two
+ * apps on one port means the link shows whichever started first (a "wedding" link serving another site).
+ */
+export async function freePortFor(conn: Client, name: string, wanted: number, own?: number | null): Promise<number> {
+  const others = (await listManifests(conn).catch(() => [])).filter((m) => m.name !== name && m.port);
+  const taken = new Set(others.map((m) => Number(m.port)));
+  if (!taken.has(wanted)) return wanted;
+  const r = await run(conn, "ss -ltnH 2>/dev/null | awk '{print $4}' | sed 's/.*://' | sort -un", { timeoutMs: 10_000 }).catch(() => null);
+  const listening = new Set((r?.stdout ?? "").split("\n").map(Number).filter(Boolean));
+  for (let q = wanted + 1; q < 65535; q++) if (!taken.has(q) && (!listening.has(q) || q === own)) return q;
+  return wanted;
+}
+
 export async function saveProject(conn: Client, p: ProjectInput, createdAt?: string): Promise<ProjectManifest> {
   const now = new Date().toISOString();
   const prev = await readManifest(conn, p.name);
+  // never share a port with another project on this machine
+  if (p.port) p = { ...p, port: await freePortFor(conn, p.name, p.port, prev?.port) };
   const manifest: ProjectManifest = {
     name: p.name,
     repo: p.repo,
