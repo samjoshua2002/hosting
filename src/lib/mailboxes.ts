@@ -121,11 +121,20 @@ export interface Draft {
   subject: string;
   body: string;
   html?: boolean;
+  attachments?: { filename: string; content: Buffer; contentType: string }[];
 }
 
 function message(box: Mailbox, d: Draft) {
   const from = box.name ? `"${box.name.replace(/"/g, "")}" <${box.email}>` : box.email;
-  return { from, to: d.to, cc: d.cc || undefined, bcc: d.bcc || undefined, subject: d.subject, ...(d.html ? { html: d.body } : { text: d.body }) };
+  return {
+    from,
+    to: d.to,
+    cc: d.cc || undefined,
+    bcc: d.bcc || undefined,
+    subject: d.subject,
+    ...(d.html ? { html: d.body } : { text: d.body }),
+    ...(d.attachments?.length ? { attachments: d.attachments } : {}),
+  };
 }
 
 /** Save a draft in the account's Drafts folder (it shows up in Gmail / Zoho, ready to review and send). */
@@ -136,7 +145,7 @@ export async function saveDraft(account: string | undefined, d: Draft): Promise<
     const boxes = await c.list();
     const drafts = boxes.find((b) => b.specialUse === "\\Drafts")?.path ?? boxes.find((b) => /(^|\/)drafts?$/i.test(b.path))?.path ?? "Drafts";
     await c.append(drafts, raw, ["\\Draft", "\\Seen"]);
-    return `Draft saved in ${box.email} → ${drafts}: "${d.subject}" to ${d.to}`;
+    return `Draft saved in ${box.email} → ${drafts}: "${d.subject}" to ${d.to}${d.attachments?.length ? ` with ${d.attachments.map((a) => a.filename).join(", ")}` : ""}`;
   });
 }
 
@@ -146,7 +155,7 @@ export async function sendEmail(account: string | undefined, d: Draft): Promise<
   const password = await getSecret(secretName(box.id));
   if (!password) throw new Error(`${box.email} has no saved password: reconnect it in Settings → Connectors`);
   const info = await smtpClient(box, password).sendMail(message(box, d));
-  return `Sent from ${box.email} to ${d.to}: "${d.subject}" (${info.messageId ?? "accepted"})`;
+  return `Sent from ${box.email} to ${d.to}: "${d.subject}"${d.attachments?.length ? ` with ${d.attachments.map((a) => a.filename).join(", ")}` : ""} (${info.messageId ?? "accepted"})`;
 }
 
 /** Recent messages in a folder, newest first, optionally filtered (IMAP search). */

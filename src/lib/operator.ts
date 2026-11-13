@@ -44,6 +44,7 @@ import { moveProject } from "./failover";
 import { importZip } from "./zip-import";
 import { callTool, mcpSummary, serverTools, toolIndex } from "./mcp";
 import { callConnector, connectorSummary } from "./connectors";
+import { gatherAttachments } from "./documents";
 import { mailboxConnectorId, mailboxSummary, pickMailbox, readEmail, saveDraft, searchEmail, sendEmail } from "./mailboxes";
 import { DEFAULT_PREFERENCES, getPreferences, preferenceRules } from "./preferences";
 import { actionsFor, API_AUTH, COMMON, DRIVERS, driverSummary, type DriverCtx } from "./service-drivers";
@@ -462,6 +463,12 @@ const TOOLS: ToolDef[] = [
       folder: { type: "string" },
       uid: { type: "number", description: "read: the message uid from search" },
       limit: { type: "number" },
+      attachments: {
+        type: "array",
+        description:
+          "draft/send: files from this conversation to attach. artifact = an artifact's id or title (sent as a PDF unless as is 'original'); file = a chat file's id or name (uploads, screenshots, PDFs)",
+        items: { type: "object", properties: { artifact: { type: "string" }, file: { type: "string" }, as: { type: "string", enum: ["pdf", "original"] } } },
+      },
     },
     ["action"],
   ),
@@ -763,7 +770,20 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
         return {
           label: `${act === "send" ? "Send email" : "Save draft"} to ${clip(str(a.to), 80)}: ${clip(str(a.subject), 80)}${who}`,
           needsApproval: act === "send",
-          detail: [`To: ${str(a.to)}`, str(a.cc) ? `Cc: ${str(a.cc)}` : "", str(a.bcc) ? `Bcc: ${str(a.bcc)}` : "", `Subject: ${str(a.subject)}`, "", str(a.body)].filter((x, i) => x || i > 3).join("\n").slice(0, 6000),
+          detail: [
+            `To: ${str(a.to)}`,
+            str(a.cc) ? `Cc: ${str(a.cc)}` : "",
+            str(a.bcc) ? `Bcc: ${str(a.bcc)}` : "",
+            `Subject: ${str(a.subject)}`,
+            Array.isArray(a.attachments) && a.attachments.length
+              ? `Attachments: ${(a.attachments as { artifact?: string; file?: string; as?: string }[]).map((x) => (x.artifact ? `${x.artifact}${x.as === "original" ? "" : " (PDF)"}` : x.file)).join(", ")}`
+              : "",
+            "",
+            str(a.body),
+          ]
+            .filter((x, i) => x || i > 4)
+            .join("\n")
+            .slice(0, 6000),
         };
       return { label: act === "read" ? `Read email ${str(a.uid)}${who}` : act === "search" ? `Searched email${str(a.query) ? ` for "${clip(str(a.query), 60)}"` : ""}${who}` : "Listed email accounts", needsApproval: false, detail: "", readOnly: true };
     }
@@ -1117,8 +1137,11 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
           if (act === "read") return { ok: true, output: clip(await readEmail(account, Number(a.uid), str(a.folder) || "INBOX"), 24_000) };
           if (act === "draft" || act === "send") {
             if (!str(a.to) || !str(a.subject)) return { ok: false, output: "to and subject are required" };
-            const d = { to: str(a.to), cc: str(a.cc) || undefined, bcc: str(a.bcc) || undefined, subject: str(a.subject), body: str(a.body), html: a.html === true };
-            return { ok: true, output: act === "send" ? await sendEmail(account, d) : await saveDraft(account, d) };
+            const wanted = Array.isArray(a.attachments) ? (a.attachments as { artifact?: string; file?: string; as?: string }[]).filter((x) => x && (x.artifact || x.file)) : [];
+            const { files, notes } = await gatherAttachments(ctx.sessionId, wanted);
+            const d = { to: str(a.to), cc: str(a.cc) || undefined, bcc: str(a.bcc) || undefined, subject: str(a.subject), body: str(a.body), html: a.html === true, attachments: files };
+            const done = act === "send" ? await sendEmail(account, d) : await saveDraft(account, d);
+            return { ok: true, output: notes.length ? `${done}\nNote: ${notes.join("; ")}` : done };
           }
           return { ok: false, output: "action must be accounts, search, read, draft or send" };
         } catch (e) {

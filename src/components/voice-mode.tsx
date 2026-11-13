@@ -12,6 +12,8 @@ import gsap from "gsap";
 import type { Item } from "@/lib/assistant-items";
 import { api } from "@/lib/client";
 import { appendVoice, decide, useAssistant } from "./assistant-store";
+import { ArtifactView } from "./artifact-view";
+import { AttachmentView } from "./attachment-view";
 import { ChatItems } from "./chat-items";
 import { UnsplashLayer, useTheme } from "./theme";
 import { VoiceWaves } from "./voice-waves";
@@ -241,6 +243,8 @@ export function VoiceMode({
       .map((i) => ({ role: i.kind === "user" ? "user" : "assistant", text: i.text.slice(0, 1200) }));
   const history = useRef<{ role: string; text: string }[]>([]);
   const [taskFrom, setTaskFrom] = useState<number | null>(null); // shows the side panel with what it's doing
+  // an artifact or file opened from the panel, shown right there (the chat's viewer isn't on screen in voice mode)
+  const [viewing, setViewing] = useState<{ art: string } | { file: { id: string; name: string } } | null>(null);
   const taskPanel = useRef<HTMLElement>(null);
   // the split: the panel grows open from the right (the voice side glides over to make room), then its content fades up
   useGSAP(
@@ -793,9 +797,31 @@ export function VoiceMode({
               <X className="size-4" />
             </button>
           </div>
-          <div data-panel-in className="scroll-thin min-h-0 min-w-[320px] flex-1 overflow-y-auto px-4 py-4 text-left">
-            <ChatItems sid={sessionId} items={(docs[sessionId]?.items ?? []).slice(taskFrom)} busy={Boolean(docs[sessionId]?.busy)} mentions={NO_MENTIONS} compact />
-          </div>
+          {viewing && "art" in viewing ? (
+            <div className="min-h-0 min-w-[320px] flex-1 overflow-hidden text-left">
+              <ArtifactView
+                key={viewing.art}
+                versions={(docs[sessionId]?.items ?? []).filter((i): i is Extract<Item, { kind: "artifact" }> => i.kind === "artifact" && i.id === viewing.art)}
+                onClose={() => setViewing(null)}
+              />
+            </div>
+          ) : viewing && "file" in viewing ? (
+            <div className="min-h-0 min-w-[320px] flex-1 overflow-hidden text-left">
+              <AttachmentView session={sessionId} id={viewing.file.id} name={viewing.file.name} onClose={() => setViewing(null)} />
+            </div>
+          ) : (
+            <div data-panel-in className="scroll-thin min-h-0 min-w-[320px] flex-1 overflow-y-auto px-4 py-4 text-left">
+              <ChatItems
+                sid={sessionId}
+                items={(docs[sessionId]?.items ?? []).slice(taskFrom)}
+                busy={Boolean(docs[sessionId]?.busy)}
+                mentions={NO_MENTIONS}
+                compact
+                onOpenArtifact={(id) => setViewing({ art: id })}
+                onOpenFile={(f) => setViewing({ file: f })}
+              />
+            </div>
+          )}
         </aside>
       )}
       </div>
