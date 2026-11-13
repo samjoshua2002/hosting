@@ -4,7 +4,7 @@
 // fast advisor model that asks one question at a time, speaks back (speech synthesis), and once you agree to the
 // plan it hands the full instruction to the Assistant in the chat. A soft glow breathes with your voice while it
 // listens and warms up while it speaks.
-import { AudioLines, Check, Loader2, Mic, MicOff, Play, SlidersHorizontal } from "lucide-react";
+import { AudioLines, Check, Mic, MicOff, Play, SlidersHorizontal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "@/lib/client";
@@ -121,6 +121,26 @@ function pickVoice(name?: string): SpeechSynthesisVoice | null {
 
 /** Saying one of these while it talks stops it. */
 const STOP_WORDS = /\b(stop|wait|hold on|pause|enough|quiet|shut up|cancel|be quiet)\b/;
+
+/**
+ * The voice orb: a glossy chrome sphere with an iridescent band of light in the theme's colours. It swells with your
+ * voice while listening, swirls while thinking and pulses while speaking.
+ */
+export function VoiceOrb({ phase, level = 0, size = 132 }: { phase: string; level?: number; size?: number }) {
+  const scale = phase === "listening" ? 1 + level * 0.08 : 1;
+  return (
+    <span
+      aria-hidden
+      className={cx("voice-orb relative block shrink-0 rounded-full", `voice-orb--${phase}`)}
+      style={{ width: size, height: size, transform: `scale(${scale})` }}
+    >
+      <span className="voice-orb__body absolute inset-0 rounded-full" />
+      <span className="voice-orb__band absolute inset-0 rounded-full" />
+      <span className="voice-orb__glint absolute inset-0 rounded-full" />
+      <span className="voice-orb__rim absolute inset-0 rounded-full" />
+    </span>
+  );
+}
 
 /** Words that appear one by one with a soft fade (for live captions). */
 export function FadeWords({ text, className }: { text: string; className?: string }) {
@@ -541,6 +561,9 @@ export function VoiceMode({
       {/* captions, in the middle of the screen */}
       <div className="relative flex flex-1 items-center justify-center overflow-y-auto px-8 py-16">
         <div className="w-full max-w-3xl text-center">
+          <div className="mb-10 flex justify-center">
+            <VoiceOrb phase={phase} level={level} />
+          </div>
           {lastYou && (phase === "thinking" || phase === "speaking") && (
             <p key={lastYou} className="word-in mb-6 text-[15px] leading-relaxed text-zinc-500">
               {lastYou}
@@ -554,13 +577,7 @@ export function VoiceMode({
                 </span>
               ))}
             </p>
-          ) : phase === "thinking" ? (
-            <p className="voice-dots text-[26px] text-zinc-500" aria-label="Thinking">
-              <span>•</span>
-              <span>•</span>
-              <span>•</span>
-            </p>
-          ) : heard ? (
+          ) : phase === "thinking" ? null : heard ? (
             <FadeWords text={heard} className="text-[26px] leading-[1.45] font-medium tracking-[-0.01em] text-white" />
           ) : (
             <p className="text-[22px] text-zinc-500">{phase === "listening" ? "Go ahead, I'm listening." : phase === "paused" ? "Mic is off." : ""}</p>
@@ -591,7 +608,7 @@ export function VoiceMode({
       <div className="relative flex items-center gap-2 rounded-2xl border border-white/[0.09] bg-pop/90 px-3 py-2.5 shadow-lg shadow-black/20 backdrop-blur" onClick={interrupt}>
         <span className="flex size-8 items-center justify-center">
           {phase === "thinking" || phase === "starting" ? (
-            <Loader2 className="size-4 animate-spin text-zinc-400" />
+            <VoiceOrb phase="thinking" size={22} />
           ) : (
             <span className="flex h-4 items-end gap-[3px]" aria-hidden>
               {[0, 1, 2, 3].map((i) => (
