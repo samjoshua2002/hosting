@@ -267,7 +267,8 @@ export function VoiceMode({ context, sessionId, onPlan, onClose }: { context: st
   return (
     <div className="relative">
       {/* the glow, rising from behind the bar */}
-      <div aria-hidden className="pointer-events-none absolute inset-x-[-12%] bottom-6 h-[300px] overflow-hidden">
+      {/* faded at every edge (mask), so it reads as light, never as a box */}
+      <div aria-hidden className="voice-glow-wrap pointer-events-none absolute inset-x-[-12%] bottom-6 h-[300px] overflow-hidden">
         <div
           className={cx("voice-glow absolute inset-x-0 bottom-[-120px] h-[320px] rounded-[50%] blur-3xl transition-[opacity,transform,background] duration-500", phase === "thinking" && "voice-glow-think")}
           style={{
