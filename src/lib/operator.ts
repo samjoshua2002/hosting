@@ -266,6 +266,9 @@ Links and output
 - Always give full https URLs (the UI adds open and copy buttons). Put commands the user may want to run themselves in \`\`\`bash blocks.
 - Every project with a link also has a short, readable one: \${SITE}/go/<project-name> (e.g. \${SITE}/go/sidis). It always forwards to the running copy, survives redeploys and machine moves, and private ones ask for sign-in. Whenever you give the user a project's link, give this short link, not the raw *.instabox.tech address (only show that if they ask for it). "A new/better/meaningful/simple link" means this short link: just give it; don't redeploy or republish to get a new address. Never offer 0.0.0.0 or 127.0.0.1 addresses as links.
 - Quick questions about things already in this conversation or in the live fleet snapshot ("give link", "site link", "which port", "where is it running"): answer at once from what you already know, with no tools. "Site link" / "the link" means the project's short \${SITE}/go/<project-name> link (the site itself, not a download); a download link is a separate thing you only give when they ask for the file. Format links as plain URLs or [text](url), never inside bold or code.
+- Files and code: whenever the user wants code, a project's source, a zip, a report or any file, use share_file so it lands in the chat with Preview and Download (they can browse a zip file by file). Never give a raw machine address as a download, and never zip inside a project folder for them to fetch. A project's code means its real source only: share_file already leaves out node_modules, build output, caches, old zips and scrape "mirror" copies; also pass exclude for heavy media (["*.mp4","*.mov","*.webm","*/media/*"]) unless they asked for the media. Name it <project>-code.zip.
+- Picking from a list (which projects, repos, machines, files, tables…): ask_user with multiple: true and every candidate as an option, so they tick boxes and press Continue. Never write a [ ] checklist for them to answer by typing.
+- When they point at a specific link or file, work on exactly that one.
 
 - Always follow up: after installing or deploying anything, tell the user exactly how to use it: the link, how to sign in (where the password is: Services page), and one concrete next step or example (for an API: a curl example; for Ollama: it has no web page, use the Try it box on the Services page or the API). Never stop at "it's running".
 
@@ -360,9 +363,21 @@ const TOOLS: ToolDef[] = [
   ),
   fn(
     "ask_user",
-    "Ask the user a question and wait for the answer. Give 2–4 short options when possible; they can also type their own answer.",
-    { question: { type: "string" }, options: { type: "array", items: { type: "string" } } },
+    "Ask the user a question and wait for the answer. Give 2–4 short options when possible; they can also type their own answer. multiple: true shows a checklist (checkboxes, Select all, Continue) for picking several from a list, e.g. every project, repo, machine or file to act on; then give ALL the candidates as options (up to 60). The answer lists the ticked ones, comma-separated.",
+    { question: { type: "string" }, options: { type: "array", items: { type: "string" } }, multiple: { type: "boolean" } },
     ["question"],
+  ),
+  fn(
+    "share_file",
+    "Put a file or a whole folder from a machine into the chat, where the user can preview it (code with line numbers, a zip's files one by one, PDFs, images) and download it from the dashboard. A folder is zipped first (node_modules, .git and build output left out). Use it whenever the user wants code, a project's source, a zip, a report or any file: never hand them a raw machine link for a download. Up to 25 MB.",
+    {
+      vm: { type: "string" },
+      path: { type: "string", description: "absolute, or starting with ~/ (e.g. ~/apps/oto-recreation)" },
+      name: { type: "string", description: "file name to show (optional)" },
+      note: { type: "string", description: "one line about what it is (optional)" },
+      exclude: { type: "array", items: { type: "string" }, description: "folder zips only: extra patterns to leave out, e.g. heavy media [\"*.mp4\", \"*/media/*\"]" },
+    },
+    ["vm", "path"],
   ),
   fn("read_attachment", "Read a file the user attached to this conversation (text up to ~20 KB; binary files report their size).", { id: { type: "string" } }, ["id"]),
   fn(
@@ -638,7 +653,7 @@ function vmsFrom(v: unknown): VmConfig[] {
 }
 
 /** What a call does in plain words, and whether it must wait for the user. */
-const READ_ONLY = new Set(["mcp_tools", "update_plan", "load_skill", "find_skills", "fleet_status", "job_log", "ask_user", "read_attachment", "github_repos", "show_diagram", "repo_branches", "repo_files", "repo_read", "create_artifact", "remember", "forget"]);
+const READ_ONLY = new Set(["share_file", "mcp_tools", "update_plan", "load_skill", "find_skills", "fleet_status", "job_log", "ask_user", "read_attachment", "github_repos", "show_diagram", "repo_branches", "repo_files", "repo_read", "create_artifact", "remember", "forget"]);
 
 const SQL_WRITE = /\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|replace|merge|copy|vacuum|reindex|rename|lock)\b/i;
 const MONGO_WRITE = /\b(insert\w*|update\w*|delete\w*|remove|drop\w*|replace\w*|create\w*|rename\w*|bulkWrite|findOneAnd\w+|\$out|\$merge)\b/i;
@@ -795,6 +810,8 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       const writes = t?.destructive === true || (!t?.readOnly && /(^|_|-)(create|update|delete|remove|write|send|post|push|merge|close|comment|publish|deploy|pay|transfer|run|exec)/i.test(str(a.tool)));
       return { label: `${str(a.server)}: ${str(a.tool)}`, needsApproval: writes, detail: a.arguments ? JSON.stringify(a.arguments, null, 2).slice(0, 3000) : "", readOnly: !writes };
     }
+    case "share_file":
+      return { label: `Shared ${clip(str(a.path), 80)} from ${str(a.vm)}`, needsApproval: false, detail: "", readOnly: true };
     case "screenshot":
       return { label: `Looked at ${clip(str(a.url).replace(/^https?:\/\//, "").replace(/\?.*$/, ""), 70)}`, needsApproval: false, detail: "", readOnly: true };
     case "import_zip":
@@ -1526,6 +1543,71 @@ function artifact(call: ToolCall, emit: (e: OperatorEvent) => void): string {
  * screenshot, it's kept with the conversation's attachments and shown in the chat, and the vision model says
  * what's on it.
  */
+const SHARE_MAX = 25 * 1024 * 1024;
+
+/** Never part of a shared folder: dependencies, build output, caches, old downloads, scrape copies. */
+export const SHARE_SKIP_DIRS = ["node_modules", ".git", ".next", "dist", "build", "out", ".cache", "__pycache__", ".venv", "venv", "mirror"];
+const SHARE_SKIP_FILES = ["*.zip", "*.tar", "*.tar.gz", "*.tgz", ".DS_Store", "*.log"];
+
+/** The shell that reads a file, or zips a folder, and prints "OK dir|file <bytes>" then the base64. */
+export function shareCommand(target: string, exclude: string[] = []): string {
+  // extra patterns from the Assistant (big media…): names like "*.mp4", or folders like "*/media/*" / "media"
+  const extra = exclude.filter((x) => /^[\w*.?/ -]{1,60}$/.test(x)).slice(0, 12);
+  const dirs = [...SHARE_SKIP_DIRS, ...extra.filter((x) => !x.includes(".") || x.endsWith("/*")).map((x) => x.replace(/^\*\//, "").replace(/\/\*$/, ""))];
+  const files = [...SHARE_SKIP_FILES, ...extra.filter((x) => x.includes(".") && !x.endsWith("/*"))];
+  const zipX = [...dirs.flatMap((d) => [`*/${d}/*`, `${d}/*`]), ...files.flatMap((f) => [f, `*/${f}`])].map((x) => shq(x)).join(" ");
+  const py =
+    "import fnmatch,json,os,sys,zipfile\n" +
+    "b,out,dirs,files=sys.argv[1],sys.argv[2],json.loads(sys.argv[3]),json.loads(sys.argv[4])\n" +
+    "o=zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED)\n" +
+    "for r,d,f in os.walk(b):\n" +
+    "  d[:]=[x for x in d if not any(fnmatch.fnmatch(x,p) for p in dirs)]\n" +
+    "  for x in f:\n" +
+    "    if not any(fnmatch.fnmatch(x,p) for p in files): o.write(os.path.join(r,x))\n" +
+    "o.close()\n";
+  return [
+    `P=${target}`,
+    'if [ ! -e "$P" ]; then echo MISSING; exit 0; fi',
+    'T=$(mktemp -d)',
+    `if [ -d "$P" ]; then B=$(basename "$P"); cd "$(dirname "$P")" && ( (command -v zip >/dev/null && zip -qr "$T/out.zip" "$B" -x ${zipX}) || python3 -c ${shq(py)} "$B" "$T/out.zip" ${shq(JSON.stringify(dirs))} ${shq(JSON.stringify(files))} ) >/dev/null 2>&1; F="$T/out.zip"; KIND=dir; else F="$P"; KIND=file; fi`,
+    'S=$(stat -c%s "$F" 2>/dev/null || echo 0)',
+    `if [ "$S" -gt ${SHARE_MAX} ]; then echo "TOOBIG $S"; else echo "OK $KIND $S"; base64 -w0 "$F"; fi`,
+    'rm -rf "$T"',
+  ].join("\n");
+}
+
+/** share_file: a file (or a folder, zipped) from a machine, saved into the chat with preview and download. */
+async function shareFile(call: ToolCall, input: OperatorInput, emit: (e: OperatorEvent) => void): Promise<{ ok: boolean; output: string }> {
+  let a: Args;
+  try {
+    a = JSON.parse(call.function.arguments || "{}") as Args;
+  } catch {
+    return { ok: false, output: "Arguments were not valid JSON." };
+  }
+  if (!input.sessionId) return { ok: false, output: "files can only be shared inside a conversation" };
+  const vm = getVm(str(a.vm));
+  if (!vm) return { ok: false, output: `no machine called ${str(a.vm)}` };
+  const raw = str(a.path).trim();
+  if (!raw || /[\n\r\0]/.test(raw)) return { ok: false, output: "give a file or folder path" };
+  // ~/x stays relative to the home folder; everything else is quoted as is
+  const target = raw === "~" ? '"$HOME"' : raw.startsWith("~/") ? `"$HOME"/${shq(raw.slice(2))}` : shq(raw);
+  const MAX = SHARE_MAX;
+  const exclude = Array.isArray(a.exclude) ? (a.exclude as unknown[]).filter((x): x is string => typeof x === "string") : [];
+  const cmd = shareCommand(target, exclude);
+  const r = await withVm(vm, (c) => run(c, cmd, { timeoutMs: 180_000, maxBytes: Math.ceil(MAX * 1.4) })).catch((e: Error) => ({ code: 1, stdout: "", stderr: e.message, truncated: false }));
+  const [head, ...rest] = r.stdout.split("\n");
+  if (head === "MISSING") return { ok: false, output: `${raw} doesn't exist on ${vm.name}` };
+  if (head?.startsWith("TOOBIG")) return { ok: false, output: `${raw} is ${Math.round(Number(head.split(" ")[1]) / 1048576)} MB, over the 25 MB limit. Share it again with exclude for the heavy media (e.g. ["*.mp4","*.mov","*.webm","*/media/*"]) so the code fits, or share a smaller folder or single files` };
+  const m = /^OK (dir|file) (\d+)$/.exec(head ?? "");
+  if (!m) return { ok: false, output: `couldn't read ${raw} on ${vm.name}${r.stderr ? `: ${r.stderr.slice(0, 200)}` : ""}` };
+  const data = Buffer.from(rest.join("").trim(), "base64");
+  const base = raw.replace(/\/+$/, "").split("/").pop() || "files";
+  const name = (str(a.name) || (m[1] === "dir" ? `${base}.zip` : base)).replace(/[^\p{L}\p{N} ._()-]+/gu, "-").slice(0, 120);
+  const att = await saveAttachment(input.sessionId, name, m[1] === "dir" ? "application/zip" : "", data);
+  emit({ type: "file", id: att.id, name, size: data.length, note: str(a.note) || undefined });
+  return { ok: true, output: `Shared ${name} (${Math.round(data.length / 1024)} KB) in the chat: the user can preview it and download it right there. Don't repeat a download link.` };
+}
+
 async function screenshot(call: ToolCall, input: OperatorInput, emit: (e: OperatorEvent) => void): Promise<{ ok: boolean; output: string }> {
   let a: Args;
   try {
@@ -1803,8 +1885,9 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
           /* empty question */
         }
         waiting = true;
-        const options = Array.isArray(q.options) ? q.options.filter((o): o is string => typeof o === "string").slice(0, 4) : [];
-        emit({ type: "question", id: call.id, question: str(q.question) || "How should I continue?", options });
+        const multiple = q.multiple === true;
+        const options = Array.isArray(q.options) ? q.options.filter((o): o is string => typeof o === "string").map((o) => o.slice(0, 200)).slice(0, multiple ? 60 : 6) : [];
+        emit({ type: "question", id: call.id, question: str(q.question) || "How should I continue?", options, ...(multiple && options.length ? { multiple: true } : {}) });
         continue;
       }
       if (d.needsApproval) {
@@ -1834,6 +1917,12 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
         if (call.function.name === "create_artifact") {
           const r = artifact(call, emit);
           return { role: "tool" as const, tool_call_id: call.id, content: r };
+        }
+        if (call.function.name === "share_file") {
+          emit({ type: "tool", id: call.id, label: d.label, tool: toolTag(call) });
+          const r = await traced(call, () => shareFile(call, input, emit));
+          emit({ type: "tool_result", id: call.id, ok: r.ok, output: clip(r.output, 3000) });
+          return { role: "tool" as const, tool_call_id: call.id, content: clip(r.output) };
         }
         if (call.function.name === "screenshot") {
           emit({ type: "tool", id: call.id, label: d.label, tool: toolTag(call) });

@@ -2,7 +2,7 @@
 
 // Preview of a file in the conversation (attached by the user or made by the Assistant): pictures and PDFs inline,
 // code and text with line numbers, Markdown rendered, CSV as a table, zips as a file tree. Download stays one click away.
-import { Archive, Download, File, FileCode2, FileImage, FileJson, FileSpreadsheet, FileText, Folder, Loader2, X, type LucideIcon } from "lucide-react";
+import { Archive, ArrowLeft, Download, File, FileCode2, FileImage, FileJson, FileSpreadsheet, FileText, Folder, Loader2, X, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/client";
 import { CopyButton } from "./chat-blocks";
@@ -49,8 +49,8 @@ function csvRows(t: string): string[][] {
 }
 
 /** A zip's paths as an indented tree (folders first). */
-function tree(entries: { path: string; size: number }[]): { depth: number; name: string; dir: boolean; size?: number }[] {
-  const out: { depth: number; name: string; dir: boolean; size?: number }[] = [];
+function tree(entries: { path: string; size: number }[]): { depth: number; name: string; dir: boolean; size?: number; path: string }[] {
+  const out: { depth: number; name: string; dir: boolean; size?: number; path: string }[] = [];
   const seen = new Set<string>();
   for (const e of entries) {
     const parts = e.path.split("/");
@@ -59,17 +59,19 @@ function tree(entries: { path: string; size: number }[]): { depth: number; name:
       if (seen.has(key)) return;
       seen.add(key);
       const dir = i < parts.length - 1;
-      out.push({ depth: i, name: p, dir, size: dir ? undefined : e.size });
+      out.push({ depth: i, name: p, dir, size: dir ? undefined : e.size, path: key });
     });
   }
   return out;
 }
 
-export function AttachmentView({ session, id, name, onClose }: { session: string; id: string; name: string; onClose: () => void }) {
+export function AttachmentView({ session, id, name, onClose, entry, onBack }: { session: string; id: string; name: string; onClose: () => void; entry?: string; onBack?: () => void }) {
   const [p, setP] = useState<Preview | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [tab, setTab] = useState<"preview" | "source">("preview");
-  const base = `/api/attachments?session=${encodeURIComponent(session)}&id=${encodeURIComponent(id)}`;
+  // a file opened from inside this zip: shown with the same viewer, a back arrow returns to the file list
+  const [inside, setInside] = useState<string | null>(null);
+  const base = `/api/attachments?session=${encodeURIComponent(session)}&id=${encodeURIComponent(id)}${entry ? `&entry=${encodeURIComponent(entry)}` : ""}`;
 
   useEffect(() => {
     let alive = true;
@@ -88,9 +90,16 @@ export function AttachmentView({ session, id, name, onClose }: { session: string
   const Icon = ICON[kind];
   const hasSource = p && ["markdown", "csv", "json", "html"].includes(p.kind);
 
+  if (inside) return <AttachmentView key={inside} session={session} id={id} name={inside.split("/").pop() || inside} entry={inside} onBack={() => setInside(null)} onClose={onClose} />;
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 border-b border-white/[0.06] px-4 py-3">
+        {onBack && (
+          <button onClick={onBack} className="rounded-md p-1 text-muted hover:bg-white/5 hover:text-white" aria-label="Back to the zip" title="Back to the zip">
+            <ArrowLeft className="size-4" />
+          </button>
+        )}
         <Icon className="size-4 shrink-0 text-muted" />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold text-white">{p?.name ?? name}</p>
@@ -133,10 +142,18 @@ export function AttachmentView({ session, id, name, onClose }: { session: string
         ) : p.kind === "zip" ? (
           <ul className="px-3 py-2 font-mono text-[12px]">
             {nodes.map((n, i) => (
-              <li key={i} className="flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-white/[0.03]" style={{ paddingLeft: `${n.depth * 14 + 4}px` }}>
-                {n.dir ? <Folder className="size-3.5 shrink-0 text-[var(--accent)]" /> : <File className="size-3.5 shrink-0 text-zinc-500" />}
-                <span className={cx("truncate", n.dir ? "text-zinc-200" : "text-zinc-400")}>{n.name}</span>
-                {!n.dir && <span className="ml-auto shrink-0 pl-3 text-[10.5px] text-zinc-600">{fmtSize(n.size ?? 0)}</span>}
+              <li key={i}>
+                <button
+                  disabled={n.dir}
+                  onClick={() => !n.dir && setInside(n.path)}
+                  className={cx("flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left", n.dir ? "cursor-default" : "hover:bg-white/[0.05]")}
+                  style={{ paddingLeft: `${n.depth * 14 + 4}px` }}
+                  title={n.dir ? undefined : `Open ${n.path}`}
+                >
+                  {n.dir ? <Folder className="size-3.5 shrink-0 text-[var(--accent)]" /> : <File className="size-3.5 shrink-0 text-zinc-500" />}
+                  <span className={cx("truncate", n.dir ? "text-zinc-200" : "text-zinc-300 hover:text-white")}>{n.name}</span>
+                  {!n.dir && <span className="ml-auto shrink-0 pl-3 text-[10.5px] text-zinc-600">{fmtSize(n.size ?? 0)}</span>}
+                </button>
               </li>
             ))}
             {(p.totalFiles ?? 0) > (p.entries?.length ?? 0) && <li className="px-1 py-1 text-zinc-500">… and {(p.totalFiles ?? 0) - (p.entries?.length ?? 0)} more</li>}

@@ -33,11 +33,13 @@ export type Item =
   | { kind: "text"; text: string; voice?: boolean }
   | { kind: "step"; id: string; label: string; running: boolean; ok?: boolean; output?: string; shell?: Shell; tool?: string }
   | { kind: "approval"; id: string; label: string; detail: string; diff?: boolean; decision?: boolean }
-  | { kind: "question"; id: string; question: string; options: string[]; answer?: string }
+  | { kind: "question"; id: string; question: string; options: string[]; answer?: string; multiple?: boolean }
   | { kind: "diagram"; id: string; title: string; nodes: DiagramNode[]; edges: DiagramEdge[] }
   | { kind: "artifact"; id: string; title: string; type: ArtifactType; language?: string; content: string; version: number }
   | { kind: "plan"; id: string; title: string; steps: PlanStep[] }
-  | { kind: "image"; id: string; title: string; src: string; url?: string; caption?: string };
+  | { kind: "image"; id: string; title: string; src: string; url?: string; caption?: string }
+  /** a file the Assistant brought into the chat (code, a zip of a project, a report): preview and download here */
+  | { kind: "file"; id: string; name: string; size: number; note?: string };
 
 /** One line of the Assistant's live plan (a checklist that updates in place while it works). */
 export interface PlanStep {
@@ -55,11 +57,12 @@ export type OperatorEvent =
   | { type: "tool"; id: string; label: string; shell?: Shell; tool?: string }
   | { type: "tool_result"; id: string; ok: boolean; output: string }
   | { type: "approval"; id: string; label: string; detail: string; diff?: boolean }
-  | { type: "question"; id: string; question: string; options: string[] }
+  | { type: "question"; id: string; question: string; options: string[]; multiple?: boolean }
   | { type: "diagram"; id: string; title: string; nodes: DiagramNode[]; edges: DiagramEdge[] }
   | { type: "artifact"; id: string; title: string; artType: ArtifactType; language?: string; content: string }
   | { type: "plan"; id: string; title: string; steps: PlanStep[] }
   | { type: "image"; id: string; title: string; src: string; url?: string; caption?: string }
+  | { type: "file"; id: string; name: string; size: number; note?: string }
   // transcript is the model-side history (ChatMessage[]), opaque to the UI
   | { type: "done"; transcript: unknown[]; waiting: boolean; paused: boolean };
 
@@ -74,7 +77,9 @@ export function applyEvent(items: Item[], e: OperatorEvent): Item[] {
     case "approval":
       return [...items, { kind: "approval", id: e.id, label: e.label, detail: e.detail, diff: e.diff }];
     case "question":
-      return [...items, { kind: "question", id: e.id, question: e.question, options: e.options }];
+      return [...items, { kind: "question", id: e.id, question: e.question, options: e.options, ...(e.multiple ? { multiple: true } : {}) }];
+    case "file":
+      return [...items, { kind: "file", id: e.id, name: e.name, size: e.size, note: e.note }];
     case "diagram":
       return [...items, { kind: "diagram", id: e.id, title: e.title, nodes: e.nodes, edges: e.edges }];
     case "image":

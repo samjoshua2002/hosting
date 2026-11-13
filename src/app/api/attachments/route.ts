@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { handle, HttpError, readJson, requireAuth } from "@/lib/api";
 import { CHUNK_BYTES, finishUpload, loadAttachment, saveAttachment, saveChunk, SESSION_RE } from "@/lib/attachments";
+import { unzipSync } from "fflate";
 import { previewOf } from "@/lib/attachment-preview";
 import { audit } from "@/lib/security";
 
@@ -46,8 +47,21 @@ export const POST = handle(async (req: NextRequest) => {
 export const GET = handle(async (req: NextRequest) => {
   await requireAuth(req);
   const p = req.nextUrl.searchParams;
-  const file = await loadAttachment(p.get("session") ?? "", p.get("id") ?? "");
+  let file = await loadAttachment(p.get("session") ?? "", p.get("id") ?? "");
   if (!file) throw new HttpError(404, "not found");
+  // ?entry=path/in/the.zip: one file inside a zip attachment (to read code without downloading the whole zip)
+  const entry = p.get("entry");
+  if (entry) {
+    if (!/\.zip$/i.test(file.name)) throw new HttpError(400, "not a zip");
+    let found: Uint8Array | undefined;
+    try {
+      found = unzipSync(new Uint8Array(file.data), { filter: (f) => f.name === entry })[entry];
+    } catch {
+      throw new HttpError(422, "couldn't read the zip");
+    }
+    if (!found) throw new HttpError(404, "no such file in the zip");
+    file = { name: entry.split("/").pop() || entry, data: Buffer.from(found) };
+  }
   // ?view=1: what the preview panel needs (text, a zip's file list, or which inline viewer to use)
   if (p.get("view") === "1") return Response.json(previewOf(file.name, file.data));
   // ?inline=1 shows pictures and PDFs in the page (screenshots, the preview panel); everything else downloads

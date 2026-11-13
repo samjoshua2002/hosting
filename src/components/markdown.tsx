@@ -73,6 +73,21 @@ export function Markdown({ text }: { text: string }) {
           {inline(line.replace(/^#+\s/, ""))}
         </p>,
       );
+    } else if (/^\s*([-*]|\d+\.)?\s*\[( |x|X)\]\s/.test(line)) {
+      // a checklist line: "- [ ] todo" / "- [x] done" (the bare "[ ] item" form too)
+      const done = /\[(x|X)\]/.test(line);
+      blocks.push(
+        <div key={i} className="flex items-start gap-2.5 py-0.5 text-zinc-200" style={{ paddingLeft: `${(line.match(/^\s*/)?.[0].length ?? 0) * 6 + 4}px` }}>
+          <span className={`mt-[3px] grid size-4 shrink-0 place-items-center rounded-[5px] border ${done ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--accent-ink)]" : "border-white/25"}`}>
+            {done && (
+              <svg viewBox="0 0 16 16" className="size-3" aria-hidden>
+                <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
+          </span>
+          <span className={`min-w-0 ${done ? "text-zinc-400 line-through decoration-white/20" : ""}`}>{inline(line.replace(/^\s*([-*]|\d+\.)?\s*\[( |x|X)\]\s/, ""))}</span>
+        </div>,
+      );
     } else if (/^\s*([-*]|\d+\.)\s/.test(line)) {
       blocks.push(
         <div key={i} className="flex gap-2 pl-1 text-zinc-200" style={{ paddingLeft: `${(line.match(/^\s*/)?.[0].length ?? 0) * 6 + 4}px` }}>

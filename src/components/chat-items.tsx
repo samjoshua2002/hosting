@@ -1,7 +1,7 @@
 "use client";
 
-import { AudioLines, Check, ChevronRight, FileText, ListChecks, Loader2, ShieldAlert, X } from "lucide-react";
-import { useState } from "react";
+import { Archive, AudioLines, Check, ChevronRight, Download, Eye, FileCode2, FileText, ListChecks, Loader2, Search, ShieldAlert, X } from "lucide-react";
+import { useMemo, useState } from "react";
 import type { Item } from "@/lib/assistant-items";
 import { useStored } from "@/lib/client";
 import { answer, decide } from "./assistant-store";
@@ -215,6 +215,35 @@ function Bubble({
     );
   if (item.kind === "diagram") return <FlowDiagram title={item.title} nodes={item.nodes} edges={item.edges} />;
   if (item.kind === "artifact") return <ArtifactCard a={item} onOpen={() => onOpenArtifact?.(item.id)} />;
+  if (item.kind === "file") {
+    const zip = /\.zip$/i.test(item.name);
+    const Icon = zip ? Archive : /\.(pdf|md|txt|docx?)$/i.test(item.name) ? FileText : FileCode2;
+    const href = `/api/attachments?session=${sessionId}&id=${item.id}`;
+    return (
+      <div className="flex items-center gap-3 rounded-2xl border border-white/[0.09] bg-panel px-4 py-3">
+        <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[var(--accent)]/12 text-[var(--accent)] ring-1 ring-[var(--accent)]/20">
+          <Icon className="size-5" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[14px] font-medium text-white">{item.name}</span>
+          <span className="block truncate text-[12px] text-zinc-500">
+            {fmtSize(item.size)}
+            {zip ? " · zip archive" : ""}
+            {item.note ? ` · ${item.note}` : ""}
+          </span>
+        </span>
+        {onOpenFile && (
+          <Button size="sm" onClick={() => onOpenFile({ id: item.id, name: item.name })}>
+            <Eye className="size-3.5" /> {zip ? "Browse" : "Preview"}
+          </Button>
+        )}
+        <a href={href} download={item.name} className="flex h-8 items-center gap-1.5 rounded-lg bg-white px-3 text-[12.5px] font-medium text-black hover:bg-white/90">
+          <Download className="size-3.5" /> Download
+        </a>
+      </div>
+    );
+  }
+  if (item.kind === "question" && item.multiple && item.answer === undefined) return <PickMany item={item} busy={busy} onAnswer={onAnswer} />;
   if (item.kind === "question")
     return (
       <div className="rounded-2xl border border-white/[0.1] bg-panel p-5">
@@ -313,6 +342,71 @@ export function PlanCard({ plan, compact }: { plan: Extract<Item, { kind: "plan"
           </li>
         ))}
       </ol>
+    </div>
+  );
+}
+
+
+/** A checklist question: tick any number (search when the list is long), Select all, Continue. */
+function PickMany({ item, busy, onAnswer }: { item: Extract<Item, { kind: "question" }>; busy: boolean; onAnswer: (id: string, text: string) => void }) {
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [q, setQ] = useState("");
+  const shown = useMemo(() => item.options.filter((o) => !q || o.toLowerCase().includes(q.toLowerCase())), [item.options, q]);
+  const all = picked.size === item.options.length;
+  const toggle = (o: string) =>
+    setPicked((p) => {
+      const n = new Set(p);
+      if (n.has(o)) n.delete(o);
+      else n.add(o);
+      return n;
+    });
+  return (
+    <div className="rounded-2xl border border-white/[0.1] bg-panel p-5">
+      <p className="flex items-center gap-2 text-[15px] font-medium text-white">
+        <ListChecks className="size-4 text-[var(--accent)]" /> {item.question}
+      </p>
+      <div className="mt-3 flex items-center gap-2">
+        {item.options.length > 10 && (
+          <label className="flex h-8 flex-1 items-center gap-2 rounded-lg border border-white/10 px-2.5">
+            <Search className="size-3.5 text-zinc-500" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter" className="w-full bg-transparent text-[13px] text-white outline-none placeholder:text-zinc-600" />
+          </label>
+        )}
+        <button
+          onClick={() => setPicked(all ? new Set() : new Set(item.options))}
+          className="h-8 rounded-lg border border-white/10 px-2.5 text-[12.5px] text-zinc-300 hover:bg-white/[0.05]"
+        >
+          {all ? "Clear all" : "Select all"}
+        </button>
+      </div>
+      <div className="scroll-thin mt-2 max-h-80 overflow-y-auto pr-1">
+        {shown.map((o) => {
+          const on = picked.has(o);
+          return (
+            <button
+              key={o}
+              onClick={() => toggle(o)}
+              role="checkbox"
+              aria-checked={on}
+              className={cx("flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-[13.5px] transition-colors", on ? "bg-[var(--accent)]/10 text-white" : "text-zinc-300 hover:bg-white/[0.04]")}
+            >
+              <span className={cx("grid size-4 shrink-0 place-items-center rounded-[5px] border transition-colors", on ? "border-[var(--accent)] bg-[var(--accent)] text-[var(--accent-ink)]" : "border-white/25")}>
+                {on && <Check className="size-3" strokeWidth={3} />}
+              </span>
+              <span className="min-w-0 flex-1">{inline(o)}</span>
+            </button>
+          );
+        })}
+        {shown.length === 0 && <p className="px-2.5 py-3 text-[13px] text-zinc-500">Nothing matches.</p>}
+      </div>
+      <div className="mt-3 flex items-center gap-3">
+        <Button size="sm" variant="primary" disabled={busy || picked.size === 0} onClick={() => onAnswer(item.id, item.options.filter((o) => picked.has(o)).join(", "))}>
+          <Check className="size-3.5" /> Continue{picked.size ? ` with ${picked.size}` : ""}
+        </Button>
+        <span className="text-[12px] text-zinc-500">
+          {picked.size} of {item.options.length} picked · or type below
+        </span>
+      </div>
     </div>
   );
 }
