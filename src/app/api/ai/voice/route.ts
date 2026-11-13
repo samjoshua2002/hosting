@@ -1,6 +1,8 @@
 import type { NextRequest } from "next/server";
 import { aiConfigured, chat, fastModel } from "@/lib/ai";
 import { handle, HttpError, readJson, requireAuth } from "@/lib/api";
+import { connectorDef } from "@/lib/connector-catalog";
+import { connectorStates } from "@/lib/connectors";
 import { githubAuth, listRepos } from "@/lib/github";
 import { listMailboxes } from "@/lib/mailboxes";
 import { withTrace } from "@/lib/telemetry";
@@ -19,16 +21,19 @@ How you talk:
 What you do:
 - Greetings, small talk, thanks, questions you can answer from what you know: just talk (stage "asking"). That's not a task.
 - Real work with everything needed: hand it over at once (stage "go") with sensible defaults. Drafts, summaries, look-ups, status checks never need a question or a confirmation.
+- Anything that needs fresh data you don't have below (a connected service like Supabase, Vercel, Render, Stripe; GitHub; email; logs; what's inside a project or database): stage "go" so the Assistant looks it up. You'll get its answer and read it out. Never answer those from the machine list. "Projects" means the place the user names (Supabase projects, Vercel projects, GitHub repos…); only the machines when they mean the machines.
 - Real work that's missing one essential choice: ask ONE short question (stage "asking") and give "options", the concrete choices from what you know (their projects and machines, GitHub repos, connected mailboxes). For deploying, offer the projects already running that fit, the most recent GitHub repos, and "Upload a project (zip)" with kind "attach". The user can tap an option or just say it.
 - Changes that are hard to undo (send an email, deploy, delete, move, change settings): one sentence of what you'll do, then "Shall I go ahead?" (stage "confirming"); "go" on yes.
 - Never ask two questions in a row: after one answer, choose sensibly and go.
 - Bye / stop / that's all: stage "end".
 
 Return JSON only:
-{"say":"what you say out loud","stage":"asking|confirming|go|end","options":[{"label":"short text on the button","say":"what picking it means, as the user would say it","kind":"attach (only for uploading a project)"}],"plan":"only when stage is go: the complete instruction for the Assistant, written as the user's request, with every detail and default you chose"}
+{"say":"what you say out loud","stage":"asking|confirming|go|end","options":[{"label":"short name on the card","detail":"one short line under it, e.g. Website · box3 or GitHub · TypeScript","say":"what picking it means, as the user would say it","kind":"project | repo | service | attach (attach only for uploading a project)"}],"plan":"only when stage is go: the complete instruction for the Assistant, written as the user's request, with every detail and default you chose"}
 "options" only when you ask the user to choose; at most 6.`;
 
 const GREET = `Open a voice call as the person described below. One or two short, natural sentences: a casual hello that fits the time of day, maybe one tiny relevant observation about their fleet (only if something stands out: a machine resting, everything healthy), then hand them the floor. Different every time. Never "How can I help you today". Return JSON: {"say":"..."}`;
+
+const SUMMARY = `You are the voice of the hosting Assistant, on a call. The Assistant just finished a task the user asked for by voice; below is its written result. Tell the user the outcome out loud: 1-3 short, natural sentences, the key facts and numbers only, no lists, markdown, URLs or emoji, no "the Assistant says". If it needs something from them, say so plainly. Return JSON: {"say":"..."}`;
 
 const PERSONA: Record<string, string> = {
   chill: "chill and easy-going, like a mate who's great with servers; casual words, a bit of humour.",
@@ -56,7 +61,7 @@ async function repoContext(): Promise<string> {
   return text;
 }
 
-type Option = { label: string; say: string; kind?: "attach" };
+type Option = { label: string; detail?: string; say: string; kind?: "attach" | "project" | "repo" | "service" };
 function cleanOptions(v: unknown): Option[] {
   if (!Array.isArray(v)) return [];
   return v
@@ -65,7 +70,9 @@ function cleanOptions(v: unknown): Option[] {
       const r = o as Record<string, unknown>;
       const label = String(r.label ?? "").trim().slice(0, 60);
       if (!label) return null;
-      return { label, say: String(r.say ?? label).trim().slice(0, 200), ...(r.kind === "attach" ? { kind: "attach" as const } : {}) };
+      const kind = ["attach", "project", "repo", "service"].includes(String(r.kind)) ? (String(r.kind) as Option["kind"]) : undefined;
+      const detail = String(r.detail ?? "").trim().slice(0, 60) || undefined;
+      return { label, say: String(r.say ?? label).trim().slice(0, 200), ...(kind ? { kind } : {}), ...(detail ? { detail } : {}) };
     })
     .filter((o): o is Option => o !== null)
     .slice(0, 6);
@@ -78,36 +85,47 @@ function cleanOptions(v: unknown): Option[] {
 export const POST = handle(async (req: NextRequest) => {
   await requireAuth(req);
   if (!aiConfigured()) throw new HttpError(503, "Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY to use voice mode.");
-  const b = await readJson<{ turns?: unknown; context?: unknown; sessionId?: unknown; persona?: unknown; localTime?: unknown; greet?: unknown }>(req, 200_000);
+  const b = await readJson<{ turns?: unknown; context?: unknown; sessionId?: unknown; persona?: unknown; localTime?: unknown; greet?: unknown; summarize?: unknown }>(req, 300_000);
+  const summarize = typeof b.summarize === "string" ? b.summarize.slice(0, 12_000) : null;
   const turns = (Array.isArray(b.turns) ? b.turns : [])
     .filter((t): t is { role: string; text: string } => !!t && typeof t === "object" && typeof (t as { text?: unknown }).text === "string")
     .slice(-30)
     .map((t) => ({ role: t.role === "assistant" ? ("assistant" as const) : ("user" as const), content: t.text.slice(0, 2000) }));
   const greet = b.greet === true;
-  if (!turns.length && !greet) throw new HttpError(400, "say something first");
+  if (!turns.length && !greet && !summarize) throw new HttpError(400, "say something first");
   const context = typeof b.context === "string" ? b.context.slice(0, 6000) : "";
   const sessionId = typeof b.sessionId === "string" ? b.sessionId.slice(0, 80) : undefined;
   const persona = PERSONA[String(b.persona)] ?? PERSONA.chill;
   const localTime = typeof b.localTime === "string" ? b.localTime.slice(0, 80) : "";
-  const [repos, boxes] = await Promise.all([greet ? Promise.resolve("") : repoContext(), listMailboxes().catch(() => [])]);
+  const [repos, boxes, states] = await Promise.all([greet || summarize ? Promise.resolve("") : repoContext(), listMailboxes().catch(() => []), connectorStates().catch(() => [])]);
+  const services = states
+    .filter((x) => x.connected)
+    .map((x) => connectorDef(x.id))
+    .filter((d): d is NonNullable<typeof d> => Boolean(d) && d!.kind !== "builtin" && d!.kind !== "mailbox")
+    .map((d) => d.name);
   const about = [
     `Personality: ${persona}`,
     localTime ? `Their local time: ${localTime}` : "",
     context ? `What's running right now:\n${context}` : "",
     repos,
+    services.length ? `Connected services the Assistant can query: ${services.join(", ")}` : "",
     boxes.length ? `Connected mailboxes: ${boxes.map((m) => m.email).join(", ")}` : "No mailbox is connected yet (drafting email needs one: Settings → Connectors → Gmail).",
   ]
     .filter(Boolean)
     .join("\n\n");
 
-  const res = await withTrace({ name: greet ? "voice-greeting" : "voice-turn", sessionId, tags: ["voice"], input: greet ? "(greeting)" : turns[turns.length - 1].content }, () =>
+  const res = await withTrace({ name: greet ? "voice-greeting" : summarize ? "voice-summary" : "voice-turn", sessionId, tags: ["voice"], input: greet ? "(greeting)" : summarize ? summarize.slice(0, 400) : turns[turns.length - 1].content }, () =>
     chat({
       model: fastModel(),
       json: true,
       reasoning: "low",
       maxTokens: 700,
       timeoutMs: 25_000,
-      messages: greet ? [{ role: "system", content: `${GREET}\n\n${about}` }] : [{ role: "system", content: `${SYSTEM}\n\n${about}` }, ...turns],
+      messages: greet
+        ? [{ role: "system", content: `${GREET}\n\n${about}` }]
+        : summarize
+          ? [{ role: "system", content: `${SUMMARY}\n\n${about}` }, ...turns.slice(-4), { role: "user", content: `The Assistant's result:\n${summarize}` }]
+          : [{ role: "system", content: `${SYSTEM}\n\n${about}` }, ...turns],
     }),
   );
   let out: { say?: unknown; stage?: unknown; plan?: unknown; options?: unknown } = {};
@@ -117,7 +135,7 @@ export const POST = handle(async (req: NextRequest) => {
     out = { say: res.message.content ?? "", stage: "asking" };
   }
   const say = String(out.say ?? "").replace(/[*_`#>]/g, "").trim() || "Sorry, say that again?";
-  if (greet) return Response.json({ say, stage: "asking" });
+  if (greet || summarize) return Response.json({ say, stage: "asking" });
   let stage = ["asking", "confirming", "go", "end"].includes(String(out.stage)) ? String(out.stage) : "asking";
   // a "plan" that's only a polite reply (greetings, small talk) is conversation, not a task: keep the call open
   if (stage === "go" && typeof out.plan === "string" && /^(the user (greeted|said (hi|hello)|is (just )?(chatting|greeting)|thanked|asked how)|(respond|reply)( politely| warmly| casually)?\b|greet\b|say (hi|hello))/i.test(out.plan.trim())) stage = "asking";

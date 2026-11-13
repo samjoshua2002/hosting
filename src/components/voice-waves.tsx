@@ -144,8 +144,9 @@ export function VoiceWaves({ phase, level = 0, width = 620, height = 240, mini =
       {!mini && (
         <div
           aria-hidden
-          className="pointer-events-none absolute top-1/2 left-1/2 size-[70%] -translate-x-1/2 -translate-y-1/2 rounded-full blur-3xl transition-opacity duration-700"
-          style={{ opacity: glow, background: "radial-gradient(closest-side, hsl(var(--h) 80% 60% / .35), hsl(calc(var(--h) + 30) 80% 50% / .12) 60%, transparent)" }}
+          className="pointer-events-none absolute inset-0 transition-opacity duration-700"
+          // no CSS blur (Safari clips it into a box): the gradient itself fades to nothing well inside the edges
+          style={{ opacity: glow, background: "radial-gradient(ellipse 42% 40% at 50% 50%, hsl(var(--h) 80% 60% / .3), hsl(calc(var(--h) + 30) 80% 50% / .1) 55%, transparent 100%)" }}
         />
       )}
       <canvas ref={canvas} aria-hidden style={{ width, height }} className="relative block max-w-full" />

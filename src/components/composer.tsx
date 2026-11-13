@@ -625,11 +625,12 @@ export function Composer({
           sessionId={sessionId}
           context={entities.slice(0, 120).map((e) => `${e.name}: ${e.sub}`).join("\n")}
           onAttach={() => fileInput.current?.click()}
-          onDone={(turns, plan) => {
+          onTask={(plan) => onSend(plan)}
+          onDone={(turns) => {
             setVoice(false);
             requestAnimationFrame(() => area.current?.focus());
-            // the conversation goes into the chat first (and the server's transcript), then the plan runs with it
-            void appendVoice(sessionId, turns).then(() => plan && onSend(plan));
+            // what was said since the last task goes into the chat
+            void appendVoice(sessionId, turns).catch(() => {});
           }}
         />
       ) : (

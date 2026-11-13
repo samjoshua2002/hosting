@@ -4,20 +4,26 @@
 // fast advisor model that asks one question at a time, speaks back (speech synthesis), and once you agree to the
 // plan it hands the full instruction to the Assistant in the chat. A soft glow breathes with your voice while it
 // listens and warms up while it speaks.
-import { AudioLines, Check, Mic, MicOff, Play, SlidersHorizontal } from "lucide-react";
+import { AudioLines, Check, GitBranch, Mic, MicOff, Play, Plug, Server, SlidersHorizontal, Upload } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import type { Item } from "@/lib/assistant-items";
 import { api } from "@/lib/client";
+import { appendVoice, decide, useAssistant } from "./assistant-store";
 import { UnsplashLayer, useTheme } from "./theme";
 import { VoiceWaves } from "./voice-waves";
 import { cx } from "./ui";
 
-type Phase = "starting" | "listening" | "thinking" | "speaking" | "paused" | "error";
+type Phase = "starting" | "listening" | "thinking" | "working" | "speaking" | "paused" | "error";
 export interface VoiceOption {
   label: string;
+  detail?: string;
   say: string;
-  kind?: "attach";
+  kind?: "attach" | "project" | "repo" | "service";
 }
+
+const YES = /\b(yes|yeah|yep|yup|sure|go ahead|do it|ok(ay)?|approve|send it|go for it|please do)\b/i;
+const NO = /\b(no|nope|don'?t|cancel|skip|stop|leave it|not now)\b/i;
 
 const localTime = () => new Date().toLocaleString(undefined, { weekday: "long", hour: "numeric", minute: "2-digit" });
 
@@ -141,12 +147,15 @@ export function VoiceMode({
   context,
   sessionId,
   onDone,
+  onTask,
   onAttach,
 }: {
   context: string;
   sessionId: string;
-  /** voice mode ended: everything said (to put in the chat), and the agreed plan if there is one */
-  onDone: (turns: Turn[], plan?: string) => void;
+  /** voice mode ended: what was said since the last save (to put in the chat) */
+  onDone: (turns: Turn[]) => void;
+  /** hand a task to the Assistant in this chat (voice mode stays open and reads the result back) */
+  onTask: (plan: string) => void;
   /** open the file picker (to upload a project zip) */
   onAttach?: () => void;
 }) {
@@ -162,6 +171,11 @@ export function VoiceMode({
   const [lastYou, setLastYou] = useState(""); // your last sentence, shown above its reply
   const [options, setOptions] = useState<VoiceOption[]>([]); // choices it offered: tap one or just say it
   const { photo } = useTheme(); // the same Unsplash cover as the rest of the app, blurred behind the call
+  const optionsRef = useRef<VoiceOption[]>([]);
+  useEffect(() => {
+    optionsRef.current = options;
+  }, [options]);
+  const pickRef = useRef<(o: VoiceOption) => void>(() => {});
   // the fleet summary refreshes every 30 s: read it from a ref so voice mode never restarts because of it
   const ctx = useRef({ context, sessionId });
   useEffect(() => {
@@ -183,6 +197,16 @@ export function VoiceMode({
   const respondRef = useRef<() => Promise<void>>(async () => {});
   // words you said while interrupting it, carried into the next turn
   const carry = useRef("");
+  // turns already saved into the chat (so End only adds the rest)
+  const saved = useRef(0);
+  // the chat this call belongs to, to follow a task the Assistant runs
+  const { docs } = useAssistant();
+  const docRef = useRef(docs[sessionId]);
+  useEffect(() => {
+    docRef.current = docs[sessionId];
+  }, [docs, sessionId]);
+  const runFrom = useRef(0); // where the running task's items start
+  const approval = useRef<{ id: string; label: string } | null>(null);
 
   const go = useCallback((p: Phase) => {
     phaseRef.current = p;
@@ -345,6 +369,64 @@ export function VoiceMode({
     }
   }, [go]);
 
+  /** After a task was handed over: wait for the Assistant, ask for approvals out loud, then read out the result. */
+  const follow = useCallback(async () => {
+    go("working");
+    const from = runFrom.current;
+    const t0 = Date.now();
+    let started = false;
+    while (alive.current && Date.now() - t0 < 6 * 60_000) {
+      await new Promise((r) => setTimeout(r, 600));
+      const d = docRef.current;
+      if (!d) continue;
+      const fresh = d.items.slice(from);
+      if (d.busy) started = true;
+      const wait = fresh.find((i): i is Extract<Item, { kind: "approval" }> => i.kind === "approval" && i.decision === undefined);
+      if (wait && !d.busy) {
+        approval.current = { id: wait.id, label: wait.label };
+        const ask = `It needs your OK first: ${wait.label.replace(/\s+/g, " ").slice(0, 140)}. Should I go ahead?`;
+        turns.current.push({ role: "assistant", text: ask });
+        await speak(ask);
+        if (alive.current) listen();
+        return;
+      }
+      if ((started || Date.now() - t0 > 8000) && !d.busy) {
+        const texts = fresh.filter((i): i is Extract<Item, { kind: "text" }> => i.kind === "text").map((i) => i.text);
+        const result = texts[texts.length - 1] ?? "";
+        let say = result ? "" : "Done.";
+        if (result) {
+          go("thinking");
+          say = await api<{ say: string }>("/api/ai/voice", { summarize: result, turns: turns.current, sessionId: ctx.current.sessionId, persona: prefsRef.current.persona })
+            .then((r) => r.say)
+            .catch(() => "It's done. The details are in the chat.");
+        }
+        if (!alive.current) return;
+        turns.current.push({ role: "assistant", text: say });
+        await speak(say);
+        if (alive.current) listen();
+        return;
+      }
+    }
+    if (alive.current) {
+      await speak("That's taking a while. It keeps going in the chat; I'm still here.");
+      if (alive.current) listen();
+    }
+  }, [go, speak, listen]);
+
+  /** Save what was said so far into the chat, then hand the task over and follow it. */
+  const runTask = useCallback(
+    async (plan: string) => {
+      const fresh = turns.current.slice(saved.current);
+      saved.current = turns.current.length;
+      go("working");
+      await appendVoice(ctx.current.sessionId, fresh).catch(() => {});
+      runFrom.current = docRef.current?.items.length ?? 0;
+      onTask(plan);
+      await follow();
+    },
+    [go, onTask, follow],
+  );
+
   const respond = useCallback(async () => {
     const text = utter.current.trim();
     if (!text) return;
@@ -354,6 +436,25 @@ export function VoiceMode({
     setLastYou(text);
     setParts([]);
     setOptions([]);
+    // answering an approval the Assistant is waiting for
+    const pending = approval.current;
+    if (pending) {
+      const ok = YES.test(text) && !NO.test(text) ? true : NO.test(text) ? false : null;
+      if (ok === null) {
+        const again = "Sorry, was that a yes or a no?";
+        turns.current.push({ role: "assistant", text: again });
+        await speak(again);
+        if (alive.current) listen();
+        return;
+      }
+      approval.current = null;
+      decide(ctx.current.sessionId, pending.id, ok);
+      const said = ok ? "Okay, going ahead." : "Okay, skipping that.";
+      turns.current.push({ role: "assistant", text: said });
+      await speak(said);
+      if (alive.current) await follow();
+      return;
+    }
     go("thinking");
     try {
       const r = await api<{ say: string; stage: string; plan?: string; options?: VoiceOption[] }>("/api/ai/voice", {
@@ -373,15 +474,15 @@ export function VoiceMode({
         if (last?.role === "assistant") last.text = `${last.text} (the user interrupted before I finished)`;
         return listen();
       }
-      if (r.stage === "go" && r.plan) return onDone([...turns.current], r.plan);
+      if (r.stage === "go" && r.plan) return void runTask(r.plan);
       setOptions(r.options ?? []);
-      if (r.stage === "end") return onDone([...turns.current]);
+      if (r.stage === "end") return onDone(turns.current.slice(saved.current));
       listen();
     } catch (e) {
       setErr((e as Error).message);
       go("error");
     }
-  }, [go, speak, listen, onDone]);
+  }, [go, speak, listen, onDone, runTask, follow]);
   useEffect(() => {
     respondRef.current = respond;
   }, [respond]);
@@ -483,10 +584,17 @@ export function VoiceMode({
     void respondRef.current();
   };
 
+  useEffect(() => {
+    pickRef.current = pick;
+  });
+
   // Esc ends voice mode
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onDone([...turns.current]);
+      if (e.key === "Escape") onDone(turns.current.slice(saved.current));
+      // 1-6 pick one of the offered choices
+      const n = Number(e.key);
+      if (n >= 1 && n <= optionsRef.current.length && !(e.target instanceof HTMLInputElement)) pickRef.current(optionsRef.current[n - 1]);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -510,7 +618,7 @@ export function VoiceMode({
   };
 
   const status =
-    phase === "starting" ? "Starting…" : phase === "listening" ? "Listening…" : phase === "thinking" ? "Thinking…" : phase === "speaking" ? "Speaking…" : phase === "paused" ? "Mic off" : "Voice mode stopped";
+    phase === "starting" ? "Starting…" : phase === "listening" ? "Listening…" : phase === "thinking" ? "Thinking…" : phase === "working" ? "Working on it…" : phase === "speaking" ? "Speaking…" : phase === "paused" ? "Mic off" : "Voice mode stopped";
   const glow = phase === "speaking" ? 0.9 : phase === "listening" ? 0.35 + level * 0.65 : phase === "thinking" ? 0.5 : 0.2;
 
   return createPortal(
@@ -543,7 +651,7 @@ export function VoiceMode({
       <div className="relative flex flex-1 items-center justify-center overflow-y-auto px-8 py-16">
         <div className="w-full max-w-3xl text-center">
           <div className="mb-8 flex justify-center">
-            <VoiceWaves phase={phase} level={level} />
+            <VoiceWaves phase={phase === "working" ? "thinking" : phase} level={level} />
           </div>
           {lastYou && (phase === "thinking" || phase === "speaking") && (
             <p key={lastYou} className="word-in mb-6 text-[15px] leading-relaxed text-zinc-500">
@@ -563,19 +671,28 @@ export function VoiceMode({
           ) : (
             <p className="text-[22px] text-zinc-500">{phase === "listening" ? "Go ahead, I'm listening." : phase === "paused" ? "Mic is off." : ""}</p>
           )}
-          {options.length > 0 && phase !== "thinking" && (
-            <div className="mx-auto mt-8 flex max-w-2xl flex-wrap justify-center gap-2">
-              {options.map((o, i) => (
-                <button
-                  key={`${o.label}-${i}`}
-                  onClick={() => pick(o)}
-                  className="word-in rounded-2xl border border-white/[0.12] bg-white/[0.06] px-4 py-2.5 text-[14px] text-zinc-100 backdrop-blur transition-colors hover:border-white/25 hover:bg-white/[0.11]"
-                  style={{ animationDelay: `${120 + i * 60}ms` }}
-                >
-                  {o.kind === "attach" ? "⬆ " : ""}
-                  {o.label}
-                </button>
-              ))}
+          {options.length > 0 && phase !== "thinking" && phase !== "working" && (
+            <div className="mx-auto mt-10 grid max-w-3xl grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2.5 text-left">
+              {options.map((o, i) => {
+                const Icon = o.kind === "attach" ? Upload : o.kind === "repo" || o.label.includes("/") ? GitBranch : o.kind === "service" ? Plug : Server;
+                return (
+                  <button
+                    key={`${o.label}-${i}`}
+                    onClick={() => pick(o)}
+                    className="word-in group flex items-center gap-3 rounded-2xl border border-white/[0.1] bg-white/[0.045] px-3.5 py-3 backdrop-blur-md transition-[background-color,border-color,transform] duration-200 hover:-translate-y-0.5 hover:border-white/[0.22] hover:bg-white/[0.09]"
+                    style={{ animationDelay: `${120 + i * 70}ms` }}
+                  >
+                    <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[hsl(var(--h)_60%_55%/.16)] text-[hsl(var(--h)_80%_78%)] ring-1 ring-[hsl(var(--h)_60%_60%/.25)]">
+                      <Icon className="size-4" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[14px] font-medium text-white">{o.label}</span>
+                      <span className="block truncate text-[12px] text-zinc-400">{o.detail ?? (o.kind === "attach" ? "Pick a .zip from your computer" : o.kind === "repo" ? "GitHub" : "")}</span>
+                    </span>
+                    <span className="text-[11px] text-zinc-600 transition-colors group-hover:text-zinc-400">{i + 1}</span>
+                  </button>
+                );
+              })}
             </div>
           )}
           {err && <p className="mt-4 text-[14px] text-[var(--critical-text)]">{err}</p>}
@@ -588,7 +705,7 @@ export function VoiceMode({
       <div className="relative mx-auto w-full max-w-[760px] px-4 pb-8">
       <div className="relative flex items-center gap-2 rounded-2xl border border-white/[0.09] bg-pop/90 px-3 py-2.5 shadow-lg shadow-black/20 backdrop-blur" onClick={interrupt}>
         <span className="flex size-8 items-center justify-center">
-          {phase === "thinking" || phase === "starting" ? (
+          {phase === "thinking" || phase === "starting" || phase === "working" ? (
             <VoiceWaves phase="thinking" mini width={30} height={20} />
           ) : (
             <span className="flex h-4 items-end gap-[3px]" aria-hidden>
@@ -701,7 +818,7 @@ export function VoiceMode({
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            onDone([...turns.current]);
+            onDone(turns.current.slice(saved.current));
           }}
           className="flex h-9 items-center gap-1.5 rounded-lg bg-[#2b5dd6]/20 px-3 text-[13px] font-medium text-[#8fb0ff] hover:bg-[#2b5dd6]/30"
         >
