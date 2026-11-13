@@ -8,6 +8,7 @@ import { AudioLines, Check, Loader2, Mic, MicOff, Play, SlidersHorizontal } from
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "@/lib/client";
+import { UnsplashLayer, useTheme } from "./theme";
 import { cx } from "./ui";
 
 type Phase = "starting" | "listening" | "thinking" | "speaking" | "paused" | "error";
@@ -159,6 +160,7 @@ export function VoiceMode({
   const [at, setAt] = useState(-1); // the sentence being spoken
   const [lastYou, setLastYou] = useState(""); // your last sentence, shown above its reply
   const [options, setOptions] = useState<VoiceOption[]>([]); // choices it offered: tap one or just say it
+  const { photo } = useTheme(); // the same Unsplash cover as the rest of the app, blurred behind the call
   // the fleet summary refreshes every 30 s: read it from a ref so voice mode never restarts because of it
   const ctx = useRef({ context, sessionId });
   useEffect(() => {
@@ -512,8 +514,13 @@ export function VoiceMode({
 
   return createPortal(
     <div className="voice-in fixed inset-0 z-[70] flex flex-col" role="dialog" aria-modal="true" aria-label="Voice mode">
-      {/* the app behind, frosted */}
+      {/* the app behind, frosted, with today's Unsplash cover softly blurred into it */}
       <div aria-hidden className="absolute inset-0 bg-[var(--bg)]/60 backdrop-blur-2xl backdrop-saturate-150" />
+      <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="absolute inset-[-10%] opacity-40 blur-[60px] saturate-150">
+          <UnsplashLayer photo={photo} className="h-full w-full" />
+        </div>
+      </div>
       {/* the glow, rising from the bottom; faded at every edge (mask), so it reads as light, never as a box */}
       <div aria-hidden className="voice-glow-wrap pointer-events-none absolute inset-x-0 bottom-0 h-[460px] overflow-hidden">
         <div
@@ -521,10 +528,11 @@ export function VoiceMode({
           style={{
             opacity: glow,
             transform: `scale(${0.92 + (phase === "listening" ? level * 0.18 : 0)}, ${0.85 + glow * 0.3})`,
+            // the photo's hue: cooler while it listens, a warmer neighbour of it while it speaks
             background:
               phase === "listening"
                 ? "radial-gradient(closest-side, hsl(var(--h) 70% 55% / .55), hsl(var(--h) 60% 40% / .25) 55%, transparent)"
-                : "radial-gradient(closest-side, hsl(18 75% 58% / .6), hsl(12 55% 38% / .28) 55%, transparent)",
+                : "radial-gradient(closest-side, hsl(calc(var(--h) + 25) 72% 60% / .6), hsl(calc(var(--h) + 10) 55% 40% / .28) 55%, transparent)",
           }}
         />
         <div className="voice-grain absolute inset-0" />
@@ -589,7 +597,7 @@ export function VoiceMode({
               {[0, 1, 2, 3].map((i) => (
                 <span
                   key={i}
-                  className={cx("w-[3px] rounded-full", phase === "speaking" ? "voice-bar bg-[hsl(18_75%_62%)]" : "bg-[var(--accent)]")}
+                  className={cx("w-[3px] rounded-full", phase === "speaking" ? "voice-bar bg-[var(--accent-soft)]" : "bg-[var(--accent)]")}
                   style={phase === "speaking" ? { animationDelay: `${i * 120}ms` } : { height: `${4 + Math.round(level * 12 * (1 - Math.abs(i - 1.5) / 3))}px` }}
                 />
               ))}
