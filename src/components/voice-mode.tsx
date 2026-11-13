@@ -50,9 +50,9 @@ const PREFS = "hosting.voice";
 function loadPrefs(): VoicePrefs {
   try {
     const p = JSON.parse(localStorage.getItem(PREFS) ?? "{}") as Partial<VoicePrefs>;
-    return { voice: p.voice, persona: PERSONAS.some((x) => x.id === p.persona) ? p.persona! : "warm", rate: typeof p.rate === "number" ? p.rate : 1.03 };
+    return { voice: p.voice, persona: PERSONAS.some((x) => x.id === p.persona) ? p.persona! : "warm", rate: typeof p.rate === "number" && p.rate !== 1.03 ? p.rate : 0.97 };
   } catch {
-    return { persona: "warm", rate: 1.03 };
+    return { persona: "warm", rate: 0.97 };
   }
 }
 function savePrefs(p: VoicePrefs) {
@@ -127,7 +127,7 @@ export function VoiceMode({
   /** voice mode ended: everything said (to put in the chat), and the agreed plan if there is one */
   onDone: (turns: Turn[], plan?: string) => void;
 }) {
-  const [prefs, setPrefs] = useState<VoicePrefs>(() => (typeof window === "undefined" ? { persona: "warm", rate: 1.03 } : loadPrefs()));
+  const [prefs, setPrefs] = useState<VoicePrefs>(() => (typeof window === "undefined" ? { persona: "warm", rate: 0.97 } : loadPrefs()));
   const prefsRef = useRef(prefs);
   const [panel, setPanel] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -155,27 +155,35 @@ export function VoiceMode({
   }, []);
 
   /* ---------- speaking ---------- */
+  // speak sentence by sentence with a short breath in between, so it's easy to follow (one long utterance runs on)
   const speak = useCallback(
-    (text: string) =>
-      new Promise<void>((resolve) => {
-        const synth = window.speechSynthesis;
-        synth.cancel();
-        const u = new SpeechSynthesisUtterance(text);
-        const v = pickVoice(prefsRef.current.voice);
-        if (v) {
-          u.voice = v;
-          u.lang = v.lang; // Safari otherwise falls back to the default voice for the page language
-          // remember the voice actually used, so every sentence after this one sounds the same
-          if (!prefsRef.current.voice) prefsRef.current = { ...prefsRef.current, voice: v.name };
-        }
-        u.rate = prefsRef.current.rate;
-        u.pitch = 1;
-        u.onend = () => resolve();
-        u.onerror = () => resolve();
-        go("speaking");
-        setSaid(text);
-        synth.speak(u);
-      }),
+    async (text: string) => {
+      const synth = window.speechSynthesis;
+      synth.cancel();
+      go("speaking");
+      setSaid(text);
+      const clean = text.replace(/\s+/g, " ").replace(/\s*[—–]\s*/g, ", ").trim();
+      const parts = clean.match(/[^.!?;:]+[.!?;:]+["')\]]*|[^.!?;:]+$/g)?.map((p) => p.trim()).filter(Boolean) ?? [clean];
+      const v = pickVoice(prefsRef.current.voice);
+      if (v && !prefsRef.current.voice) prefsRef.current = { ...prefsRef.current, voice: v.name };
+      for (let i = 0; i < parts.length; i++) {
+        if (!alive.current || phaseRef.current !== "speaking") return;
+        await new Promise<void>((resolve) => {
+          const u = new SpeechSynthesisUtterance(parts[i]);
+          if (v) {
+            u.voice = v;
+            u.lang = v.lang; // Safari otherwise falls back to the default voice for the page language
+          }
+          u.rate = prefsRef.current.rate;
+          u.pitch = 1;
+          u.onend = () => resolve();
+          u.onerror = () => resolve();
+          synth.speak(u);
+        });
+        // a breath between sentences (longer after a question)
+        if (i < parts.length - 1) await new Promise((r) => setTimeout(r, /[?]$/.test(parts[i]) ? 380 : 260));
+      }
+    },
     [go],
   );
 
@@ -434,9 +442,9 @@ export function VoiceMode({
               <div className="mt-2 flex gap-1">
                 {(
                   [
-                    [0.92, "Relaxed"],
-                    [1.03, "Natural"],
-                    [1.15, "Quick"],
+                    [0.88, "Relaxed"],
+                    [0.97, "Natural"],
+                    [1.1, "Quick"],
                   ] as const
                 ).map(([r, l]) => (
                   <button key={l} onClick={() => update({ rate: r })} className={cx("flex-1 rounded-lg border px-2 py-1 text-[12px]", Math.abs(prefs.rate - r) < 0.01 ? "border-white/25 bg-white/[0.08] text-white" : "border-white/[0.06] text-zinc-400 hover:bg-white/[0.04]")}>

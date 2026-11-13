@@ -1,7 +1,7 @@
 "use client";
 
 import { browserSupportsWebAuthn, startAuthentication } from "@simplewebauthn/browser";
-import { Fingerprint, Loader2 } from "lucide-react";
+import { Fingerprint, Loader2, Mail } from "lucide-react";
 import { BrandMark } from "@/components/brand";
 import { useEffect, useState, type FormEvent } from "react";
 import { PhotoCredit, UnsplashLayer, useTheme } from "@/components/theme";
@@ -11,6 +11,7 @@ interface Methods {
   password: boolean;
   passkey: boolean;
   zoho?: boolean;
+  emailLink?: boolean;
 }
 
 async function post(path: string, body: unknown): Promise<{ ok: boolean; error?: string }> {
@@ -24,16 +25,22 @@ export default function LoginPage() {
   const [methods, setMethods] = useState<Methods | null>(null);
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"password" | "passkey" | "zoho" | null>(null);
+  const [busy, setBusy] = useState<"password" | "passkey" | "zoho" | "email" | null>(null);
+  const [linkSent, setLinkSent] = useState<string | null>(null);
+  const [linkToken, setLinkToken] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/auth/methods", { cache: "no-store" })
       .then((r) => r.json())
       .then((m: Methods) => {
         setMethods({ ...m, passkey: m.passkey && browserSupportsWebAuthn() });
+        const q = new URLSearchParams(window.location.search);
         // a failed Zoho sign-in comes back as /login?error=…
-        const back = new URLSearchParams(window.location.search).get("error");
+        const back = q.get("error");
         if (back) setError(back.slice(0, 200));
+        // opened from the emailed sign-in link: one click to finish
+        const link = q.get("link");
+        if (link) setLinkToken(link);
       })
       .catch(() => setMethods({ configured: true, password: true, passkey: false }));
   }, []);
@@ -54,6 +61,36 @@ export default function LoginPage() {
     } catch (e) {
       const msg = (e as Error).message;
       setError(/NotAllowed|aborted|cancel/i.test(msg) ? "Passkey prompt was cancelled." : msg);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sendLink = async () => {
+    setBusy("email");
+    setError(null);
+    try {
+      const res = await fetch("/api/auth/email-link", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error ?? "Couldn't send the link");
+      setLinkSent(d.to ?? "your email");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const useLink = async () => {
+    setBusy("email");
+    setError(null);
+    try {
+      const r = await post("/api/auth/email-link", { token: linkToken });
+      if (!r.ok) throw new Error(r.error ?? "Sign-in failed");
+      done();
+    } catch (e) {
+      setError((e as Error).message);
+      setLinkToken(null);
     } finally {
       setBusy(null);
     }
@@ -112,6 +149,37 @@ export default function LoginPage() {
           )}
 
           <div className="mt-8 space-y-5">
+            {linkToken && (
+              <button
+                onClick={useLink}
+                disabled={busy !== null}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-white text-sm font-semibold text-black transition-colors hover:bg-white/85 disabled:opacity-60"
+              >
+                {busy === "email" ? <Loader2 className="size-4 animate-spin" /> : <Mail className="size-4" />}
+                Continue to your dashboard
+              </button>
+            )}
+            {!linkToken && methods?.emailLink && (
+              linkSent ? (
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-300">
+                  <p className="font-medium text-white">Check your inbox</p>
+                  <p className="mt-1 text-zinc-400">
+                    A sign-in link is on its way to <b className="text-zinc-200">{linkSent}</b>. Open it on any device; it works once, for 15 minutes.
+                  </p>
+                </div>
+              ) : (
+                <button
+                  onClick={sendLink}
+                  disabled={busy !== null}
+                  className={`flex h-12 w-full items-center justify-center gap-2 rounded-full text-sm font-semibold transition-colors disabled:opacity-60 ${
+                    methods.passkey ? "border border-white/15 text-white hover:bg-white/5" : "bg-white text-black hover:bg-white/85"
+                  }`}
+                >
+                  {busy === "email" ? <Loader2 className="size-4 animate-spin" /> : <Mail className="size-4" />}
+                  Email me a sign-in link
+                </button>
+              )
+            )}
             {methods?.passkey && (
               <button
                 onClick={withPasskey}
@@ -176,7 +244,7 @@ export default function LoginPage() {
               </form>
             )}
 
-            {methods && !methods.password && !methods.passkey && !methods.zoho && (
+            {methods && !methods.password && !methods.passkey && !methods.zoho && !methods.emailLink && (
               <p className="text-sm text-muted">Password sign-in is off and no passkey is registered for this domain.</p>
             )}
             {error && <p className="text-sm text-[var(--critical-text)]">{error}</p>}
