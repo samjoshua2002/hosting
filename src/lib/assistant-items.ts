@@ -29,8 +29,8 @@ export interface DiagramEdge {
 }
 
 export type Item =
-  | { kind: "user"; text: string; files?: Att[] }
-  | { kind: "text"; text: string }
+  | { kind: "user"; text: string; files?: Att[]; voice?: boolean }
+  | { kind: "text"; text: string; voice?: boolean }
   | { kind: "step"; id: string; label: string; running: boolean; ok?: boolean; output?: string; shell?: Shell; tool?: string }
   | { kind: "approval"; id: string; label: string; detail: string; diff?: boolean; decision?: boolean }
   | { kind: "question"; id: string; question: string; options: string[]; answer?: string }

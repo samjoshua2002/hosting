@@ -4,7 +4,7 @@ import { ArrowUp, AtSign, AudioLines, Check, ChevronRight, ChevronUp, Cloud, Cpu
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import type { Att } from "@/lib/assistant-items";
-import { toggleConnector, useAssistant } from "./assistant-store";
+import { appendVoice, toggleConnector, useAssistant } from "./assistant-store";
 import { FadeWords, VoiceMode, voiceSupported } from "./voice-mode";
 import { connectorDef } from "@/lib/connector-catalog";
 import { projectType, TYPE_LABEL, type ProjectType } from "@/lib/project-type";
@@ -624,8 +624,11 @@ export function Composer({
         <VoiceMode
           sessionId={sessionId}
           context={entities.slice(0, 120).map((e) => `${e.name}: ${e.sub}`).join("\n")}
-          onPlan={(plan) => onSend(plan)}
-          onClose={() => setVoice(false)}
+          onDone={(turns, plan) => {
+            setVoice(false);
+            // the conversation goes into the chat first (and the server's transcript), then the plan runs with it
+            void appendVoice(sessionId, turns).then(() => plan && onSend(plan));
+          }}
         />
       ) : (
       <div className="rounded-2xl border border-white/[0.09] bg-pop shadow-lg shadow-black/20 transition-colors focus-within:border-white/[0.18]">

@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronRight, FileText, ListChecks, Loader2, ShieldAlert, X } from "lucide-react";
+import { AudioLines, Check, ChevronRight, FileText, ListChecks, Loader2, ShieldAlert, X } from "lucide-react";
 import { useState } from "react";
 import type { Item } from "@/lib/assistant-items";
 import { useStored } from "@/lib/client";
@@ -151,6 +151,11 @@ function Bubble({
   if (item.kind === "user")
     return (
       <div className="flex flex-col items-end gap-1.5 pt-3">
+        {item.voice && (
+          <span className="flex items-center gap-1 text-[11px] text-zinc-500">
+            <AudioLines className="size-3" /> said in voice mode
+          </span>
+        )}
         {item.text && (
           <div className="max-w-[85%] rounded-2xl rounded-br-md bg-white/[0.08] px-4 py-2.5 text-sm whitespace-pre-wrap text-white ring-1 ring-white/10">{inline(item.text, mentions)}</div>
         )}
@@ -176,6 +181,11 @@ function Bubble({
     const { body } = splitSuggestions(item.text);
     return body ? (
       <div className="py-1 text-[14.5px] leading-relaxed">
+        {item.voice && (
+          <span className="mb-1 flex items-center gap-1 text-[11px] text-zinc-500">
+            <AudioLines className="size-3" /> voice reply
+          </span>
+        )}
         <Markdown text={body} />
       </div>
     ) : null;

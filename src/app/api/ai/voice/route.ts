@@ -20,11 +20,18 @@ How you talk:
 Return JSON only:
 {"say":"what you say out loud","stage":"asking|confirming|go|end","plan":"only when stage is go: the complete instruction for the Assistant to carry out, written as the user's request, with every requirement and decision from this conversation"}`;
 
+const PERSONA: Record<string, string> = {
+  warm: "warm, encouraging and friendly, like a trusted colleague who's glad to help; light humour is fine.",
+  professional: "polished, calm and precise, like a senior consultant on a client call.",
+  direct: "brisk and to the point: the fewest words that do the job, no pleasantries.",
+};
+
 /** POST /api/ai/voice { turns: [{role, text}], context? }: the next spoken reply in voice mode. */
 export const POST = handle(async (req: NextRequest) => {
   await requireAuth(req);
   if (!aiConfigured()) throw new HttpError(503, "Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY to use voice mode.");
-  const b = await readJson<{ turns?: unknown; context?: unknown; sessionId?: unknown }>(req, 200_000);
+  const b = await readJson<{ turns?: unknown; context?: unknown; sessionId?: unknown; persona?: unknown }>(req, 200_000);
+  const persona = PERSONA[String(b.persona)] ?? PERSONA.warm;
   const turns = (Array.isArray(b.turns) ? b.turns : [])
     .filter((t): t is { role: string; text: string } => !!t && typeof t === "object" && typeof (t as { text?: unknown }).text === "string")
     .slice(-30)
@@ -39,7 +46,7 @@ export const POST = handle(async (req: NextRequest) => {
       json: true,
       maxTokens: 900,
       timeoutMs: 30_000,
-      messages: [{ role: "system", content: `${SYSTEM}${context ? `\n\nWhat's running right now:\n${context}` : ""}` }, ...turns],
+      messages: [{ role: "system", content: `${SYSTEM}\n\nPersonality: ${persona}${context ? `\n\nWhat's running right now:\n${context}` : ""}` }, ...turns],
     }),
   );
   let out: { say?: unknown; stage?: unknown; plan?: unknown } = {};

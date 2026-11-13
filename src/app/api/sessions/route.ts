@@ -26,12 +26,39 @@ export const GET = handle(async (req: NextRequest) => {
 
 /**
  * POST /api/sessions { id, rename?: string, pin?: boolean } renames or pins a session;
- * { id, title, items, transcript, attachments } saves one (runs save themselves).
+ * { id, title, items, transcript, attachments } saves one (runs save themselves);
+ * { id, voice: [{role, text}], title? } adds a voice conversation to it (shown in the chat, and in the transcript
+ * so the Assistant remembers it).
  */
 export const POST = handle(async (req: NextRequest) => {
   await requireAuth(req);
-  const b = await readJson<{ id?: unknown; title?: unknown; items?: unknown; transcript?: unknown; attachments?: unknown; rename?: unknown; pin?: unknown }>(req, 3_000_000);
+  const b = await readJson<{ id?: unknown; title?: unknown; items?: unknown; transcript?: unknown; attachments?: unknown; rename?: unknown; pin?: unknown; voice?: unknown }>(req, 3_000_000);
   if (typeof b.id !== "string" || !SESSION_ID.test(b.id)) throw new HttpError(400, "bad id");
+  if (Array.isArray(b.voice)) {
+    const turns = b.voice
+      .filter((t): t is { role: string; text: string } => !!t && typeof t === "object" && typeof (t as { text?: unknown }).text === "string" && (t as { text: string }).text.trim() !== "")
+      .slice(0, 200)
+      .map((t) => ({ role: t.role === "assistant" ? ("assistant" as const) : ("user" as const), text: t.text.trim().slice(0, 4000) }));
+    if (!turns.length) return Response.json({ ok: true, added: 0 });
+    const cur = await storeGetJson<{ title?: string; items?: unknown[]; transcript?: unknown[]; attachments?: unknown[]; running?: boolean; updatedAt?: number; named?: boolean; titled?: boolean; pinned?: boolean; source?: string }>(sessionPath(b.id));
+    if (cur?.running && Date.now() - (cur.updatedAt ?? 0) < 6 * 60_000) throw new HttpError(409, "This session is working right now; try again when it finishes.");
+    const first = turns.find((t) => t.role === "user")?.text ?? "Voice conversation";
+    const title = cur?.title && cur.title !== "New session" ? cur.title : typeof b.title === "string" && b.title.trim() && b.title !== "New session" ? b.title.slice(0, 120) : first.split(/\s+/).slice(0, 6).join(" ").slice(0, 60);
+    const updatedAt = Date.now();
+    const doc = {
+      ...(cur ?? {}),
+      id: b.id,
+      title,
+      updatedAt,
+      items: [...(cur?.items ?? []), ...turns.map((t) => (t.role === "user" ? { kind: "user", text: t.text, voice: true } : { kind: "text", text: t.text, voice: true }))],
+      // the transcript keeps its system message first; voice turns follow as plain conversation
+      transcript: [...(cur?.transcript ?? []), ...turns.map((t) => ({ role: t.role, content: t.role === "user" ? `(said in voice mode) ${t.text}` : t.text }))],
+      attachments: cur?.attachments ?? [],
+    };
+    await storePut(sessionPath(b.id), JSON.stringify(doc));
+    await updateIndex({ id: b.id, title, updatedAt });
+    return Response.json({ ok: true, added: turns.length, title });
+  }
   if (typeof b.rename === "string" || typeof b.pin === "boolean") {
     const meta = await editSession(b.id, { title: typeof b.rename === "string" ? b.rename : undefined, pinned: typeof b.pin === "boolean" ? b.pin : undefined }).catch((e: Error) => {
       throw new HttpError(404, e.message);

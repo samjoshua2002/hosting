@@ -225,6 +225,23 @@ export function setModel(model: string) {
   set({ model });
 }
 
+/**
+ * Put a finished voice conversation into the chat: shown as messages (marked as voice) and saved to the session's
+ * transcript on the server, so the Assistant remembers what was said. Resolves once it's saved.
+ */
+export async function appendVoice(id: string, turns: { role: "user" | "assistant"; text: string }[]): Promise<void> {
+  const clean = turns.filter((t) => t.text.trim());
+  if (!clean.length) return;
+  patchDoc(id, (d) => ({
+    ...d,
+    items: [...d.items, ...clean.map((t): Item => (t.role === "user" ? { kind: "user", text: t.text, voice: true } : { kind: "text", text: t.text, voice: true }))],
+  }));
+  const r = await fetch("/api/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, voice: clean, title: state.docs[id]?.title }) });
+  const d = (await r.json().catch(() => ({}))) as { title?: string };
+  if (r.ok && d.title) patchDoc(id, (doc) => ({ ...doc, title: d.title! }));
+  void loadList();
+}
+
 /** Switch a connector (id, or an email address) on or off for one conversation. */
 export function toggleConnector(sessionId: string, key: string) {
   const cur = state.off[sessionId] ?? [];
