@@ -1,7 +1,8 @@
 "use client";
 
 import { browserSupportsWebAuthn, startAuthentication } from "@simplewebauthn/browser";
-import { Fingerprint, Layers, Loader2 } from "lucide-react";
+import { Fingerprint, Loader2 } from "lucide-react";
+import { BrandMark } from "@/components/brand";
 import { useEffect, useState, type FormEvent } from "react";
 import { PhotoCredit, UnsplashLayer, useTheme } from "@/components/theme";
 
@@ -80,9 +81,7 @@ export default function LoginPage() {
         <UnsplashLayer photo={photo} className="login-art h-full min-h-[calc(100dvh-1.5rem)] rounded-[28px]">
           <div className="flex h-full min-h-[calc(100dvh-1.5rem)] flex-col justify-between p-10">
             <div className="flex items-center gap-2.5">
-              <span className="grid size-10 place-items-center rounded-xl bg-white/15 ring-1 ring-white/25 backdrop-blur">
-                <Layers className="size-5 text-white" />
-              </span>
+              <BrandMark size={40} className="drop-shadow-lg" />
               <span className="text-lg font-semibold text-white drop-shadow">hosting</span>
             </div>
             <div>

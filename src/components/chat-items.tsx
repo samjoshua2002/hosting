@@ -58,10 +58,12 @@ export function ChatItems({
     <div className={compact ? "space-y-2" : "space-y-3"}>
       {blocks.map((b) =>
         b.kind === "steps" ? (
-          <StepGroup key={b.key} steps={b.steps} />
+          <div key={b.key} data-motion>
+            <StepGroup steps={b.steps} />
+          </div>
         ) : (
+          <div key={b.key} data-motion>
           <Bubble
-            key={b.key}
             item={b.item}
             busy={busy}
             onDecide={(id, ok) => decide(sid, id, ok)}
@@ -71,6 +73,7 @@ export function ChatItems({
             onOpenArtifact={onOpenArtifact}
             onOpenFile={onOpenFile}
           />
+          </div>
         ),
       )}
     </div>

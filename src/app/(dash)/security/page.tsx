@@ -45,8 +45,18 @@ export default function SecurityPage() {
       const res = await api<{ entry: string; value: string }>("/api/auth/passkey/register", { step: "verify", response, name: name || deviceName() });
       setCreated(res);
     } catch (e) {
-      const msg = (e as Error).message;
-      setError(/NotAllowed|cancel|abort/i.test(msg) ? "Passkey prompt was cancelled." : msg);
+      const err = e as Error & { code?: string };
+      const msg = err.message;
+      const here = o?.passkeys.some((p) => p.here);
+      if (err.code === "ERROR_AUTHENTICATOR_PREVIOUSLY_REGISTERED" || err.name === "InvalidStateError")
+        setError("This device already has a passkey for this site (it's in the list). To add another device, open this page on that device and add it there.");
+      else if (err.name === "NotAllowedError" || /NotAllowed|not allowed|denied permission|cancel|abort/i.test(msg))
+        setError(
+          here
+            ? "The browser stopped it: you may have cancelled, or this device already has a passkey for this site (Safari reports both the same way). To add a passkey for another device, open this page on that device."
+            : "The passkey prompt was cancelled or blocked. Try again, and allow it with Touch ID / Face ID.",
+        );
+      else setError(msg);
     } finally {
       setBusy(false);
     }

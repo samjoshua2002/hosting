@@ -14,6 +14,8 @@ import { CommandPalette } from "./command-palette";
 import { StorageBanner } from "./storage-banner";
 import { crumbs, NAV } from "./nav";
 import { setMode, shuffleTheme, UnsplashLayer, useMode, useTheme, type Mode } from "./theme";
+import { BrandMark } from "./brand";
+import { PageMotion, useGlide, useParallax } from "./motion";
 import { cx } from "./ui";
 
 export function Shell({ children }: { children: ReactNode }) {
@@ -46,11 +48,23 @@ export function Shell({ children }: { children: ReactNode }) {
           <Suspense fallback={null}>
             <Cover />
           </Suspense>
-          {children}
+          <Suspense fallback={children}>
+            <RoutedPage>{children}</RoutedPage>
+          </Suspense>
         </main>
       </div>
       <CommandPalette open={palette} onClose={() => setPalette(false)} />
     </div>
+  );
+}
+
+/** Each page eases in when you navigate to it (keyed by the path), and its cards rise in. */
+function RoutedPage({ children }: { children: ReactNode }) {
+  const path = usePathname();
+  return (
+    <PageMotion key={path} className="h-full">
+      {children}
+    </PageMotion>
   );
 }
 
@@ -64,9 +78,7 @@ function Sidebar({ path, onSearch }: { path: string | null; onSearch: () => void
   return (
     <aside className={cx("sticky top-0 flex h-dvh shrink-0 flex-col border-r border-white/[0.05] bg-[var(--sidebar)] py-3 transition-[width] duration-200", compact ? "w-[60px] items-center px-2" : "w-56 px-2.5")}>
       <Link href="/" className={cx("mb-3 flex h-9 items-center gap-2", compact ? "justify-center" : "px-2")} title="hosting">
-        <span className="grid size-6 place-items-center rounded-md bg-white text-black">
-          <span className="size-2 rounded-[3px] bg-black" />
-        </span>
+        <BrandMark size={compact ? 28 : 24} />
         {!compact && <span className="text-sm font-semibold tracking-tight text-white">hosting</span>}
       </Link>
       {compact ? (
@@ -98,7 +110,13 @@ function Cover() {
   const { photo } = useTheme();
   // work surfaces (Assistant, Settings) get a softer, shorter wash so the photo never fights the content
   const soft = Boolean(path?.startsWith("/assistant") || path?.startsWith("/settings"));
-  return <UnsplashLayer photo={photo} className={soft ? "page-cover page-cover--soft" : "page-cover"} />;
+  const drift = useRef<HTMLDivElement>(null);
+  useParallax(drift, path);
+  return (
+    <div ref={drift} className="pointer-events-none absolute inset-x-0 top-0 -z-10">
+      <UnsplashLayer photo={photo} className={soft ? "page-cover page-cover--soft" : "page-cover"} />
+    </div>
+  );
 }
 
 function TopBarWithPath() {
@@ -115,8 +133,13 @@ function Nav({ path, compact }: { path: string | null; compact?: boolean }) {
     return { "/projects": names.size - services, "/services": services, "/machines": vms.length } as Record<string, number>;
   }, [vms, status]);
 
+  const navRef = useRef<HTMLElement>(null);
+  const pill = useRef<HTMLSpanElement>(null);
+  useGlide(navRef, pill, `${path}|${compact}`);
   return (
-    <nav className={cx(compact ? "space-y-3" : "space-y-4")}>
+    <nav ref={navRef} className={cx("relative", compact ? "space-y-3" : "space-y-4")}>
+      {/* the highlight that glides to the current page */}
+      <span ref={pill} aria-hidden className="pointer-events-none absolute top-0 left-0 rounded-md bg-white/[0.07] opacity-0" />
       {NAV.map((g) => (
         <div key={g.title} className={cx(compact && "border-t border-white/[0.05] pt-3 first:border-0 first:pt-0")}>
           {!compact && <p className="mb-1 px-2.5 text-[11px] font-medium text-zinc-600">{g.title}</p>}
@@ -127,12 +150,13 @@ function Nav({ path, compact }: { path: string | null; compact?: boolean }) {
                 <Link
                   key={href}
                   href={href}
+                  data-active={active}
                   title={compact ? `${label}${counts[href] ? ` (${counts[href]})` : ""}` : undefined}
                   aria-label={compact ? label : undefined}
                   className={cx(
                     "relative flex items-center rounded-md text-[13px] transition-colors",
                     compact ? "size-9 justify-center" : "h-8 gap-2.5 px-2.5",
-                    active ? "bg-white/[0.07] text-white" : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100",
+                    active ? "text-white" : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100",
                   )}
                 >
                   <Icon className={cx("size-4", active ? "text-[var(--accent)]" : "text-zinc-500")} strokeWidth={1.75} />

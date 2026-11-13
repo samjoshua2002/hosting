@@ -39,7 +39,11 @@ export function Button({
 }
 
 export function Card({ className, children, id }: { className?: string; children: ReactNode; id?: string }) {
-  return <div id={id} className={cx("rounded-2xl border border-[var(--line)] bg-panel", className)}>{children}</div>;
+  return (
+    <div id={id} data-card className={cx("rounded-2xl border border-[var(--line)] bg-panel", className)}>
+      {children}
+    </div>
+  );
 }
 
 export function SectionTitle({ children, right }: { children: ReactNode; right?: ReactNode }) {

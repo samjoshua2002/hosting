@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { addFiles, currentDoc, editSession, hydrate, newSession, openSession, removeSession, send, setModel, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
 import { ArtifactView } from "@/components/artifact-view";
 import { Monitor, TerminalPanel } from "@/components/assistant-panel";
+import { BrandMark } from "@/components/brand";
 import { ArtifactsGallery, SearchDialog, type ArtifactEntry } from "@/components/assistant-library";
 import { AttachmentView } from "@/components/attachment-view";
 import { BrowserPanel } from "@/components/browser-panel";
@@ -505,9 +506,7 @@ export default function AssistantPage() {
             {!configured && <p className="rounded-xl border border-white/10 p-4 text-sm text-ink">Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY to enable the assistant.</p>}
             {items.length === 0 && configured && (
               <div className="text-center">
-                <span className="mx-auto mb-4 grid size-10 place-items-center rounded-xl bg-white text-black">
-                  <span className="size-3 rounded-[4px] bg-black" />
-                </span>
+                <BrandMark size={44} className="mx-auto mb-4 block" />
                 <p className="text-[26px] font-semibold tracking-tight text-white">What should we build?</p>
                 <p className="mt-1.5 text-sm text-zinc-500">Deploy, fix, design or explain anything on your machines. It keeps working if you leave.</p>
               </div>
