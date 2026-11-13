@@ -4,12 +4,13 @@
 // fast advisor model that asks one question at a time, speaks back (speech synthesis), and once you agree to the
 // plan it hands the full instruction to the Assistant in the chat. A soft glow breathes with your voice while it
 // listens and warms up while it speaks.
-import { AudioLines, Check, GitBranch, Mic, MicOff, Play, Plug, Server, SlidersHorizontal, Upload } from "lucide-react";
+import { AudioLines, Check, GitBranch, Loader2, Mic, MicOff, Play, Plug, Server, SlidersHorizontal, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Item } from "@/lib/assistant-items";
 import { api } from "@/lib/client";
 import { appendVoice, decide, useAssistant } from "./assistant-store";
+import { ChatItems } from "./chat-items";
 import { UnsplashLayer, useTheme } from "./theme";
 import { VoiceWaves } from "./voice-waves";
 import { cx } from "./ui";
@@ -21,6 +22,8 @@ export interface VoiceOption {
   say: string;
   kind?: "attach" | "project" | "repo" | "service";
 }
+
+const NO_MENTIONS = new Set<string>();
 
 const YES = /\b(yes|yeah|yep|yup|sure|go ahead|do it|ok(ay)?|approve|send it|go for it|please do)\b/i;
 const NO = /\b(no|nope|don'?t|cancel|skip|stop|leave it|not now)\b/i;
@@ -227,6 +230,7 @@ export function VoiceMode({
     docRef.current = docs[sessionId];
   }, [docs, sessionId]);
   const runFrom = useRef(0); // where the running task's items start
+  const [taskFrom, setTaskFrom] = useState<number | null>(null); // shows the side panel with what it's doing
   const approval = useRef<{ id: string; label: string } | null>(null);
 
   const go = useCallback((p: Phase) => {
@@ -404,7 +408,8 @@ export function VoiceMode({
       const fresh = d.items.slice(from);
       if (d.busy) started = true;
       const wait = fresh.find((i): i is Extract<Item, { kind: "approval" }> => i.kind === "approval" && i.decision === undefined);
-      if (wait && !d.busy) {
+      if (wait) {
+        if (approval.current?.id === wait.id) return; // already asked; waiting for your answer or a tap
         approval.current = { id: wait.id, label: wait.label };
         const ask = `It needs your OK first: ${wait.label.replace(/\s+/g, " ").slice(0, 140)}. Should I go ahead?`;
         turns.current.push({ role: "assistant", text: ask });
@@ -435,6 +440,19 @@ export function VoiceMode({
     }
   }, [go, speak, listen]);
 
+  // an approval answered by tapping Approve / Skip in the panel: carry on following the task
+  useEffect(() => {
+    const a = approval.current;
+    if (!a) return;
+    const it = docs[sessionId]?.items.find((i) => i.kind === "approval" && i.id === a.id);
+    if (it && it.kind === "approval" && it.decision !== undefined) {
+      approval.current = null;
+      window.speechSynthesis.cancel();
+      rec.current?.abort();
+      void follow();
+    }
+  }, [docs, sessionId, follow]);
+
   /** Save what was said so far into the chat, then hand the task over and follow it. */
   const runTask = useCallback(
     async (plan: string) => {
@@ -443,6 +461,7 @@ export function VoiceMode({
       go("working");
       await appendVoice(ctx.current.sessionId, fresh).catch(() => {});
       runFrom.current = docRef.current?.items.length ?? 0;
+      setTaskFrom(runFrom.current);
       onTask(plan);
       await follow();
     },
@@ -673,7 +692,8 @@ export function VoiceMode({
       </div>
 
       {/* captions, in the middle of the screen */}
-      <div className="relative flex flex-1 items-center justify-center overflow-y-auto px-8 py-16">
+      <div className="relative flex min-h-0 flex-1">
+      <div className="relative flex min-w-0 flex-1 items-center justify-center overflow-y-auto px-8 py-16 transition-[padding] duration-500">
         <div className="w-full max-w-3xl text-center">
           <div className="mb-8 flex justify-center">
             <VoiceWaves phase={phase === "working" ? "thinking" : phase} level={level} />
@@ -725,6 +745,27 @@ export function VoiceMode({
             <p className="mt-6 text-[12.5px] text-zinc-500">{prefs.holdMic ? "Your mic is muted while it speaks · tap the bar to cut in" : "Just start talking to interrupt"}</p>
           )}
         </div>
+      </div>
+
+      {/* while it works: what the Assistant is doing, live, with approvals you can tap */}
+      {taskFrom !== null && (
+        <aside className="voice-panel relative my-6 mr-6 flex w-[min(44%,560px)] shrink-0 flex-col overflow-hidden rounded-3xl border border-white/[0.09] bg-[var(--panel)]/70 shadow-2xl shadow-black/40 backdrop-blur-xl">
+          <div className="flex items-center gap-2 border-b border-white/[0.07] px-5 py-3.5">
+            {docs[sessionId]?.busy ? <Loader2 className="size-4 animate-spin text-[var(--accent)]" /> : <Check className="size-4 text-[var(--good)]" />}
+            <p className="flex-1 text-[13.5px] font-medium text-white">{docs[sessionId]?.busy
+                ? "Working on it"
+                : (docs[sessionId]?.items ?? []).slice(taskFrom).some((i) => i.kind === "approval" && i.decision === undefined)
+                  ? "Needs your OK"
+                  : "Done"}</p>
+            <button onClick={() => setTaskFrom(null)} className="grid size-7 place-items-center rounded-md text-zinc-500 hover:bg-white/[0.06] hover:text-white" aria-label="Hide what it's doing">
+              <X className="size-4" />
+            </button>
+          </div>
+          <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-4 py-4 text-left">
+            <ChatItems sid={sessionId} items={(docs[sessionId]?.items ?? []).slice(taskFrom)} busy={Boolean(docs[sessionId]?.busy)} mentions={NO_MENTIONS} compact />
+          </div>
+        </aside>
+      )}
       </div>
 
       <div className="relative mx-auto w-full max-w-[760px] px-4 pb-8">
