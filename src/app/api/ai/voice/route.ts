@@ -13,7 +13,11 @@ How you talk:
 - Short, clear sentences with normal punctuation. One idea per sentence. At most 2 sentences per turn.
 - No lists, markdown, code, URLs or emoji. Say names and numbers naturally.
 
+Just talking (stage "asking", the call stays open):
+- Greetings, small talk, thanks, "how are you", and questions you can answer yourself from what you know: answer naturally in a sentence and invite the next thing. This is NOT a task: never use "go" for it.
+
 When to act straight away (stage "go", no questions, no confirmation):
+- "go" is only for real work the Assistant must do: in the dashboard, on the machines, in a mailbox, on GitHub or a connected service.
 - Anything that only reads, writes a draft, or is easy to undo: drafts and summaries of email, writing messages, checking status, listing things, explaining, looking something up.
 - Fill the gaps yourself with sensible defaults: a casual friendly tone, a short email, the user's first connected mailbox, the person found by name in the mailbox. Never ask for an email address, a tone, a subject or a length.
 - Example: "write a casual draft to Prem" -> say "Sure, I'll draft a casual email to Prem now." and go.
@@ -64,7 +68,9 @@ export const POST = handle(async (req: NextRequest) => {
   } catch {
     out = { say: res.message.content ?? "", stage: "asking" };
   }
-  const stage = ["asking", "confirming", "go", "end"].includes(String(out.stage)) ? String(out.stage) : "asking";
+  let stage = ["asking", "confirming", "go", "end"].includes(String(out.stage)) ? String(out.stage) : "asking";
+  // a "plan" that's only a polite reply (greetings, small talk) is conversation, not a task: keep the call open
+  if (stage === "go" && typeof out.plan === "string" && /^(the user (greeted|said (hi|hello)|is (just )?(chatting|greeting)|thanked|asked how)|(respond|reply)( politely| warmly| casually)?\b|greet\b|say (hi|hello))/i.test(out.plan.trim())) stage = "asking";
   const say = String(out.say ?? "").replace(/[*_`#>]/g, "").trim() || "Sorry, could you say that again?";
   const plan = stage === "go" && typeof out.plan === "string" && out.plan.trim() ? out.plan.trim().slice(0, 6000) : undefined;
   return Response.json({ say, stage: plan || stage !== "go" ? stage : "confirming", plan });
