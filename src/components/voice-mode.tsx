@@ -25,10 +25,26 @@ export interface VoiceOption {
 const YES = /\b(yes|yeah|yep|yup|sure|go ahead|do it|ok(ay)?|approve|send it|go for it|please do)\b/i;
 const NO = /\b(no|nope|don'?t|cancel|skip|stop|leave it|not now)\b/i;
 
+const GREETED = "hosting.voice.last-greeting";
+const lastGreeting = () => {
+  try {
+    return localStorage.getItem(GREETED) ?? "";
+  } catch {
+    return "";
+  }
+};
+const rememberGreeting = (g: string) => {
+  try {
+    localStorage.setItem(GREETED, g);
+  } catch {
+    /* blocked */
+  }
+};
+
 const localTime = () => new Date().toLocaleString(undefined, { weekday: "long", hour: "numeric", minute: "2-digit" });
 
 /** If the greeting can't be fetched: still never the same line twice in a row. */
-const FALLBACK_GREETINGS = ["Hey! What are we working on?", "Hi there. What's up?", "Hey, I'm here. What do you need?", "Yo! What's on your mind?", "Hey. Ready when you are."];
+const FALLBACK_GREETINGS = ["Hey Sam! How's it going? What can I do for you today?", "Hi Sam! Great to hear from you. What are we building?", "Hey Sam! Ready when you are. What's up?", "Sam! Good to see you. What can I help with?"];
 
 export interface Turn {
   role: "user" | "assistant";
@@ -55,8 +71,9 @@ export function voiceSupported(): boolean {
 
 /* ---------- voices and personality (remembered in this browser) ---------- */
 
-export type Persona = "chill" | "warm" | "professional" | "direct";
+export type Persona = "upbeat" | "chill" | "warm" | "professional" | "direct";
 export const PERSONAS: { id: Persona; label: string; hint: string }[] = [
+  { id: "upbeat", label: "Upbeat", hint: "positive, energetic" },
   { id: "chill", label: "Chill", hint: "easy-going mate" },
   { id: "warm", label: "Warm", hint: "kind, encouraging" },
   { id: "professional", label: "Professional", hint: "calm consultant" },
@@ -65,6 +82,8 @@ export const PERSONAS: { id: Persona; label: string; hint: string }[] = [
 interface VoicePrefs {
   voice?: string;
   persona: Persona;
+  /** the persona was chosen by the user (not a default) */
+  pickedPersona?: boolean;
   rate: number;
   /** don't listen while it speaks: background noise (or you) can't interrupt it; tapping still does */
   holdMic?: boolean;
@@ -73,9 +92,11 @@ const PREFS = "hosting.voice";
 function loadPrefs(): VoicePrefs {
   try {
     const p = JSON.parse(localStorage.getItem(PREFS) ?? "{}") as Partial<VoicePrefs>;
-    return { voice: p.voice, persona: PERSONAS.some((x) => x.id === p.persona) && p.persona !== "warm" ? p.persona! : "chill", rate: typeof p.rate === "number" && p.rate !== 1.03 ? p.rate : 0.97, holdMic: p.holdMic === true };
+    return { voice: p.voice, // the old defaults (warm, chill) move to Upbeat; a persona picked on purpose since stays
+    persona: PERSONAS.some((x) => x.id === p.persona) && p.persona !== "warm" && !(p.persona === "chill" && !p.pickedPersona) ? p.persona! : "upbeat",
+    pickedPersona: p.pickedPersona, rate: typeof p.rate === "number" && p.rate !== 1.03 && p.rate !== 0.97 ? p.rate : 1.02, holdMic: p.holdMic === true };
   } catch {
-    return { persona: "chill", rate: 0.97 };
+    return { persona: "upbeat", rate: 1.02 };
   }
 }
 function savePrefs(p: VoicePrefs) {
@@ -94,7 +115,7 @@ export function voiceGender(v: SpeechSynthesisVoice): "female" | "male" | "other
 }
 
 const quality = (v: SpeechSynthesisVoice) =>
-  (/(premium|enhanced|natural|neural)/i.test(v.name) ? 40 : 0) +
+  (/(premium|enhanced|natural|neural|siri)/i.test(v.name) ? 60 : 0) +
   (/(Ava|Samantha|Allison|Evan|Zoe|Serena|Daniel|Karen|Moira|Veena|Google UK English|Google US English|Microsoft (Aria|Jenny|Guy|Neerja|Prabhat))/i.test(v.name) ? 20 : 0) +
   (v.localService ? 0 : 5) +
   (v.lang === navigator.language ? 3 : 0);
@@ -159,7 +180,7 @@ export function VoiceMode({
   /** open the file picker (to upload a project zip) */
   onAttach?: () => void;
 }) {
-  const [prefs, setPrefs] = useState<VoicePrefs>(() => (typeof window === "undefined" ? { persona: "chill", rate: 0.97 } : loadPrefs()));
+  const [prefs, setPrefs] = useState<VoicePrefs>(() => (typeof window === "undefined" ? { persona: "upbeat", rate: 1.02 } : loadPrefs()));
   const prefsRef = useRef(prefs);
   const [panel, setPanel] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -291,7 +312,8 @@ export function VoiceMode({
               u.lang = v.lang; // Safari otherwise falls back to the default voice for the page language
             }
             u.rate = prefsRef.current.rate;
-            u.pitch = 1;
+            // a touch brighter for the upbeat voice (browser voices sound flat at the default pitch)
+            u.pitch = prefsRef.current.persona === "upbeat" ? 1.12 : prefsRef.current.persona === "professional" ? 0.98 : 1.04;
             u.onend = () => resolve();
             u.onerror = () => resolve();
             synth.speak(u);
@@ -528,8 +550,11 @@ export function VoiceMode({
       void (async () => {
         const [, hello] = await Promise.all([
           voicesReady(),
-          api<{ say: string }>("/api/ai/voice", { greet: true, context: ctx.current.context, sessionId: ctx.current.sessionId, persona: prefsRef.current.persona, localTime: localTime() })
-            .then((r) => r.say)
+          api<{ say: string }>("/api/ai/voice", { greet: true, context: ctx.current.context, sessionId: ctx.current.sessionId, persona: prefsRef.current.persona, localTime: localTime(), avoid: lastGreeting() })
+            .then((r) => {
+              rememberGreeting(r.say);
+              return r.say;
+            })
             .catch(() => FALLBACK_GREETINGS[Math.floor(Math.random() * FALLBACK_GREETINGS.length)]),
         ]);
         if (!alive.current) return;
@@ -740,7 +765,7 @@ export function VoiceMode({
               <p className="text-[11.5px] font-medium tracking-wide text-zinc-500 uppercase">Personality</p>
               <div className="mt-2 grid grid-cols-2 gap-1">
                 {PERSONAS.map((p) => (
-                  <button key={p.id} onClick={() => update({ persona: p.id })} className={cx("rounded-lg border px-2 py-1.5 text-left", prefs.persona === p.id ? "border-white/25 bg-white/[0.08]" : "border-white/[0.06] hover:bg-white/[0.04]")}>
+                  <button key={p.id} onClick={() => update({ persona: p.id, pickedPersona: true })} className={cx("rounded-lg border px-2 py-1.5 text-left", prefs.persona === p.id ? "border-white/25 bg-white/[0.08]" : "border-white/[0.06] hover:bg-white/[0.04]")}>
                     <span className="block text-[12.5px] text-white">{p.label}</span>
                     <span className="block text-[10.5px] leading-tight text-zinc-500">{p.hint}</span>
                   </button>
@@ -766,9 +791,9 @@ export function VoiceMode({
               <div className="mt-2 flex gap-1">
                 {(
                   [
-                    [0.88, "Relaxed"],
-                    [0.97, "Natural"],
-                    [1.1, "Quick"],
+                    [0.92, "Relaxed"],
+                    [1.02, "Natural"],
+                    [1.12, "Quick"],
                   ] as const
                 ).map(([r, l]) => (
                   <button key={l} onClick={() => update({ rate: r })} className={cx("flex-1 rounded-lg border px-2 py-1 text-[12px]", Math.abs(prefs.rate - r) < 0.01 ? "border-white/25 bg-white/[0.08] text-white" : "border-white/[0.06] text-zinc-400 hover:bg-white/[0.04]")}>

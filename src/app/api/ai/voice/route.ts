@@ -11,7 +11,8 @@ export const maxDuration = 60;
 
 const SYSTEM = `You are the voice of the hosting Assistant, on a call with the person who owns this little fleet of servers (InstaBox machines box1-box6). The Assistant behind you does the real work: deploys and fixes apps on the machines, reads and drafts email in connected mailboxes (it finds people's addresses itself), works on GitHub and connected services.
 
-Who you are: a real person on the other end, not a bot. Relaxed, quick, a little playful, genuinely good at this stuff. You talk like a friend who happens to run servers for a living.
+Who you are: a real person on the other end, not a bot: upbeat, warm and full of energy, quick and genuinely good at this stuff. You talk like a friend who loves helping and happens to run servers for a living. Call them by name now and then (\${NAME}).
+Stay positive: lead with what's working and what you can do. Only bring up problems (machines down, errors) when they ask, or when it matters for the task they want; then say it calmly with a way forward.
 
 How you talk:
 - Short sentences with normal punctuation. Usually one or two sentences. Contractions always.
@@ -31,11 +32,26 @@ Return JSON only:
 {"say":"what you say out loud","stage":"asking|confirming|go|end","options":[{"label":"short name on the card","detail":"one short line under it, e.g. Website · box3 or GitHub · TypeScript","say":"what picking it means, as the user would say it","kind":"project | repo | service | attach (attach only for uploading a project)"}],"plan":"only when stage is go: the complete instruction for the Assistant, written as the user's request, with every detail and default you chose"}
 "options" only when you ask the user to choose; at most 6.`;
 
-const GREET = `Open a voice call as the person described below. One or two short, natural sentences: a casual hello that fits the time of day, maybe one tiny relevant observation about their fleet (only if something stands out: a machine resting, everything healthy), then hand them the floor. Different every time. Never "How can I help you today". Return JSON: {"say":"..."}`;
+const GREET = `Open a voice call with \${NAME}. Upbeat, warm and genuinely happy to hear from them: one or two short sentences, like "Hey \${NAME}! How's it going? What can I do for you today?". Fit the time of day if it's natural ("Morning, \${NAME}!"). Positive only: never mention problems, outages, machines being down or anything negative in the greeting. Different every time. Return JSON: {"say":"..."}`;
 
 const SUMMARY = `You are the voice of the hosting Assistant, on a call. The Assistant just finished a task the user asked for by voice; below is its written result. Tell the user the outcome out loud: 1-3 short, natural sentences, the key facts and numbers only, no lists, markdown, URLs or emoji, no "the Assistant says". If it needs something from them, say so plainly. Return JSON: {"say":"..."}`;
 
+const NAME = process.env.OWNER_NAME || "Sam";
+
+/** One of these is picked at random for each greeting, so no two openings sound alike. */
+const GREET_STYLES = [
+  "short and punchy, three to six words then the question",
+  "ask how their day is going, then offer to help",
+  "playful and cheeky",
+  "warm and welcoming, like an old friend",
+  "excited, like you were hoping they'd call",
+  "casual, like a teammate leaning over the desk",
+  "mention the day or time of day in a fun way",
+  "compliment their momentum, as if they've been shipping a lot",
+];
+
 const PERSONA: Record<string, string> = {
+  upbeat: "upbeat and energetic: positive, enthusiastic, warm, exclamation marks are welcome, like someone who's having a great day and is excited to help.",
   chill: "chill and easy-going, like a mate who's great with servers; casual words, a bit of humour.",
   warm: "warm and encouraging, like a kind colleague who's glad you called.",
   professional: "polished and calm, like a senior consultant, still natural and human.",
@@ -85,7 +101,8 @@ function cleanOptions(v: unknown): Option[] {
 export const POST = handle(async (req: NextRequest) => {
   await requireAuth(req);
   if (!aiConfigured()) throw new HttpError(503, "Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY to use voice mode.");
-  const b = await readJson<{ turns?: unknown; context?: unknown; sessionId?: unknown; persona?: unknown; localTime?: unknown; greet?: unknown; summarize?: unknown }>(req, 300_000);
+  const b = await readJson<{ turns?: unknown; context?: unknown; sessionId?: unknown; persona?: unknown; localTime?: unknown; greet?: unknown; summarize?: unknown; avoid?: unknown }>(req, 300_000);
+  const avoid = typeof b.avoid === "string" ? b.avoid.slice(0, 300) : "";
   const summarize = typeof b.summarize === "string" ? b.summarize.slice(0, 12_000) : null;
   const turns = (Array.isArray(b.turns) ? b.turns : [])
     .filter((t): t is { role: string; text: string } => !!t && typeof t === "object" && typeof (t as { text?: unknown }).text === "string")
@@ -95,7 +112,7 @@ export const POST = handle(async (req: NextRequest) => {
   if (!turns.length && !greet && !summarize) throw new HttpError(400, "say something first");
   const context = typeof b.context === "string" ? b.context.slice(0, 6000) : "";
   const sessionId = typeof b.sessionId === "string" ? b.sessionId.slice(0, 80) : undefined;
-  const persona = PERSONA[String(b.persona)] ?? PERSONA.chill;
+  const persona = PERSONA[String(b.persona)] ?? PERSONA.upbeat;
   const localTime = typeof b.localTime === "string" ? b.localTime.slice(0, 80) : "";
   const [repos, boxes, states] = await Promise.all([greet || summarize ? Promise.resolve("") : repoContext(), listMailboxes().catch(() => []), connectorStates().catch(() => [])]);
   const services = states
@@ -106,7 +123,7 @@ export const POST = handle(async (req: NextRequest) => {
   const about = [
     `Personality: ${persona}`,
     localTime ? `Their local time: ${localTime}` : "",
-    context ? `What's running right now:\n${context}` : "",
+    context && !greet ? `What's running right now:\n${context}` : "",
     repos,
     services.length ? `Connected services the Assistant can query: ${services.join(", ")}` : "",
     boxes.length ? `Connected mailboxes: ${boxes.map((m) => m.email).join(", ")}` : "No mailbox is connected yet (drafting email needs one: Settings → Connectors → Gmail).",
@@ -122,10 +139,15 @@ export const POST = handle(async (req: NextRequest) => {
       maxTokens: 700,
       timeoutMs: 25_000,
       messages: greet
-        ? [{ role: "system", content: `${GREET}\n\n${about}` }]
+        ? [
+            {
+              role: "system",
+              content: `${GREET.replaceAll("${NAME}", NAME)}\n\nThis time make it: ${GREET_STYLES[Math.floor(Math.random() * GREET_STYLES.length)]}.${avoid ? `\nDon't reuse the last greeting's wording: "${avoid}"` : ""}\n\n${about}`,
+            },
+          ]
         : summarize
           ? [{ role: "system", content: `${SUMMARY}\n\n${about}` }, ...turns.slice(-4), { role: "user", content: `The Assistant's result:\n${summarize}` }]
-          : [{ role: "system", content: `${SYSTEM}\n\n${about}` }, ...turns],
+          : [{ role: "system", content: `${SYSTEM.replaceAll("${NAME}", NAME)}\n\n${about}` }, ...turns],
     }),
   );
   let out: { say?: unknown; stage?: unknown; plan?: unknown; options?: unknown } = {};
@@ -134,7 +156,13 @@ export const POST = handle(async (req: NextRequest) => {
   } catch {
     out = { say: res.message.content ?? "", stage: "asking" };
   }
-  const say = String(out.say ?? "").replace(/[*_`#>]/g, "").trim() || "Sorry, say that again?";
+  // no markdown or emoji in speech (voices read "grinning face" out loud)
+  const say =
+    String(out.say ?? "")
+      .replace(/[*_`#>]/g, "")
+      .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, "")
+      .replace(/\s{2,}/g, " ")
+      .trim() || "Sorry, say that again?";
   if (greet || summarize) return Response.json({ say, stage: "asking" });
   let stage = ["asking", "confirming", "go", "end"].includes(String(out.stage)) ? String(out.stage) : "asking";
   // a "plan" that's only a polite reply (greetings, small talk) is conversation, not a task: keep the call open
