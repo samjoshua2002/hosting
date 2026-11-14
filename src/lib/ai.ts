@@ -33,7 +33,8 @@ const key = () => process.env.AZURE_OPENAI_API_KEY ?? "";
 
 export const agentModel = () => process.env.AZURE_OPENAI_AGENT_MODEL || "gpt-5.6-luna";
 export const fastModel = () => process.env.AZURE_OPENAI_FAST_MODEL || "gpt-5.4-mini";
-const fallbacks = () => ["gpt-5.1", process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o", "gpt-4o"];
+// quality first: when a call fails, try the other deployments of the top model before stepping down (never gpt-4o)
+const fallbacks = () => ["gpt-5.6-luna-2", "gpt-5.6-luna-3", "gpt-5.1"];
 
 let deploymentCache: { at: number; list: Deployment[] } | null = null;
 
