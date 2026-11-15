@@ -49,3 +49,6 @@ tokens.txt
 # Vercel import file (contains secrets)
 vercel.env
 servers.txt
+
+# personal notes
+/docs/oracle-free-tier-signup.md
