@@ -587,35 +587,26 @@ function SkillsView({ scope, q, onOpenCustomSkill }: { scope: "yours" | "discove
     return (
       <div className="space-y-6">
         <div>
-          <div className="mb-3 flex items-center justify-between">
+          <div className="mb-3">
             <p className="text-[15px] font-medium text-white">
               Custom Skills (SKILL.md) <span className="ml-1 rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11.5px] text-zinc-400">{customSkills.length}</span>
             </p>
-            {onOpenCustomSkill && (
-              <button
-                onClick={onOpenCustomSkill}
-                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-xs font-medium text-zinc-200 transition-colors hover:border-white/25 hover:bg-white/[0.08] hover:text-white"
-              >
-                <Plus className="size-3" /> New Custom Skill
-              </button>
-            )}
           </div>
           {customSkills.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-white/10 p-4 text-center">
-              <p className="text-xs text-zinc-400">No custom skills created yet.</p>
-              <p className="mt-1 text-[11px] text-zinc-500">Upload a SKILL.md or paste custom playbook instructions for the Assistant to follow.</p>
-              {onOpenCustomSkill && (
-                <button onClick={onOpenCustomSkill} className="mt-2 text-xs text-accent-soft hover:underline">
-                  + Upload or write SKILL.md
-                </button>
-              )}
-            </div>
+            <button
+              type="button"
+              onClick={onOpenCustomSkill}
+              className="w-full rounded-xl border border-dashed border-white/10 p-5 text-center transition-colors hover:border-white/25 hover:bg-white/[0.02]"
+            >
+              <p className="text-xs font-medium text-zinc-300">No custom skills created yet</p>
+              <p className="mt-1 text-[11.5px] text-zinc-500">Click to upload a SKILL.md or write custom playbook instructions</p>
+            </button>
           ) : (
             <div className="divide-y divide-white/[0.05] rounded-xl border border-white/[0.06] bg-panel">
               {customSkills
                 .filter((h) => m(`${h.name} ${h.description}`))
                 .map((h) => (
-                  <div key={h.slug} className="flex items-center gap-3 px-4 py-3">
+                  <div key={h.slug} className="flex items-center justify-between gap-3 px-4 py-3">
                     <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-emerald-500/10 text-emerald-400 font-mono text-xs">
                       MD
                     </span>
@@ -630,7 +621,10 @@ function SkillsView({ scope, q, onOpenCustomSkill }: { scope: "yours" | "discove
                         /{h.slug} · {h.description}
                       </p>
                     </div>
-                    <button onClick={() => void act(h.slug, { remove: h.slug })} className="text-[12px] text-zinc-500 hover:text-[var(--critical-text)]">
+                    <button
+                      onClick={() => void act(h.slug, { remove: h.slug })}
+                      className="flex h-7 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] px-2.5 text-[11.5px] font-medium text-zinc-400 transition-colors hover:border-[var(--critical-border)] hover:bg-[var(--critical-bg)] hover:text-[var(--critical-text)]"
+                    >
                       {busy === h.slug ? "Removing…" : "Remove"}
                     </button>
                   </div>
@@ -666,7 +660,7 @@ function SkillsView({ scope, q, onOpenCustomSkill }: { scope: "yours" | "discove
               {hubSkills
                 .filter((h) => m(`${h.name} ${h.description}`))
                 .map((h) => (
-                  <div key={h.slug} className="flex items-center gap-3 px-4 py-3">
+                  <div key={h.slug} className="flex items-center justify-between gap-3 px-4 py-3">
                     <div className="min-w-0 flex-1">
                       <p className="text-[13.5px] text-zinc-100">{h.name}</p>
                       <p className="truncate text-[12px] text-zinc-500">
@@ -674,7 +668,10 @@ function SkillsView({ scope, q, onOpenCustomSkill }: { scope: "yours" | "discove
                         {h.aiVerdict ? ` · security review ${h.aiVerdict}` : ""} · {h.description}
                       </p>
                     </div>
-                    <button onClick={() => void act(h.slug, { remove: h.slug })} className="text-[12px] text-zinc-500 hover:text-[var(--critical-text)]">
+                    <button
+                      onClick={() => void act(h.slug, { remove: h.slug })}
+                      className="flex h-7 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] px-2.5 text-[11.5px] font-medium text-zinc-400 transition-colors hover:border-[var(--critical-border)] hover:bg-[var(--critical-bg)] hover:text-[var(--critical-text)]"
+                    >
                       {busy === h.slug ? "Removing…" : "Remove"}
                     </button>
                   </div>
