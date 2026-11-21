@@ -168,7 +168,7 @@ export async function mirrorStore(fleetOk: string[]): Promise<StoreCopy | null> 
   const target = candidates.find((s) => s.copy?.from === src.name) ?? candidates[0];
   const tvm = getVm(target.vm)!;
 
-  const tar = await withVm(src, (c) => run(c, `tar czf - -C "$HOME/.hosting" --exclude='store/.mirror' --exclude='*.tmp.*' store | base64 -w0`, { timeoutMs: 120_000, maxBytes: 80 * 1024 * 1024 }));
+  const tar = await withVm(src, (c) => run(c, `tar czf - -C "$HOME/.hosting" --exclude='store/.mirror' --exclude='*.tmp.*' store | base64 -w0`, { timeoutMs: 120_000, maxBytes: 512 * 1024 * 1024 }));
   if (tar.code !== 0 || tar.truncated) throw new Error(`couldn't read the data on ${src.name}: ${tar.stderr.trim().slice(0, 160) || "too large"}`);
   const copy: StoreCopy = { vm: tvm.name, at: Date.now(), from: src.name };
   const meta = Buffer.from(JSON.stringify(copy)).toString("base64");
