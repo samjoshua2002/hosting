@@ -1,7 +1,7 @@
 "use client";
 
 // Settings → Customize, like Claude's: Connectors / Skills / MCP, each with Yours and Discover, search and Add.
-import { Check, ChevronDown, ExternalLink, Loader2, MoreHorizontal, Plus, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, ExternalLink, FileUp, Loader2, MoreHorizontal, Plus, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/client";
@@ -71,6 +71,7 @@ export function Customize() {
   const [scope, setScope] = useState<"yours" | "discover">("discover");
   const [q, setQ] = useState("");
   const [addOpen, setAddOpen] = useState(false);
+  const [customSkillOpen, setCustomSkillOpen] = useState(false);
   return (
     <div>
       <div className="flex flex-wrap items-center gap-3">
@@ -109,12 +110,13 @@ export function Customize() {
           {addOpen && (
             <>
               <button className="fixed inset-0 z-30 cursor-default" aria-label="Close" onClick={() => setAddOpen(false)} />
-              <div className="absolute top-10 right-0 z-40 w-60 overflow-hidden rounded-xl border border-white/[0.09] bg-pop py-1.5 shadow-2xl shadow-black/60">
+              <div className="absolute top-10 right-0 z-40 w-64 overflow-hidden rounded-xl border border-white/[0.09] bg-pop py-1.5 shadow-2xl shadow-black/60">
                 {(
                   [
-                    ["Connector from the catalog", () => (setTab("connectors"), setScope("discover"))],
-                    ["Skill from skills-hub.ai", () => (setTab("skills"), setScope("discover"))],
+                    ["Upload or write Skill (SKILL.md)…", () => setCustomSkillOpen(true)],
+                    ["Discover skills on skills-hub.ai", () => (setTab("skills"), setScope("discover"))],
                     ["Custom MCP server…", () => setTab("mcp")],
+                    ["Connector from the catalog", () => (setTab("connectors"), setScope("discover"))],
                   ] as [string, () => void][]
                 ).map(([label, go]) => (
                   <button
@@ -135,7 +137,7 @@ export function Customize() {
       </div>
       <div className="mt-6">
         {tab === "connectors" && <ConnectorsView scope={scope} q={q} onDiscover={() => setScope("discover")} />}
-        {tab === "skills" && <SkillsView scope={scope} q={q} />}
+        {tab === "skills" && <SkillsView scope={scope} q={q} onOpenCustomSkill={() => setCustomSkillOpen(true)} />}
         {tab === "mcp" && (
           <div className="max-w-2xl">
             <p className="mb-3 text-sm text-zinc-400">Any remote MCP server (Streamable HTTP). Its tools become the Assistant&apos;s; anything that changes things outside this platform asks first.</p>
@@ -143,6 +145,15 @@ export function Customize() {
           </div>
         )}
       </div>
+      {customSkillOpen && (
+        <CustomSkillDialog
+          onClose={() => setCustomSkillOpen(false)}
+          onSaved={() => {
+            setTab("skills");
+            setScope("yours");
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -531,7 +542,7 @@ interface SkillList {
   installed: { slug: string; name: string; description: string; author: string; aiVerdict: string | null }[];
 }
 
-function SkillsView({ scope, q }: { scope: "yours" | "discover"; q: string }) {
+function SkillsView({ scope, q, onOpenCustomSkill }: { scope: "yours" | "discover"; q: string; onOpenCustomSkill?: () => void }) {
   const [mine, setMine] = useState<SkillList | null>(null);
   const [hub, setHub] = useState<HubResult[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -570,8 +581,64 @@ function SkillsView({ scope, q }: { scope: "yours" | "discover"; q: string }) {
   if (scope === "yours") {
     if (!mine) return <p className="text-sm text-zinc-500">Loading…</p>;
     const m = (t: string) => !q || t.toLowerCase().includes(q.toLowerCase());
+    const customSkills = mine.installed.filter((h) => h.author === "You" || h.aiVerdict === "CUSTOM");
+    const hubSkills = mine.installed.filter((h) => h.author !== "You" && h.aiVerdict !== "CUSTOM");
+
     return (
       <div className="space-y-6">
+        <div>
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-[15px] font-medium text-white">
+              Custom Skills (SKILL.md) <span className="ml-1 rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11.5px] text-zinc-400">{customSkills.length}</span>
+            </p>
+            {onOpenCustomSkill && (
+              <button
+                onClick={onOpenCustomSkill}
+                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-xs font-medium text-zinc-200 transition-colors hover:border-white/25 hover:bg-white/[0.08] hover:text-white"
+              >
+                <Plus className="size-3" /> New Custom Skill
+              </button>
+            )}
+          </div>
+          {customSkills.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-white/10 p-4 text-center">
+              <p className="text-xs text-zinc-400">No custom skills created yet.</p>
+              <p className="mt-1 text-[11px] text-zinc-500">Upload a SKILL.md or paste custom playbook instructions for the Assistant to follow.</p>
+              {onOpenCustomSkill && (
+                <button onClick={onOpenCustomSkill} className="mt-2 text-xs text-accent-soft hover:underline">
+                  + Upload or write SKILL.md
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="divide-y divide-white/[0.05] rounded-xl border border-white/[0.06] bg-panel">
+              {customSkills
+                .filter((h) => m(`${h.name} ${h.description}`))
+                .map((h) => (
+                  <div key={h.slug} className="flex items-center gap-3 px-4 py-3">
+                    <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-emerald-500/10 text-emerald-400 font-mono text-xs">
+                      MD
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="text-[13.5px] font-medium text-zinc-100">{h.name}</p>
+                        <span className="rounded bg-emerald-500/10 px-1.5 py-0.2 text-[9.5px] font-medium text-emerald-400">
+                          Custom Playbook
+                        </span>
+                      </div>
+                      <p className="truncate text-[12px] text-zinc-500">
+                        /{h.slug} · {h.description}
+                      </p>
+                    </div>
+                    <button onClick={() => void act(h.slug, { remove: h.slug })} className="text-[12px] text-zinc-500 hover:text-[var(--critical-text)]">
+                      {busy === h.slug ? "Removing…" : "Remove"}
+                    </button>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+
         <div>
           <p className="mb-3 text-[15px] font-medium text-white">
             Built in <span className="ml-1 rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11.5px] text-zinc-400">{mine.builtIn.length}</span>
@@ -587,15 +654,16 @@ function SkillsView({ scope, q }: { scope: "yours" | "discover"; q: string }) {
               ))}
           </div>
         </div>
+
         <div>
           <p className="mb-3 text-[15px] font-medium text-white">
-            From skills-hub.ai <span className="ml-1 rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11.5px] text-zinc-400">{mine.installed.length}</span>
+            From skills-hub.ai <span className="ml-1 rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11.5px] text-zinc-400">{hubSkills.length}</span>
           </p>
-          {mine.installed.length === 0 ? (
+          {hubSkills.length === 0 ? (
             <p className="text-sm text-zinc-500">None yet. Use Discover to add one, or the Assistant installs them when a task needs one (you approve).</p>
           ) : (
             <div className="divide-y divide-white/[0.05] rounded-xl border border-white/[0.06] bg-panel">
-              {mine.installed
+              {hubSkills
                 .filter((h) => m(`${h.name} ${h.description}`))
                 .map((h) => (
                   <div key={h.slug} className="flex items-center gap-3 px-4 py-3">
@@ -663,6 +731,156 @@ function SkillsView({ scope, q }: { scope: "yours" | "discover"; q: string }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------------- custom skill modal ---------------- */
+
+function CustomSkillDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [desc, setDesc] = useState("");
+  const [content, setContent] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const text = String(evt.target?.result || "");
+      setContent(text);
+      const fm = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
+      let foundName = "";
+      let foundDesc = "";
+      let foundSlug = "";
+      if (fm) {
+        for (const line of fm[1].split(/\r?\n/)) {
+          const [k, ...rest] = line.split(":");
+          if (!k || !rest.length) continue;
+          const key = k.trim().toLowerCase();
+          const val = rest.join(":").trim().replace(/^['"]|['"]$/g, "");
+          if (key === "name") foundName = val;
+          else if (key === "description" || key === "desc") foundDesc = val;
+          else if (key === "slug" || key === "id") foundSlug = val;
+        }
+      }
+      setName(foundName || f.name.replace(/\.(md|markdown|txt)$/i, ""));
+      setSlug((foundSlug || foundName || f.name.replace(/\.(md|markdown|txt)$/i, "")).toLowerCase().replace(/[^a-z0-9-]/g, "-"));
+      if (foundDesc) setDesc(foundDesc);
+    };
+    reader.readAsText(f);
+  };
+
+  const save = async () => {
+    if (!content.trim()) {
+      setErr("Skill content / markdown is required");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      await api("/api/skills", {
+        custom: {
+          name: name.trim() || undefined,
+          slug: slug.trim() || undefined,
+          description: desc.trim() || undefined,
+          content,
+        },
+      });
+      onSaved();
+      onClose();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-xl rounded-2xl border border-white/[0.09] bg-panel p-5 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
+          <div>
+            <h3 className="text-base font-semibold text-white">Add Custom Skill (SKILL.md)</h3>
+            <p className="text-xs text-zinc-400">Upload a SKILL.md file or write custom playbook instructions</p>
+          </div>
+          <button onClick={onClose} className="rounded-lg p-1 text-zinc-400 hover:bg-white/[0.06] hover:text-white">
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-3">
+          <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-white/15 bg-white/[0.02] p-4 text-center transition-colors hover:border-white/30 hover:bg-white/[0.04]">
+            <FileUp className="mb-1 size-5 text-zinc-400" />
+            <span className="text-xs font-medium text-zinc-200">Click to upload SKILL.md</span>
+            <span className="text-[11px] text-zinc-500">or drag and drop your markdown file</span>
+            <input type="file" accept=".md,.markdown,.txt" onChange={onFile} className="hidden" />
+          </label>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="mb-1 block text-[11px] font-medium text-zinc-400">Skill Name</label>
+              <input
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  if (!slug) setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"));
+                }}
+                placeholder="e.g. Next.js Migration"
+                className="w-full rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-xs text-white placeholder:text-zinc-600 outline-none focus:border-white/20"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-medium text-zinc-400">Slug / ID</label>
+              <input
+                value={slug}
+                onChange={(e) => setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+                placeholder="e.g. nextjs-migration"
+                className="w-full rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 font-mono text-xs text-white placeholder:text-zinc-600 outline-none focus:border-white/20"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[11px] font-medium text-zinc-400">When to use (Description)</label>
+            <input
+              value={desc}
+              onChange={(e) => setDesc(e.target.value)}
+              placeholder="e.g. When migrating Prisma schemas and deploying updates"
+              className="w-full rounded-lg border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-xs text-white placeholder:text-zinc-600 outline-none focus:border-white/20"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-[11px] font-medium text-zinc-400">Playbook Instructions (Markdown)</label>
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              rows={9}
+              placeholder={`# Instructions\n\n1. Check database connectivity\n2. Run migration script\n3. Verify health endpoint...`}
+              className="w-full rounded-lg border border-white/[0.08] bg-black/50 p-2.5 font-mono text-[11.5px] leading-relaxed text-zinc-200 outline-none focus:border-white/20"
+            />
+          </div>
+
+          {err && <p className="text-xs text-[var(--critical-text)]">{err}</p>}
+
+          <div className="flex justify-end gap-2 border-t border-white/[0.06] pt-2">
+            <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-xs font-medium text-zinc-400 hover:text-white">
+              Cancel
+            </button>
+            <button
+              disabled={busy || !content.trim()}
+              onClick={save}
+              className="flex items-center gap-1.5 rounded-lg bg-white px-3.5 py-1.5 text-xs font-medium text-black hover:bg-white/90 disabled:opacity-50"
+            >
+              {busy && <Loader2 className="size-3 animate-spin" />} Save Skill
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

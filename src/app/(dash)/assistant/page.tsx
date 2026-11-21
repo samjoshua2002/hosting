@@ -133,6 +133,27 @@ export default function AssistantPage() {
   const scroller = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
   const [unseen, setUnseen] = useState(false);
+  const [autoContinue, setAutoContinue] = useState(true);
+  const [countdown, setCountdown] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (doc.paused && !busy && autoContinue) {
+      setCountdown(2);
+      const iv = setInterval(() => {
+        setCountdown((c) => {
+          if (c === null || c <= 1) {
+            clearInterval(iv);
+            void send(sid, { message: "Continue." });
+            return null;
+          }
+          return c - 1;
+        });
+      }, 1000);
+      return () => clearInterval(iv);
+    } else {
+      setCountdown(null);
+    }
+  }, [doc.paused, busy, autoContinue, sid]);
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
@@ -533,11 +554,30 @@ export default function AssistantPage() {
               </p>
             )}
             {doc.paused && !busy && (
-              <div className="flex items-center gap-3 text-sm text-muted">
-                Paused to stay within the time limit.
-                <Button size="sm" variant="primary" onClick={() => void send(sid, { message: "Continue." })}>
-                  Continue
-                </Button>
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/10 bg-panel p-3.5 shadow-lg">
+                <div className="flex items-center gap-2.5">
+                  <Loader2 className="size-4 animate-spin text-[var(--accent)]" />
+                  <div>
+                    <p className="text-xs font-semibold text-white">
+                      {autoContinue && countdown !== null
+                        ? `Long operation in progress: auto-continuing in ${countdown}s…`
+                        : "Paused to stay within the serverless time budget."}
+                    </p>
+                    <p className="text-[11px] text-zinc-400">
+                      Multi-step generation continues automatically so you don&apos;t have to prompt it manually.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {autoContinue && countdown !== null && (
+                    <Button size="sm" variant="ghost" onClick={() => setAutoContinue(false)}>
+                      Pause
+                    </Button>
+                  )}
+                  <Button size="sm" variant="primary" onClick={() => void send(sid, { message: "Continue." })}>
+                    Continue Now
+                  </Button>
+                </div>
               </div>
             )}
             {suggestions.length > 0 && (

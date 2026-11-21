@@ -288,6 +288,15 @@ export function decide(id: string, callId: string, ok: boolean) {
   }
 }
 
+/** Approve or decline all pending actions in one shot. */
+export function decideAll(id: string, ok: boolean) {
+  updateItems(id, (x) => x.map((i) => (i.kind === "approval" && i.decision === undefined ? { ...i, decision: ok } : i)));
+  const next = getDoc(id).items;
+  const approvals: Record<string, boolean> = {};
+  for (const i of next) if (i.kind === "approval" && i.decision !== undefined) approvals[i.id] = i.decision;
+  void send(id, { approvals });
+}
+
 export function answer(id: string, callId: string, text: string) {
   updateItems(id, (x) => x.map((i) => (i.kind === "question" && i.id === callId ? { ...i, answer: text } : i)));
   void send(id, { answers: { [callId]: text } });

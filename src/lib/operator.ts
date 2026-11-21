@@ -42,8 +42,8 @@ import { skill, skillIndex, SKILLS } from "./skills";
 import { asGuidance, installedSkill, installedSkills, installSkill, removeSkill, searchHub } from "./skill-hub";
 import { moveProject } from "./failover";
 import { importZip } from "./zip-import";
-import { callTool, mcpSummary, serverTools, toolIndex } from "./mcp";
-import { callConnector, connectorSummary } from "./connectors";
+import { addServer, callTool, exportUniversalConfig, importUniversalConfig, listServers, mcpSummary, removeServer, serverTools, setEnabled, toolIndex } from "./mcp";
+import { callConnector, connectorStates, connectorSummary, connectToken, disconnect } from "./connectors";
 import { gatherAttachments } from "./documents";
 import { mailboxConnectorId, mailboxSummary, pickMailbox, readEmail, saveDraft, searchEmail, sendEmail } from "./mailboxes";
 import { DEFAULT_PREFERENCES, getPreferences, preferenceRules } from "./preferences";
@@ -233,6 +233,15 @@ You are the brain of this platform
 - Skills (playbooks, load with load_skill):
 \${SKILLS_INDEX}
 - skills-hub.ai: when a task needs specialist know-how none of these cover (a framework, a platform, an audit type), find_skills there, pick the safest fitting one (trusted author, PASS review, most installs), install_skill it (the user approves), then load_skill it. Skills written for Claude Code or a laptop are ideas to adapt to your tools, not commands to follow literally.
+
+MCP and service connectors
+- You have full authority to manage MCP servers (manage_mcp) and third-party service connectors (manage_connector). When the user asks to add, connect, disconnect, import, export, or list an MCP server or connector, execute it directly with your tools. Never say you cannot interact with their MCP or cannot configure dashboard settings.
+- Universal MCP configuration: You maintain a universal mcpServers configuration. We support both remote Streamable HTTP/SSE servers (e.g. Context7, HuggingFace, GitHub, custom endpoints with headers/tokens) and local/VM stdio commands (e.g. 'npx shadcn@latest mcp', 'npx @figma/mcp', or any command with args and env, executed over SSH on connected fleet machines like box1).
+- Autonomous tool awareness & routing: Pick the right MCP tool automatically for whatever task the user presents:
+  * Design & UI tokens/components: use Figma MCP tools (e.g. figma/get_file, figma/get_components) or shadcn MCP. If Figma is not yet connected, you can add it via manage_mcp or import it into the universal config with the user's FIGMA_ACCESS_TOKEN.
+  * Live library docs & API lookups: use context7 tools (context7/query-docs, context7/resolve-symbol).
+  * GitHub repo analysis & pull requests: use github-mcp or deepwiki tools.
+  * If the user supplies an mcpServers config snippet (from Claude Desktop, Cursor, or VS Code), immediately import it with manage_mcp { action: 'import_config', config: <parsed JSON> }.
 
 Using the services (they are your tools, not just things to install)
 - If a task needs a service that isn't installed (automation, storage, monitoring, dashboards, local AI), install it yourself with add_service (placement is automatic), wait for it, then use it. Reuse an existing one when there is one.
@@ -462,6 +471,16 @@ const TOOLS: ToolDef[] = [
     ["connector", "method", "path"],
   ),
   fn(
+    "manage_connector",
+    "Connect, disconnect, or list third-party service connectors (Vercel, Render, Netlify, Cloudflare, Supabase, Neon, Sentry, Slack, Discord, Telegram, Resend, Notion, Linear, Stripe, Langfuse, etc.). action: 'connect' (needs id and token), 'disconnect' (needs id), 'list' (shows status of every connector).",
+    {
+      action: { type: "string", enum: ["connect", "disconnect", "list"] },
+      id: { type: "string", description: "connector id, e.g. vercel, sentry, slack, linear, langfuse" },
+      token: { type: "string", description: "API token or secret key" },
+    },
+    ["action"],
+  ),
+  fn(
     "email",
     "Use the user's connected email accounts (Gmail, Zoho Mail, IMAP; see Email accounts in the instructions). accounts: list them. search: recent messages in a folder (INBOX by default), filter by text/from/unseen. read: one message by uid. draft: save a draft in the account's Drafts folder (preferred when the user says draft). send: send now (waits for the user's approval). account is an email address or part of one; omit it to use the first account. Write complete, well-formatted emails in the user's voice; never invent facts.",
     {
@@ -499,6 +518,23 @@ const TOOLS: ToolDef[] = [
     "Call a tool on a connected MCP server (docs lookup, repo Q&A, model search, GitHub actions…) with arguments matching its input schema. Tools that change things outside this platform wait for the user's approval.",
     { server: { type: "string" }, tool: { type: "string" }, arguments: { type: "object" } },
     ["server", "tool"],
+  ),
+  fn(
+    "manage_mcp",
+    "Add, remove, toggle, list, import_config, or export_config MCP servers connected to the platform. action: 'add' (name, url or command like 'npx shadcn@latest mcp'; optional token, custom header or headers map), 'remove' (name), 'toggle' (name, enabled: true/false), 'list' (shows all MCP servers and their tools), 'import_config' (config: mcpServers JSON object or string), 'export_config' (returns current mcpServers universal JSON config).",
+    {
+      action: { type: "string", enum: ["add", "remove", "toggle", "list", "import_config", "export_config"] },
+      name: { type: "string", description: "lowercase letters, digits and dashes" },
+      url: { type: "string", description: "https MCP server endpoint URL or command string" },
+      command: { type: "string", description: "executable command for stdio MCP (e.g. npx, uvx, node)" },
+      args: { type: "array", items: { type: "string" }, description: "command arguments for stdio MCP" },
+      env: { type: "object", description: "environment variables for stdio MCP" },
+      token: { type: "string", description: "optional bearer token, custom header ('X-Api-Key: val'), or headers JSON" },
+      headers: { type: "object", description: "optional custom HTTP headers key-value map" },
+      enabled: { type: "boolean" },
+      config: { type: "object", description: "universal mcpServers JSON configuration to import" },
+    },
+    ["action"],
   ),
   fn(
     "screenshot",
@@ -779,6 +815,15 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       const read = m === "GET" || graphRead;
       return { label: `${str(a.connector)}: ${m} ${clip(str(a.path), 80)}`, needsApproval: !read, detail: a.body ? JSON.stringify(a.body, null, 2).slice(0, 3000) : "", readOnly: read };
     }
+    case "manage_connector": {
+      const act = str(a.action);
+      return {
+        label: act === "connect" ? `Connect service ${str(a.id)}` : act === "disconnect" ? `Disconnect service ${str(a.id)}` : "Listed connectors",
+        needsApproval: act === "disconnect",
+        detail: "",
+        readOnly: act === "list",
+      };
+    }
     case "email": {
       const act = str(a.action);
       const who = str(a.account) ? ` (${str(a.account)})` : "";
@@ -809,6 +854,15 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       const t = toolIndex.get(`${str(a.server)}/${str(a.tool)}`);
       const writes = t?.destructive === true || (!t?.readOnly && /(^|_|-)(create|update|delete|remove|write|send|post|push|merge|close|comment|publish|deploy|pay|transfer|run|exec)/i.test(str(a.tool)));
       return { label: `${str(a.server)}: ${str(a.tool)}`, needsApproval: writes, detail: a.arguments ? JSON.stringify(a.arguments, null, 2).slice(0, 3000) : "", readOnly: !writes };
+    }
+    case "manage_mcp": {
+      const act = str(a.action);
+      return {
+        label: act === "add" ? `Add MCP server ${str(a.name)} (${str(a.url) || str(a.command)})` : act === "remove" ? `Remove MCP server ${str(a.name)}` : act === "toggle" ? `${a.enabled ? "Enable" : "Disable"} MCP server ${str(a.name)}` : act === "import_config" ? "Import MCP config" : act === "export_config" ? "Export MCP config" : "Listed MCP servers",
+        needsApproval: act === "remove",
+        detail: act === "add" ? `Endpoint/Command: ${str(a.url) || str(a.command)}` : "",
+        readOnly: act === "list" || act === "export_config",
+      };
     }
     case "share_file":
       return { label: `Shared ${clip(str(a.path), 80)} from ${str(a.vm)}`, needsApproval: false, detail: "", readOnly: true };
@@ -1146,6 +1200,29 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
           return { ok: false, output: (e as Error).message };
         }
       }
+      case "manage_connector": {
+        try {
+          const act = str(a.action);
+          if (act === "connect") {
+            const state = await connectToken(str(a.id), str(a.token));
+            return { ok: true, output: `Connected ${state.id} (${state.account || "account verified"}).` };
+          }
+          if (act === "disconnect") {
+            await disconnect(str(a.id));
+            return { ok: true, output: `Disconnected connector ${str(a.id)}.` };
+          }
+          if (act === "list") {
+            const states = await connectorStates();
+            return {
+              ok: true,
+              output: states.map((s) => `- ${s.id}: ${s.connected ? `Connected (${s.account || s.detail || "active"})` : "Not connected"}`).join("\n"),
+            };
+          }
+          return { ok: false, output: "action must be connect, disconnect, or list" };
+        } catch (e) {
+          return { ok: false, output: (e as Error).message };
+        }
+      }
       case "email": {
         try {
           const act = str(a.action);
@@ -1180,6 +1257,67 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
           return { ok: r.ok, output: r.text };
         } catch (e) {
           return { ok: false, output: `${str(a.server)}/${str(a.tool)} failed: ${(e as Error).message}` };
+        }
+      }
+      case "manage_mcp": {
+        try {
+          const act = str(a.action);
+          if (act === "import_config") {
+            const cfg = a.config || (a.token ? JSON.parse(str(a.token)) : null);
+            if (!cfg) return { ok: false, output: "config is required for action: import_config" };
+            const servers = await importUniversalConfig(cfg);
+            return {
+              ok: true,
+              output: `Imported MCP configuration successfully. ${servers.length} server(s) active:\n${servers.map((s) => `- ${s.name} (${s.transport || "http"}): ${s.url} [${s.tools.length} tools]`).join("\n")}`,
+            };
+          }
+          if (act === "export_config") {
+            const cfg = await exportUniversalConfig();
+            return {
+              ok: true,
+              output: JSON.stringify(cfg, null, 2),
+            };
+          }
+          if (act === "add") {
+            let authVal = str(a.token) || undefined;
+            if (a.headers && typeof a.headers === "object") {
+              authVal = JSON.stringify(a.headers);
+            }
+            const s = await addServer(
+              str(a.name).toLowerCase(),
+              str(a.url) || str(a.command),
+              authVal,
+              {
+                transport: str(a.command) ? "stdio" : (a.transport === "stdio" ? "stdio" : undefined),
+                command: str(a.command) || undefined,
+                args: Array.isArray(a.args) ? a.args.map(String) : undefined,
+                env: a.env && typeof a.env === "object" ? (a.env as Record<string, string>) : undefined,
+              },
+            );
+            return {
+              ok: true,
+              output: `Added MCP server "${s.name}" (${s.transport || "http"}) with ${s.tools.length} tools from ${s.url}.${s.error ? ` Warning: ${s.error}` : ""}\nTools available:\n${s.tools.map((t) => `- ${t.name}: ${t.description}`).join("\n")}`,
+            };
+          }
+          if (act === "remove") {
+            await removeServer(str(a.name).toLowerCase());
+            return { ok: true, output: `Removed MCP server "${str(a.name)}".` };
+          }
+          if (act === "toggle") {
+            await setEnabled(str(a.name).toLowerCase(), a.enabled !== false);
+            return { ok: true, output: `${a.enabled !== false ? "Enabled" : "Disabled"} MCP server "${str(a.name)}".` };
+          }
+          if (act === "list") {
+            const servers = await listServers();
+            if (!servers.length) return { ok: true, output: "No MCP servers configured." };
+            return {
+              ok: true,
+              output: servers.map((s) => `- ${s.name} (${s.transport || "http"}, ${s.enabled ? "enabled" : "disabled"}): ${s.url} [${s.tools.length} tools${s.error ? `, error: ${s.error}` : ""}]`).join("\n"),
+            };
+          }
+          return { ok: false, output: "action must be add, remove, toggle, list, import_config, or export_config" };
+        } catch (e) {
+          return { ok: false, output: (e as Error).message };
         }
       }
       case "import_zip": {
@@ -1672,6 +1810,10 @@ function toolTag(call: ToolCall): string {
       return `mcp:${str(a.server)}/${str(a.tool)}`;
     case "mcp_tools":
       return `mcp:${str(a.server)}`;
+    case "manage_mcp":
+      return `mcp-manage:${str(a.action)}`;
+    case "manage_connector":
+      return `connector-manage:${str(a.action)}`;
     case "connector_api":
       return `connector:${str(a.connector)}`;
     case "email":

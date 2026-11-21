@@ -4,7 +4,7 @@ import { Archive, AudioLines, Check, ChevronRight, Download, Eye, FileCode2, Fil
 import { useMemo, useState } from "react";
 import type { Item } from "@/lib/assistant-items";
 import { useStored } from "@/lib/client";
-import { answer, decide } from "./assistant-store";
+import { answer, decide, decideAll } from "./assistant-store";
 import { ArtifactCard } from "./artifact-view";
 import { DiffView, TerminalBlock } from "./chat-blocks";
 import { FlowDiagram } from "./flow-diagram";
@@ -54,8 +54,37 @@ export function ChatItems({
       else blocks.push({ kind: "steps", steps: [it], key: `g${idx}` });
     } else blocks.push({ kind: "one", item: it, key: `i${idx}` });
   });
+
+  const pendingApprovals = useMemo(
+    () => items.filter((i): i is Extract<Item, { kind: "approval" }> => i.kind === "approval" && i.decision === undefined),
+    [items],
+  );
+
   return (
     <div className={compact ? "space-y-2" : "space-y-3"}>
+      {pendingApprovals.length > 1 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--warning)]/40 bg-[var(--warning)]/10 p-3.5 shadow-lg">
+          <div className="flex items-center gap-2.5">
+            <ShieldAlert className="size-4 shrink-0 text-[var(--warning)]" />
+            <div>
+              <p className="text-xs font-semibold text-white">
+                {pendingApprovals.length} actions waiting for your approval
+              </p>
+              <p className="text-[11px] text-zinc-400">
+                Approve all actions at once to let the Assistant proceed without pausing
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="primary" onClick={() => decideAll(sid, true)} disabled={busy}>
+              <Check className="size-3.5" /> Approve All ({pendingApprovals.length})
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => decideAll(sid, false)} disabled={busy}>
+              <X className="size-3.5" /> Decline All
+            </Button>
+          </div>
+        </div>
+      )}
       {blocks.map((b) =>
         b.kind === "steps" ? (
           <div key={b.key} data-motion>
