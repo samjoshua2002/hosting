@@ -48,7 +48,7 @@ export const CATALOG: ServiceTemplate[] = [
     env: {
       // behind the HTTPS link: trust the proxy's scheme, install plugins without FTP, room for page builders
       WP_EXTRA:
-        "if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strpos($_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false) { $_SERVER['HTTPS'] = 'on'; } define('FS_METHOD', 'direct'); define('WP_MEMORY_LIMIT', '256M');",
+        "if (!isset($_SERVER['HTTPS']) || $_SERVER['HTTPS'] !== 'on') { if ((isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strpos($_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false) || !empty($_SERVER['HTTP_X_FORWARDED_SSL']) || (isset($_SERVER['HTTP_HOST']) && strpos($_SERVER['HTTP_HOST'], 'instabox.tech') !== false)) { $_SERVER['HTTPS'] = 'on'; $_SERVER['SERVER_PORT'] = 443; } } define('FS_METHOD', 'direct'); define('WP_MEMORY_LIMIT', '256M');",
     },
     connects: { engines: ["mysql"] },
     login: { userEnv: "WP_ADMIN_USER", passEnv: "WP_ADMIN_PASSWORD", note: "Sign in at the link + /wp-admin. The Assistant creates this login when it sets the site up." },

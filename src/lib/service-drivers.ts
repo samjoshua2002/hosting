@@ -374,6 +374,7 @@ else
   WP core install --url="$SITE" --title=${shq(title)} --admin_user="$WP_ADMIN_USER" --admin_password="$WP_ADMIN_PASSWORD" --admin_email=${shq(email)} --skip-email || exit 1
 fi
 WP option update home "$SITE" >/dev/null && WP option update siteurl "$SITE" >/dev/null
+case "$SITE" in https://*) grep -q "HTTPS.*on" "$HOME/data/$S/wp-config.php" || sed -i '/<?php/a if (!isset($_SERVER["HTTPS"]) || $_SERVER["HTTPS"] !== "on") { $_SERVER["HTTPS"] = "on"; $_SERVER["SERVER_PORT"] = 443; }' "$HOME/data/$S/wp-config.php" ;; esac
 WP rewrite structure '/%postname%/' --hard >/dev/null 2>&1; WP rewrite flush --hard >/dev/null 2>&1
 echo "site: $SITE"; echo "admin: $SITE/wp-admin (user and password on the Services page)"; WP core version | sed 's/^/WordPress /'`;
     },
