@@ -1,4 +1,4 @@
-import { Boxes, FolderGit2, LayoutDashboard, MessagesSquare, Server, Settings, ShieldCheck, SquareTerminal, Workflow, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Boxes, FolderGit2, LayoutDashboard, MessagesSquare, Server, Settings, ShieldCheck, SquareTerminal, Workflow, type LucideIcon } from "lucide-react";
 
 export interface NavItem {
   href: string;
@@ -22,6 +22,7 @@ export const NAV: { title: string; items: NavItem[] }[] = [
     items: [
       { href: "/assistant", label: "Assistant", icon: MessagesSquare },
       { href: "/run", label: "Run", icon: SquareTerminal },
+      { href: "/failures", label: "Failure log", icon: AlertTriangle },
     ],
   },
   {

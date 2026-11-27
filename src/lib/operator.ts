@@ -1,6 +1,7 @@
 // The Assistant: an operator that does the work on the fleet, end to end.
 // It runs commands, starts and watches background jobs, deploys and manages projects, and connects machines
 // to the database machine. Only destructive actions pause for the user's approval; then it carries on.
+import { markPaused, recordModelError, recordPlan, recordStop, recordToolResult, withFailureLog } from "./failure-log";
 import { recordSpan, traceOutput, withTrace } from "./telemetry";
 import { chat, describeImage, type ChatMessage, type ToolCall, type ToolDef } from "./ai";
 import type { ArtifactType, DiagramEdge, DiagramNode, OperatorEvent, Shell } from "./assistant-items";
@@ -1833,13 +1834,23 @@ function toolTag(call: ToolCall): string {
 async function traced(call: ToolCall, run: () => Promise<{ ok: boolean; output: string }>): Promise<{ ok: boolean; output: string }> {
   const t0 = new Date();
   let r: { ok: boolean; output: string };
+  const label = () => {
+    try {
+      return describe(call).label;
+    } catch {
+      return call.function.name;
+    }
+  };
   try {
     r = await run();
   } catch (e) {
     recordSpan({ name: toolTag(call), input: call.function.arguments, startTime: t0, error: (e as Error).message, metadata: { tool: call.function.name } });
+    recordToolResult({ tool: toolTag(call), label: label(), args: call.function.arguments, ok: false, crashed: true, output: (e as Error).message });
     throw e;
   }
   recordSpan({ name: toolTag(call), input: call.function.arguments, output: r.output, startTime: t0, error: r.ok ? undefined : r.output.slice(0, 300), metadata: { tool: call.function.name } });
+  // the failure log keeps every failed action (with its arguments) so stuck spots can be found and fixed
+  if (!r.ok) recordToolResult({ tool: toolTag(call), label: label(), args: call.function.arguments, ok: false, output: r.output });
   return r;
 }
 
@@ -1860,6 +1871,7 @@ function plan(call: ToolCall, emit: (e: OperatorEvent) => void): string {
   if (!steps.length) return "No steps given.";
   const id = `plan-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40)}`;
   emit({ type: "plan", id, title, steps });
+  recordPlan(title, steps);
   const doing = steps.find((x: { status: string }) => x.status === "doing");
   return `Plan shown (${steps.filter((x: { status: string }) => x.status === "done").length}/${steps.length} done${doing ? `, now: ${doing.text}` : ""}). Keep it updated as you go.`;
 }
@@ -1916,6 +1928,7 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
   let last = "";
   const watch = (e: OperatorEvent) => {
     if (e.type === "text") last = e.content;
+    if (e.type === "done" && (e.waiting || e.paused || signal.aborted)) markPaused();
     emit(e);
   };
   await withTrace(
@@ -1928,7 +1941,8 @@ export async function runOperator(input: OperatorInput, emit: (e: OperatorEvent)
     },
     async () => {
       try {
-        await runOperatorInner(input, watch, signal);
+        // every failure in this run (tool errors, loops, crashes, unfinished plans) goes to the failure log
+        await withFailureLog({ sessionId: input.sessionId, model: input.model ?? "default" }, () => runOperatorInner(input, watch, signal));
       } finally {
         traceOutput(last);
       }
@@ -2010,7 +2024,13 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
       emit({ type: "done", transcript: messages, waiting: false, paused: true });
       return;
     }
-    const res = await chat({ model: input.model, messages: compact(messages), tools: TOOLS, maxTokens: 4000, timeoutMs: 90_000 });
+    let res: Awaited<ReturnType<typeof chat>>;
+    try {
+      res = await chat({ model: input.model, messages: compact(messages), tools: TOOLS, maxTokens: 4000, timeoutMs: 90_000 });
+    } catch (e) {
+      if (!signal.aborted) recordModelError(`Round ${round + 1}: ${(e as Error).message}`);
+      throw e;
+    }
     const msg = res.message;
     messages.push({ role: "assistant", content: msg.content ?? null, tool_calls: msg.tool_calls });
     if (msg.content?.trim()) emit({ type: "text", content: msg.content });
@@ -2089,6 +2109,7 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
       emit({ type: "done", transcript: messages, waiting: true, paused: false });
       return;
     }
+    if (round === 39 && !signal.aborted) recordStop("round_limit", "Used all 40 rounds and was still calling tools: the task did not finish.");
   }
   emit({ type: "done", transcript: messages, waiting: false, paused: false });
 }
