@@ -3,9 +3,9 @@
 // to the database machine. Only destructive actions pause for the user's approval; then it carries on.
 import { knownFailureSpots, markPaused, openPlanSteps, recordModelError, recordPlan, recordStop, recordToolResult, takeStuck, withFailureLog } from "./failure-log";
 import { searchStackOverflow } from "./stackoverflow";
-import { captureSite, compareSites } from "./site-capture";
+import { captureSite, compareSites, snapshotSite } from "./site-capture";
 import { cached, markChanged, remember as rememberResult } from "./tool-cache";
-import { createFromTemplate, importAssets } from "./github";
+import { commitFiles, createFromTemplate, importAssets } from "./github";
 import { cloneTemplateSkill } from "./clone-template";
 import { continueFrom, listVersions, saveVersion, switchVersion } from "./versions";
 import { recordSpan, traceOutput, withTrace } from "./telemetry";
@@ -311,6 +311,18 @@ export function toolCatalog(): { name: string; description: string }[] {
 }
 
 const TOOLS: ToolDef[] = [
+  fn(
+    "snapshot_site",
+    "The fastest way to a near-identical clone: open the original pages in a real browser and save them exactly as drawn (the rendered HTML with all CSS, fonts downloaded, images from the original, no scripts) into a repo made from the cloner template, at public/snapshot/<route>/index.html, and set next.config.ts to serve each snapshot at its route. Deploy or push and the clone looks like the original. Up to 8 pages per call (url + pages). Interactive parts (menus, tabs, carousels) are frozen until those sections are rebuilt as components.",
+    {
+      url: { type: "string", description: "the original home page (or first page)" },
+      pages: { type: "array", items: { type: "string" }, description: "more pages of the same site, up to 7" },
+      repo: { type: "string", description: "owner/name of the clone repo (from create_repo_from_template)" },
+      branch: { type: "string", description: "default: the repo's default branch" },
+      own_site: { type: "boolean", description: "true only when the user said the site is theirs (no 'recreation for study' badge)" },
+    },
+    ["url", "repo"],
+  ),
   fn(
     "capture_site",
     "Open a website in a real browser (scrolls it so lazy content loads) and capture in ONE call everything needed to rebuild it: every section in order (headings, text, buttons, links, images with sizes, columns, backgrounds), design tokens (fonts and font links, colours, text sizes, radii, CSS variables), nav, footer, forms, the site's other pages, and desktop + mobile screenshots it looks at for you. Use it to clone or study a site instead of reading pages with curl. pages: up to 4 more URLs of the same site to capture in the same call.",
@@ -989,6 +1001,8 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `${a.disconnect ? "Disconnected" : "Connected"} ${str(a.from)} ${a.disconnect ? "from" : "→"} ${str(a.to)}`, needsApproval: false, detail: "" };
     case "github_repos":
       return { label: a.repo ? `Inspected GitHub repo ${str(a.repo)}` : "Listed GitHub repos", needsApproval: false, detail: "" };
+    case "snapshot_site":
+      return { label: `Snapshot of ${str(a.url).replace(/^https?:\/\//, "").slice(0, 50)}${Array.isArray(a.pages) && a.pages.length ? ` and ${a.pages.length} more page${a.pages.length === 1 ? "" : "s"}` : ""} into ${str(a.repo)}`, needsApproval: false, detail: "" };
     case "capture_site":
       return { label: `Captured ${str(a.url).replace(/^https?:\/\//, "").slice(0, 60)}${Array.isArray(a.pages) && a.pages.length ? ` and ${a.pages.length} more page${a.pages.length === 1 ? "" : "s"}` : ""}`, needsApproval: false, detail: "" };
     case "compare_sites":
@@ -1022,7 +1036,7 @@ async function execute(call: ToolCall, ctx: { sessionId?: string; connectorsOff?
   const real: ToolCall = { ...call, function: { ...call.function, arguments: await revealIn(call.function.arguments || "{}", true) } };
   const r = await executeRaw(real, ctx);
   // the user's pages may look different now: screenshots and comparisons of them are taken fresh
-  if (r.ok && /^(repo_commit|deploy_project|import_assets|project_versions|project_action|import_zip|add_service|use_service)$/.test(call.function.name)) await markChanged(ctx.sessionId);
+  if (r.ok && /^(repo_commit|deploy_project|import_assets|snapshot_site|project_versions|project_action|import_zip|add_service|use_service)$/.test(call.function.name)) await markChanged(ctx.sessionId);
   // a pasted/attached .env read here is vaulted too, then anything known is masked
   // a pasted/attached .env is vaulted; the capture files the Assistant saved itself are not (their long hex asset names looked like secrets)
   let out = call.function.name === "read_attachment" && !/^site-(capture|assets|svgs)-/.test(r.output) ? await vaultText(r.output) : r.output;
@@ -1090,6 +1104,8 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
         const r = await importAssets(str(a.repo), str(a.branch) || undefined, urls, str(a.dir) || "public/assets");
         return { ok: r.saved.length > 0, output: r.summary };
       }
+      case "snapshot_site":
+        return snapshotTool(a);
       case "search_stackoverflow":
         return { ok: true, output: await searchStackOverflow(str(a.query), { tags: str(a.tags) || undefined }) };
       case "fleet_status": {
@@ -1892,6 +1908,81 @@ async function existingBranch(repo: string, asked: string): Promise<string> {
   if (!asked || asked === def) return def;
   const bs = await listBranches(repo).catch(() => null);
   return !bs || bs.some((b) => b.name === asked) ? asked : def;
+}
+
+/** The next.config.ts that serves the snapshots; null when the file was customised (the model then edits it itself). */
+function snapshotConfig(current: string | null, routes: string[]): string | null {
+  const known = current?.match(/const SNAPSHOT_ROUTES[^=]*=\s*(\[[^\]]*\])/);
+  let keep: string[] = [];
+  if (known) {
+    try {
+      keep = JSON.parse(known[1].replace(/'/g, '"').replace(/,\s*\]/, "]")) as string[];
+    } catch {
+      keep = [];
+    }
+  } else if (current && !/^\s*import type \{ NextConfig \} from "next";\s*const nextConfig: NextConfig = \{\s*(\/\*[^*]*\*\/\s*)?output: "standalone",?\s*\};\s*export default nextConfig;\s*$/.test(current)) return null;
+  const all = [...new Set([...keep, ...routes])].sort((x, y) => (x === "/" ? -1 : y === "/" ? 1 : x.localeCompare(y)));
+  return `import type { NextConfig } from "next";
+
+// Pages snapshotted from the original site (public/snapshot/<route>/index.html) are served as they are at their routes.
+// When a route is rebuilt as a real page (src/app/<route>/page.tsx), remove it from this list.
+const SNAPSHOT_ROUTES: string[] = ${JSON.stringify(all)};
+
+const nextConfig: NextConfig = {
+  output: "standalone",
+  async rewrites() {
+    return {
+      beforeFiles: SNAPSHOT_ROUTES.map((r) => ({ source: r, destination: \`/snapshot\${r === "/" ? "" : r}/index.html\` })),
+      afterFiles: [],
+      fallback: [],
+    };
+  },
+};
+
+export default nextConfig;
+`;
+}
+
+/** snapshot_site: the original pages as drawn, into the clone repo, served at their routes. */
+async function snapshotTool(a: Args): Promise<{ ok: boolean; output: string }> {
+  const url = fullUrl(str(a.url));
+  const repo = str(a.repo);
+  if (!okUrl(url)) return { ok: false, output: "url must be a full http(s) link" };
+  if (!REPO_RE.test(repo)) return { ok: false, output: "repo must look like owner/name (make one with create_repo_from_template first)" };
+  const pages = (Array.isArray(a.pages) ? a.pages : []).map((p) => fullUrl(str(p))).filter(okUrl).slice(0, 7);
+  const branch = await existingBranch(repo, str(a.branch));
+  const vm = await browserVm();
+  if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
+  const snap = await snapshotSite(vm, url, pages);
+  const done = snap.pages.filter((p) => p.html);
+  if (!done.length) return { ok: false, output: `Couldn't snapshot ${url}: ${snap.fatal || snap.pages.map((p) => `${p.url}: ${p.error ?? `HTTP ${p.status}`}`).join("; ")}` };
+  const host = new URL(url).hostname.replace(/^www\./, "");
+  const badge = `<div style="position:fixed;right:8px;bottom:8px;z-index:2147483647;font:11px/1.4 system-ui,sans-serif;color:#fff;background:rgba(0,0,0,.55);padding:3px 8px;border-radius:6px;pointer-events:none">Recreation of ${host} for study. Not affiliated.</div>`;
+  const files: { path: string; data: Buffer }[] = [];
+  const routes: string[] = [];
+  for (const p of done) {
+    const route = (new URL(p.url).pathname.replace(/\/+$/, "") || "/").replace(/[^A-Za-z0-9/_.-]/g, "-");
+    routes.push(route);
+    let html = p.html!;
+    if (a.own_site !== true) html = html.includes("</body>") ? html.replace(/<\/body>(?![\s\S]*<\/body>)/, `${badge}</body>`) : html + badge;
+    files.push({ path: `public/snapshot${route === "/" ? "" : route}/index.html`, data: Buffer.from(html, "utf8") });
+  }
+  for (const f of snap.fonts) files.push({ path: `public/snapshot/_fonts/${f.name}`, data: Buffer.from(f.b64, "base64") });
+  const config = snapshotConfig(await readRepoFile(repo, branch, "next.config.ts").catch(() => null), routes);
+  if (config) files.push({ path: "next.config.ts", data: Buffer.from(config, "utf8") });
+  const c = await commitFiles(repo, branch, files, `Snapshot of ${host}: ${routes.join(", ")}`);
+  const kb = Math.round(files.reduce((n, f) => n + f.data.length, 0) / 1024);
+  return {
+    ok: true,
+    output: [
+      `Committed the snapshot to ${repo}@${branch} (${files.length} files, ${kb} KB): ${c.url}`,
+      ...done.map((p, i) => `- ${p.url} -> route ${routes[i]}`),
+      ...snap.pages.filter((p) => !p.html).map((p) => `- not captured: ${p.url} (${p.error ?? `HTTP ${p.status}`})`),
+      `Fonts: ${snap.fonts.map((f) => f.name).join(", ") || "none needed"}.`,
+      config ? "next.config.ts now serves each snapshot at its route (SNAPSHOT_ROUTES)." : "next.config.ts was customised, so it wasn't changed: add rewrites from each route to /snapshot/<route>/index.html yourself.",
+      "Next: deploy (or let auto-deploy pick up the push), then compare_sites each route against the original; expect 85+. Rebuild a route as components only when asked for clean code, removing it from SNAPSHOT_ROUTES and comparing again (never below the snapshot's score).",
+    ].join("\n"),
+  };
 }
 
 /** When a branch doesn't exist, say which ones do (a template repo may use master, a new repo may be empty). */

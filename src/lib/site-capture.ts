@@ -78,6 +78,50 @@ async function tour(browser, url) {
   return frames;
 }
 
+// the rendered page as static HTML: CSS rules added from JavaScript written out, canvases as images, no scripts
+function freeze() {
+  const abs = (u) => { try { return new URL(u, document.baseURI).href; } catch { return u; } };
+  // CSS-in-JS (styled-components, emotion, Framer…) inserts rules through the CSSOM, so <style> looks empty in the HTML
+  for (const sh of document.styleSheets) {
+    try {
+      const n = sh.ownerNode;
+      if (n && n.tagName === "STYLE") {
+        const txt = [...sh.cssRules].map((r) => r.cssText).join("\n");
+        if (txt.length > (n.textContent || "").length) n.textContent = txt;
+      }
+    } catch {}
+  }
+  let adopted = "";
+  try { adopted = [...(document.adoptedStyleSheets || [])].map((sh) => [...sh.cssRules].map((r) => r.cssText).join("\n")).join("\n"); } catch {}
+  const canvases = [...document.querySelectorAll("canvas")].map((c) => { try { return c.toDataURL("image/png"); } catch { return ""; } });
+  const root = document.documentElement.cloneNode(true);
+  root.querySelectorAll("canvas").forEach((c, i) => {
+    if (!canvases[i]) return;
+    const img = document.createElement("img");
+    img.src = canvases[i];
+    img.setAttribute("style", (c.getAttribute("style") || "") + ";max-width:100%");
+    if (c.className) img.setAttribute("class", c.getAttribute("class"));
+    c.replaceWith(img);
+  });
+  root.querySelectorAll("script, noscript, link[rel=preload], link[rel=prefetch], link[rel=modulepreload], link[rel=dns-prefetch], link[rel=preconnect], base").forEach((e) => e.remove());
+  root.querySelectorAll("[src]").forEach((e) => { const v = e.getAttribute("src"); if (v && !v.startsWith("data:")) e.setAttribute("src", abs(v)); });
+  root.querySelectorAll("[srcset]").forEach((e) => e.setAttribute("srcset", (e.getAttribute("srcset") || "").split(",").map((p) => { const [u, ...r] = p.trim().split(/\s+/); return [abs(u), ...r].join(" "); }).join(", ")));
+  root.querySelectorAll("img[loading]").forEach((e) => e.removeAttribute("loading"));
+  root.querySelectorAll("a[href]").forEach((e) => { const v = e.getAttribute("href"); if (v && !/^(#|mailto:|tel:|javascript:)/i.test(v)) e.setAttribute("href", abs(v)); });
+  root.querySelectorAll("[style]").forEach((e) => e.setAttribute("style", (e.getAttribute("style") || "").replace(/url\(\s*["']?([^"')]+)["']?\s*\)/g, (m, x) => (x.startsWith("data:") ? m : 'url("' + abs(x) + '")'))));
+  const links = [];
+  root.querySelectorAll('link[rel~="stylesheet"]').forEach((l) => {
+    const href = abs(l.getAttribute("href") || "");
+    if (!href) return l.remove();
+    links.push(href);
+    l.replaceWith(document.createComment("snap:" + href));
+  });
+  const head = root.querySelector("head");
+  if (head && adopted) { const st = document.createElement("style"); st.textContent = adopted; head.appendChild(st); }
+  if (head && !head.querySelector("meta[charset]")) { const m = document.createElement("meta"); m.setAttribute("charset", "utf-8"); head.prepend(m); }
+  return { html: "<!doctype html>\n" + root.outerHTML, links };
+}
+
 // everything a rebuild needs, read from the live DOM and computed styles
 function extract() {
   const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
@@ -252,6 +296,47 @@ function extract() {
         out.subpages.push({ url: u, status: s.status, error: s.error, spec, shot: top.shots[0] });
         await s.p.close();
       }
+    } else if (mode === "snapshot") {
+      // the page exactly as the browser drew it: rendered DOM + all CSS (incl. CSS-in-JS rules) + fonts, no scripts
+      const list = [A, ...(B ? JSON.parse(Buffer.from(B, "base64").toString()) : [])].slice(0, 8);
+      const origin = new URL(A).origin;
+      out.pages = [];
+      const fonts = new Map();
+      for (const u of list) {
+        const d = await open(browser, u, 1440, 900);
+        const got = await d.p.evaluate(freeze).catch((e) => ({ error: String(e.message || e) }));
+        await d.p.close();
+        if (got.error) { out.pages.push({ url: u, status: d.status, error: got.error }); continue; }
+        let html = got.html;
+        // stylesheets the page links to: fetched and inlined, their url() made absolute (fonts kept for download)
+        for (const href of got.links) {
+          let css = "";
+          try { const r = await fetch(href, { headers: { "User-Agent": UA } }); css = r.ok ? await r.text() : ""; } catch {}
+          css = css.replace(/url\(\s*["']?([^"')]+)["']?\s*\)/g, (m, x) => {
+            if (/^data:/.test(x)) return m;
+            let abs; try { abs = new URL(x, href).href; } catch { return m; }
+            if (/\.(woff2?|ttf|otf)(\?|#|$)/i.test(abs)) { const name = abs.split("/").pop().split(/[?#]/)[0].replace(/[^A-Za-z0-9._-]/g, "_"); fonts.set(abs, name); return 'url("/snapshot/_fonts/' + name + '")'; }
+            return 'url("' + abs + '")';
+          });
+          html = html.split('data-snap-link="' + href + '"').join('data-snap-inlined="1"');
+          html = html.replace('<!--snap:' + href + '-->', "<style>" + css.replace(/<\/style/gi, "<\\/style") + "</style>");
+        }
+        // fonts referenced from inline <style> blocks
+        html = html.replace(/url\(\s*["']?([^"')]+\.(?:woff2?|ttf|otf)(?:\?[^"')]*)?)["']?\s*\)/gi, (m, x) => {
+          if (/^\/snapshot\//.test(x) || /^data:/.test(x)) return m;
+          let abs; try { abs = new URL(x, u).href; } catch { return m; }
+          const name = abs.split("/").pop().split(/[?#]/)[0].replace(/[^A-Za-z0-9._-]/g, "_"); fonts.set(abs, name);
+          return 'url("/snapshot/_fonts/' + name + '")';
+        });
+        // links inside the same site stay inside the snapshot
+        html = html.split('href="' + origin + '/').join('href="/').split('href="' + origin + '"').join('href="/"');
+        out.pages.push({ url: u, status: d.status, html });
+      }
+      out.fonts = [];
+      for (const [abs, name] of fonts) {
+        try { const r = await fetch(abs, { headers: { "User-Agent": UA, Referer: A } }); if (r.ok) out.fonts.push({ url: abs, name, b64: Buffer.from(await r.arrayBuffer()).toString("base64") }); } catch {}
+        if (out.fonts.length >= 30) break;
+      }
     } else if (mode === "compare") {
       const pair = [];
       for (const u of [A, B]) { const d = await open(browser, u, 1440, 900); pair.push({ url: u, status: d.status, error: d.error, ...(await shots(d.p, 1440, 4, 1200)) }); await d.p.close(); }
@@ -313,6 +398,18 @@ export interface Capture {
 /** Open url (and up to 4 more pages of the same site) in a real browser and capture everything a rebuild needs. */
 export async function captureSite(vm: VmConfig, url: string, pages: string[] = []): Promise<Capture> {
   return (await runScript(vm, ["capture", url, Buffer.from(JSON.stringify(pages.slice(0, 4))).toString("base64")])) as Capture;
+}
+
+export interface Snapshot {
+  pages: { url: string; status?: number; error?: string; html?: string }[];
+  fonts: { url: string; name: string; b64: string }[];
+  fatal?: string;
+}
+
+/** The pages exactly as the browser draws them (static HTML with all CSS, fonts downloaded), up to 8 pages of one site. */
+export async function snapshotSite(vm: VmConfig, url: string, pages: string[] = []): Promise<Snapshot> {
+  const r = (await runScript(vm, ["snapshot", url, Buffer.from(JSON.stringify(pages.slice(0, 7))).toString("base64")])) as Partial<Snapshot>;
+  return { pages: r.pages ?? [], fonts: r.fonts ?? [], fatal: r.fatal };
 }
 
 /** Screenshot two sites at the same size and put them side by side (original left, clone right), in bands. */

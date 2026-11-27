@@ -711,3 +711,38 @@ export async function createFromTemplate(template: string, name: string, isPriva
   }
   return { repo: made.full_name, branch, url: made.html_url };
 }
+
+/**
+ * Commit files (text or binary) in one commit on an existing branch, through Git blobs; retried on top of the new
+ * head if the branch moved meanwhile. Used for site snapshots (large HTML files and fonts).
+ */
+export async function commitFiles(repo: string, branch: string, files: { path: string; data: Buffer }[], message: string): Promise<{ sha: string; url: string }> {
+  if (!REPO_RE.test(repo)) throw new Error("repo must look like owner/name");
+  const token = await githubToken();
+  const head = await refSha(token, repo, branch);
+  if (!head) throw new Error(`branch ${branch} has no commits yet: commit the project first`);
+  const tree: { path: string; mode: string; type: string; sha: string }[] = [];
+  for (const f of files) {
+    if (!f.path || f.path.split("/").some((s) => s === ".." || s === ".") || f.path.startsWith(".git/")) throw new Error(`bad path ${f.path}`);
+    const b = await call(token, `/repos/${repo}/git/blobs`, { method: "POST", body: JSON.stringify({ content: f.data.toString("base64"), encoding: "base64" }) });
+    if (!b.ok) throw new Error(`GitHub blob for ${f.path} failed (${b.status}): ${(await b.text()).slice(0, 160)}`);
+    tree.push({ path: f.path, mode: "100644", type: "blob", sha: ((await b.json()) as { sha: string }).sha });
+  }
+  let parent = head;
+  for (let attempt = 0; ; attempt++) {
+    const base = (await (await call(token, `/repos/${repo}/git/commits/${parent}`)).json()) as { tree: { sha: string } };
+    const t = await call(token, `/repos/${repo}/git/trees`, { method: "POST", body: JSON.stringify({ base_tree: base.tree.sha, tree }) });
+    if (!t.ok) throw new Error(`GitHub tree write failed (${t.status}): ${(await t.text()).slice(0, 200)}`);
+    const c = await call(token, `/repos/${repo}/git/commits`, { method: "POST", body: JSON.stringify({ message: message.slice(0, 2000), tree: ((await t.json()) as { sha: string }).sha, parents: [parent] }) });
+    if (!c.ok) throw new Error(`GitHub commit failed (${c.status})`);
+    const sha = ((await c.json()) as { sha: string }).sha;
+    const ref = await call(token, `/repos/${repo}/git/refs/heads/${branch}`, { method: "PATCH", body: JSON.stringify({ sha, force: false }) });
+    if (ref.ok) return { sha, url: `https://github.com/${repo}/commit/${sha}` };
+    const why = (await ref.text()).slice(0, 200);
+    if (ref.status === 422 && /fast forward/i.test(why) && attempt < 3) {
+      parent = (await refSha(token, repo, branch)) ?? parent;
+      continue;
+    }
+    throw new Error(`GitHub branch update failed (${ref.status}): ${why}`);
+  }
+}
