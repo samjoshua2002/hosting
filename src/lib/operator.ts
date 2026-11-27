@@ -1235,7 +1235,8 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
         }
         let github: { repo: string; private: boolean; autoDeploy: boolean } | undefined;
         let note = "";
-        if (ghName && (str(a.github_repo) || a.github_auto_deploy)) {
+        // any github.com repo (by name or URL) is linked, so private repos get the token for the clone
+        if (ghName && (str(a.github_repo) || a.github_auto_deploy || (REPO_RE.test(ghName) && (await githubAuth().catch(() => null))))) {
           if (!REPO_RE.test(ghName)) return { ok: false, output: "github_repo must look like owner/name" };
           if (!(await githubAuth())) return { ok: false, output: "GitHub is not connected. Ask the user to click Connect GitHub on the Projects page." };
           const info = await getRepo(ghName);

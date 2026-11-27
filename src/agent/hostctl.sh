@@ -357,6 +357,11 @@ cmd_deploy() {
   rm -f "$P/$n.gittoken"
   echo "==> deploying $n on $(hostname) at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if [ -n "$REPO" ]; then
+    # the project now points at a different repo: start from a fresh clone (the old folder's origin is the old repo)
+    if [ -d "$dir/.git" ] && [ "$(git -C "$dir" remote get-url origin 2>/dev/null)" != "$REPO" ]; then
+      echo "==> repository changed to $REPO: cloning fresh"
+      rm -rf "$dir"
+    fi
     if [ -d "$dir/.git" ]; then
       echo "==> git fetch origin $BRANCH"
       git -C "$dir" fetch --depth 1 origin "$BRANCH" && git -C "$dir" reset --hard FETCH_HEAD || die "git update failed"
