@@ -32,12 +32,12 @@ async function linksFor(name: string): Promise<{ url: string; up: boolean }[]> {
 }
 
 /**
- * GET /go/<project>: a short, readable link (hosting…/go/ollama) that forwards to the project's current link,
+ * GET /go/<project>[/any/path]: a short, readable link (hosting…/go/ollama) that forwards to the project's current link,
  * preferring a copy that's running. Private links (with a secret token) only forward for a signed-in user.
  */
-export async function GET(req: NextRequest, ctx: { params: Promise<{ name: string }> }): Promise<Response> {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ name: string; rest?: string[] }> }): Promise<Response> {
   await connection();
-  const { name } = await ctx.params;
+  const { name, rest } = await ctx.params;
   if (!PROJECT_NAME_RE.test(name)) return new Response("Not found", { status: 404 });
   const links = await linksFor(name);
   if (!links.length) return new Response(`${name} has no link right now (it may be starting or its machine is resting). Try again in a minute.`, { status: 404 });
@@ -48,5 +48,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ name: strin
     login.search = "";
     return Response.redirect(login, 307);
   }
-  return new Response(null, { status: 307, headers: { Location: target, "Cache-Control": "no-store" } });
+  // /go/<project>/pricing?x=1 → the same page on the project's link (its private token kept)
+  const to = new URL(target);
+  if (rest?.length) to.pathname = `${to.pathname.replace(/\/$/, "")}/${rest.map(encodeURIComponent).join("/")}`;
+  for (const [k, v] of req.nextUrl.searchParams) to.searchParams.set(k, v);
+  return new Response(null, { status: 307, headers: { Location: to.toString(), "Cache-Control": "no-store" } });
 }
