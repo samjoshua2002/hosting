@@ -109,13 +109,31 @@ export function useGlide(container: RefObject<HTMLElement | null>, pill: RefObje
         gsap.to(p, { autoAlpha: 0, duration: 0.2 });
         return;
       }
-      const b = box.getBoundingClientRect();
-      const r = el.getBoundingClientRect();
-      const to = { x: r.left - b.left, y: r.top - b.top + box.scrollTop, width: r.width, height: r.height };
+      const measure = () => {
+        const b = box.getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        return { x: r.left - b.left, y: r.top - b.top + box.scrollTop, width: r.width, height: r.height };
+      };
       const first = !placed.current;
       placed.current = true;
-      if (first || reduced()) gsap.set(p, { ...to, autoAlpha: 1 });
-      else gsap.to(p, { ...to, autoAlpha: 1, duration: 0.5, ease: EASE });
+      if (first || reduced()) gsap.set(p, { ...measure(), autoAlpha: 1 });
+      else gsap.to(p, { ...measure(), autoAlpha: 1, duration: 0.5, ease: EASE });
+      // the sidebar can change size after this (expanding from compact, fonts loading, a new nav item): follow it
+      // (it also fires once right away: skip that while the glide plays)
+      const since = Date.now();
+      const ro = new ResizeObserver(() => {
+        if (Date.now() - since < 600) return;
+        gsap.killTweensOf(p);
+        gsap.set(p, { ...measure(), autoAlpha: 1 });
+      });
+      ro.observe(box);
+      ro.observe(el);
+      // and once more after the glide, in case the layout settled while it played
+      const settle = setTimeout(() => gsap.set(p, { ...measure(), autoAlpha: 1 }), 650);
+      return () => {
+        ro.disconnect();
+        clearTimeout(settle);
+      };
     },
     { dependencies: [dep] },
   );

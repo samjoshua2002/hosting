@@ -55,6 +55,29 @@ async function shots(p, w, max, chunk) {
   return { height: H, shots: list };
 }
 
+// frames of a slow scroll from top to bottom, with a pause at each step so scroll animations play
+async function tour(browser, url) {
+  const p = await browser.newPage();
+  await p.setViewport({ width: 1440, height: 900, deviceScaleFactor: 0.5 });
+  await p.setUserAgent(UA);
+  try { await p.goto(url, { waitUntil: "networkidle2", timeout: 45000 }); } catch {}
+  await sleep(800);
+  const H = await p.evaluate(() => Math.min(document.documentElement.scrollHeight, 24000)).catch(() => 900);
+  const steps = Math.min(30, Math.max(6, Math.ceil(H / 450)));
+  const frames = [];
+  for (let i = 0; i <= steps; i++) {
+    const y = Math.round(((H - 900) * i) / steps);
+    await p.evaluate((yy) => window.scrollTo({ top: yy, behavior: "instant" }), Math.max(0, y)).catch(() => {});
+    await sleep(i === 0 ? 400 : 260);
+    try {
+      const buf = await p.screenshot({ type: "jpeg", quality: 60 });
+      frames.push(Buffer.from(buf).toString("base64"));
+    } catch { break; }
+  }
+  await p.close().catch(() => {});
+  return frames;
+}
+
 // everything a rebuild needs, read from the live DOM and computed styles
 function extract() {
   const clip = (s, n) => (s || "").replace(/\s+/g, " ").trim().slice(0, n);
@@ -216,6 +239,8 @@ function extract() {
       out.spec = await d.p.evaluate(extract);
       out.desktop = await shots(d.p, 1440, 8, 1600);
       await d.p.close();
+      // a scroll recording: the page as a visitor sees it, top to bottom (half size, ~30 frames), for the chat's player
+      out.tour = await tour(browser, A).catch(() => []);
       const m = await open(browser, A, 390, 844, true);
       out.mobile = await shots(m.p, 390, 3, 1400);
       await m.p.close();
@@ -281,6 +306,8 @@ export interface Capture {
   desktop?: { height: number; shots: Shot[] };
   mobile?: { height: number; shots: Shot[] };
   subpages?: { url: string; status?: number; error?: string; spec?: Record<string, unknown> | null; shot?: Shot }[];
+  /** scroll recording: base64 JPEG frames, top to bottom */
+  tour?: string[];
 }
 
 /** Open url (and up to 4 more pages of the same site) in a real browser and capture everything a rebuild needs. */

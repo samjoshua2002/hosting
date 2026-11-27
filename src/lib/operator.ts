@@ -2032,6 +2032,11 @@ async function doCapture(call: ToolCall, input: OperatorInput, emit: (e: Operato
   }
   for (const [i, b] of desk.slice(0, 2).entries()) await showShot(input, emit, `${call.id}-d${i}`, `${url.replace(/^https?:\/\//, "")} (desktop ${i + 1}/${desk.length})`, `capture-${host}-desktop-${i + 1}.jpg`, b, url, i === 0 ? look.slice(0, 600) : undefined);
   if (mob[0]) await showShot(input, emit, `${call.id}-m0`, `${url.replace(/^https?:\/\//, "")} (phone)`, `capture-${host}-phone.jpg`, mob[0], url);
+  // the scroll recording plays in the chat (and downloads as a GIF there)
+  if (cap.tour?.length && input.sessionId) {
+    const rec = await saveAttachment(input.sessionId, `recording-${host}.json`, "application/json", Buffer.from(JSON.stringify({ url, frames: cap.tour }))).catch(() => null);
+    if (rec) emit({ type: "recording", id: `${call.id}-rec`, title: `Scrolling through ${url.replace(/^https?:\/\//, "")}`, src: `/api/attachments?session=${input.sessionId}&id=${rec.id}`, frames: cap.tour.length, url });
+  }
   // SVG markup and the asset list go to their own attachments (read_attachment shows 20k characters at a time)
   type Spec = { svgs?: { w: number; h: number; y: number; label: string; svg: string }[]; assets?: { url: string; kind: string }[]; motion?: unknown };
   const strip = (sp: unknown) => {

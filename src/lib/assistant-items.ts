@@ -38,6 +38,8 @@ export type Item =
   | { kind: "artifact"; id: string; title: string; type: ArtifactType; language?: string; content: string; version: number }
   | { kind: "plan"; id: string; title: string; steps: PlanStep[] }
   | { kind: "image"; id: string; title: string; src: string; url?: string; caption?: string }
+  /** a scroll recording: frames (JPEG data in one JSON attachment), played like a video in the chat */
+  | { kind: "recording"; id: string; title: string; src: string; frames: number; url?: string }
   /** a file the Assistant brought into the chat (code, a zip of a project, a report): preview and download here */
   | { kind: "file"; id: string; name: string; size: number; note?: string };
 
@@ -62,6 +64,7 @@ export type OperatorEvent =
   | { type: "artifact"; id: string; title: string; artType: ArtifactType; language?: string; content: string }
   | { type: "plan"; id: string; title: string; steps: PlanStep[] }
   | { type: "image"; id: string; title: string; src: string; url?: string; caption?: string }
+  | { type: "recording"; id: string; title: string; src: string; frames: number; url?: string }
   | { type: "file"; id: string; name: string; size: number; note?: string }
   // transcript is the model-side history (ChatMessage[]), opaque to the UI
   | { type: "done"; transcript: unknown[]; waiting: boolean; paused: boolean };
@@ -84,6 +87,8 @@ export function applyEvent(items: Item[], e: OperatorEvent): Item[] {
       return [...items, { kind: "diagram", id: e.id, title: e.title, nodes: e.nodes, edges: e.edges }];
     case "image":
       return [...items, { kind: "image", id: e.id, title: e.title, src: e.src, url: e.url, caption: e.caption }];
+    case "recording":
+      return [...items, { kind: "recording", id: e.id, title: e.title, src: e.src, frames: e.frames, url: e.url }];
     case "plan": {
       // the same plan again updates the card in place, so progress reads like a checklist
       const at = items.findIndex((i) => i.kind === "plan" && i.id === e.id);

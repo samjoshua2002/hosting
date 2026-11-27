@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import type { Item } from "@/lib/assistant-items";
 import { useStored } from "@/lib/client";
 import { answer, currentDoc, decide, decideAll, useAssistant } from "./assistant-store";
+import { RecordingPlayer } from "./recording-player";
 import { ArtifactCard } from "./artifact-view";
 import { DiffView, TerminalBlock } from "./chat-blocks";
 import { FlowDiagram } from "./flow-diagram";
@@ -242,6 +243,7 @@ function Bubble({
         {item.caption && <p className="border-t border-white/[0.06] px-3 py-2 text-xs leading-relaxed text-zinc-400">{item.caption}</p>}
       </figure>
     );
+  if (item.kind === "recording") return <RecordingPlayer title={item.title} src={item.src} url={item.url} />;
   if (item.kind === "diagram") return <FlowDiagram title={item.title} nodes={item.nodes} edges={item.edges} />;
   if (item.kind === "artifact") return <ArtifactCard a={item} onOpen={() => onOpenArtifact?.(item.id)} />;
   if (item.kind === "file") {

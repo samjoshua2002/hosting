@@ -39,6 +39,11 @@ export interface FailureEntry {
 }
 
 const DIR = "assistant/failures";
+
+/** Long errors (build logs) keep their start and their end: the real failure is usually the last lines. */
+function headTail(text: string, head = 600, tail = 1800): string {
+  return text.length <= head + tail + 40 ? text : `${text.slice(0, head)}\n…(${text.length - head - tail} characters skipped)…\n${text.slice(-tail)}`;
+}
 const KEEP_DAYS = 90;
 const KEEP_MAX = 2000;
 
@@ -86,7 +91,7 @@ function write(state: RunState | undefined, e: Omit<FailureEntry, "id" | "at" | 
     model: state?.model,
     source: state?.source,
     ...e,
-    error: scrub(e.error || "unknown error", 2000),
+    error: headTail(scrub(e.error || "unknown error", 100_000)),
     args: e.args ? scrub(e.args, 1500) : undefined,
     plan: e.plan ?? plan,
   };
