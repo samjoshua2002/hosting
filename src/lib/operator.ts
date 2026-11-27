@@ -2347,13 +2347,16 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
   for (let round = 0; round < 40; round++) {
     if (round > 0) await input.onRound?.();
     if (signal.aborted) break;
-    if (Date.now() - started > BUDGET_MS) {
+    // the request has a hard 300 s limit: a model call must finish with ~30 s left for its tools, or the slice pauses (the server continues it)
+    const callBudget = Math.min(180_000, 285_000 - (Date.now() - started) - 30_000);
+    if (Date.now() - started > BUDGET_MS || callBudget < 60_000) {
       emit({ type: "done", transcript: messages, waiting: false, paused: true });
       return;
     }
     let res: Awaited<ReturnType<typeof chat>>;
     try {
-      res = await chat({ model: input.model, messages: compact(messages), tools: TOOLS, maxTokens: 4000, timeoutMs: 90_000 });
+      // big pages and files are written in one reply: 4000 tokens (~300 lines) made the model stub sections out and give up
+      res = await chat({ model: input.model, messages: compact(messages), tools: TOOLS, maxTokens: 16_000, timeoutMs: callBudget });
     } catch (e) {
       if (!signal.aborted) recordModelError(`Round ${round + 1}: ${(e as Error).message}`);
       throw e;
