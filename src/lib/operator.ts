@@ -1221,12 +1221,25 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
         const t = TYPES.find((x) => x === rawType);
         // GitHub: explicit github_repo, or a github.com URL in repo
         const ghName = str(a.github_repo) || repoFromUrl(str(a.repo)) || "";
+        let ghDefault = "";
+        // a branch that doesn't exist in that repo fails half way through the deploy: say so now, with what does exist
+        if (ghName && REPO_RE.test(ghName) && str(a.branch) && !/^v\d+$/.test(str(a.branch))) {
+          const bs = await listBranches(ghName).catch(() => null);
+          if (bs && !bs.some((b) => b.name === str(a.branch))) {
+            const d = (await getRepo(ghName).catch(() => null))?.defaultBranch;
+            return {
+              ok: false,
+              output: `Not deployed: branch "${str(a.branch)}" doesn't exist in ${ghName}${d ? ` (its default branch is "${d}"` : " ("}${bs.length ? `; branches: ${bs.map((b) => b.name).slice(0, 10).join(", ")})` : "; it has no commits yet)"}. If the code is in a different repo (e.g. a new one made from the template), pass github_repo with that repo and its branch.`,
+            };
+          }
+        }
         let github: { repo: string; private: boolean; autoDeploy: boolean } | undefined;
         let note = "";
         if (ghName && (str(a.github_repo) || a.github_auto_deploy)) {
           if (!REPO_RE.test(ghName)) return { ok: false, output: "github_repo must look like owner/name" };
           if (!(await githubAuth())) return { ok: false, output: "GitHub is not connected. Ask the user to click Connect GitHub on the Projects page." };
           const info = await getRepo(ghName);
+          ghDefault = info.defaultBranch;
           github = { repo: info.fullName, private: info.private, autoDeploy: a.github_auto_deploy === true };
           if (github.autoDeploy) {
             const url = webhookUrl("");
@@ -1237,7 +1250,7 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
         const input = {
           name,
           repo: str(a.repo) || (github ? `https://github.com/${github.repo}.git` : ""),
-          branch: str(a.branch) || "main",
+          branch: str(a.branch) || ghDefault || "main",
           install: str(a.install),
           build: str(a.build),
           start: str(a.start),

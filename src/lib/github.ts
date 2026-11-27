@@ -451,7 +451,8 @@ export async function planChanges(repo: string, branch: string, base: string | u
   const files: Plan["files"] = [];
   for (const c of changes) {
     const path = String(c.path ?? "").replace(/^\/+/, "");
-    if (!path || path.includes("..") || path.startsWith(".git/")) throw new Error(`bad path ${path}`);
+    // only a real ".." folder is unsafe: Next.js catch-all routes like [...slug] contain dots legitimately
+    if (!path || path.split("/").some((seg) => seg === ".." || seg === ".") || path.startsWith(".git/")) throw new Error(`bad path ${path}`);
     const before = readRef ? await file(token, repo, path.split("/").map(encodeURIComponent).join("/"), readRef) : null;
     let after: string | null;
     if (c.delete) after = null;

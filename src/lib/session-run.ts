@@ -144,7 +144,8 @@ async function continueOnServer(r: RunRequest): Promise<boolean> {
   if (!base) return false;
   const res = await fetch(`${base}/api/ai/continue`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-continue-token": continueToken() },
+    // the API checks Origin on every POST (CSRF): this call comes from the app itself
+    headers: { "Content-Type": "application/json", Origin: base, "x-continue-token": continueToken() },
     body: JSON.stringify({ session: r.sessionId, model: r.model, review: r.review, connectorsOff: r.connectorsOff }),
     signal: AbortSignal.timeout(20_000),
   });
