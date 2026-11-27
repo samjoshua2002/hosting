@@ -345,6 +345,11 @@ cmd_deploy() {
   local n=$1 dir state out flag link REPO="" BRANCH="main" INSTALL="" BUILD="" START="" PORT="" PUBLISH=0 ACCESS=public
   valid_name "$n" || die "invalid project name"
   [ -f "$P/$n.conf" ] || die "project $n is not configured on this VM"
+  # one deploy of a project at a time: two npm installs in one folder corrupt node_modules (ENOTEMPTY)
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$P/$n.deploy.lock"
+    flock -w 900 9 || die "another deploy of $n is still running"
+  fi
   . "$P/$n.conf"
   dir="$HOME/apps/$n"
   # Private GitHub repos: the dashboard drops a token here for this one deploy. Read it, delete it,

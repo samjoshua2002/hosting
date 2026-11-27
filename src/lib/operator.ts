@@ -1021,7 +1021,8 @@ async function execute(call: ToolCall, ctx: { sessionId?: string; connectorsOff?
   const real: ToolCall = { ...call, function: { ...call.function, arguments: await revealIn(call.function.arguments || "{}", true) } };
   const r = await executeRaw(real, ctx);
   // a pasted/attached .env read here is vaulted too, then anything known is masked
-  let out = call.function.name === "read_attachment" ? await vaultText(r.output) : r.output;
+  // a pasted/attached .env is vaulted; the capture files the Assistant saved itself are not (their long hex asset names looked like secrets)
+  let out = call.function.name === "read_attachment" && !/^site-(capture|assets|svgs)-/.test(r.output) ? await vaultText(r.output) : r.output;
   // the machines have no GitHub login: hand-run git on a private repo always fails this way
   if (!r.ok && /could not read Username for 'https:\/\/github\.com'|Authentication failed for 'https:\/\/github\.com|Repository not found/i.test(out))
     out += "\n[hint] The machines have no GitHub login, so git pull/clone of a private repo by hand fails. Don't retry it. To update a deployed project, commit with repo_commit (auto-deploy redeploys) or call deploy_project again for it: both fetch with the user's GitHub token. To inspect code, use repo_read/repo_files.";
@@ -1686,7 +1687,7 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
       }
       case "repo_files": {
         const repo = str(a.repo);
-        const branch = str(a.branch) || (await getRepo(repo)).defaultBranch;
+        const branch = await existingBranch(repo, str(a.branch));
         const t = await repoTree(repo, branch, str(a.path)).catch(async (e: Error) => {
           throw new Error(`${e.message}${await branchHint(repo, branch)}`);
         });
@@ -1694,7 +1695,7 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
       }
       case "repo_read": {
         const repo = str(a.repo);
-        const branch = str(a.branch) || (await getRepo(repo)).defaultBranch;
+        const branch = await existingBranch(repo, str(a.branch));
         const text = await readRepoFile(repo, branch, str(a.path));
         if (text === null) return { ok: false, output: `${str(a.path)} not found on ${branch}${await branchHint(repo, branch)}` };
         return { ok: true, output: clip(text, 30_000) };
@@ -1882,6 +1883,14 @@ async function shareFile(call: ToolCall, input: OperatorInput, emit: (e: Operato
   return { ok: true, output: `Shared ${name} (${Math.round(data.length / 1024)} KB) in the chat: the user can preview it and download it right there. Don't repeat a download link.` };
 }
 
+/** The branch to read: the one asked for if it exists, otherwise the repo's default (main vs master mix-ups). */
+async function existingBranch(repo: string, asked: string): Promise<string> {
+  const def = (await getRepo(repo)).defaultBranch;
+  if (!asked || asked === def) return def;
+  const bs = await listBranches(repo).catch(() => null);
+  return !bs || bs.some((b) => b.name === asked) ? asked : def;
+}
+
 /** When a branch doesn't exist, say which ones do (a template repo may use master, a new repo may be empty). */
 async function branchHint(repo: string, branch: string): Promise<string> {
   try {
@@ -1902,6 +1911,35 @@ async function browserVm(): Promise<VmConfig | undefined> {
 }
 
 const fullUrl = (u: string) => (u.startsWith("/go/") ? `${siteUrl()}${u}` : u.trim());
+
+/**
+ * A private project's link (its /go link or its raw address without the token) as a browser on the machines can open it:
+ * the project's stored token link plus the path. Returns the URL unchanged when it isn't one of our private projects.
+ */
+async function browsableUrl(u: string): Promise<string> {
+  let url: URL;
+  try {
+    url = new URL(fullUrl(u));
+  } catch {
+    return u;
+  }
+  const site = new URL(siteUrl());
+  const fleet = await mapLimit(getVms(), 12, (vm) => probe(vm, 9_999_999_999)).catch(() => []);
+  const projects = fleet.flatMap((s) => (s.ok && s.agent ? s.agent.projects : []));
+  let p: (typeof projects)[number] | undefined;
+  let rest = url.pathname;
+  if (url.host === site.host && url.pathname.startsWith("/go/")) {
+    const [, , name, ...more] = url.pathname.split("/");
+    p = projects.find((x) => x.manifest.name === name);
+    rest = `/${more.join("/")}`;
+  } else p = projects.find((x) => x.url && new URL(x.url).host === url.host);
+  if (!p?.url || !/[?&]_token=/.test(p.url)) return url.toString();
+  const t = new URL(p.url);
+  t.pathname = rest || "/";
+  for (const [k, v] of url.searchParams) t.searchParams.set(k, v);
+  return t.toString();
+}
+const hideToken = (s: string) => s.replace(/([?&]_token=)[^&\s"']+/g, "$1••••");
 const okUrl = (u: string) => /^https?:\/\/[^\s'"`$]+$/i.test(u);
 
 /** Save a screenshot to the session and show it in the chat. */
@@ -1922,9 +1960,11 @@ async function captureTool(call: ToolCall, input: OperatorInput, emit: (e: Opera
   const url = fullUrl(str(a.url));
   if (!okUrl(url)) return { ok: false, output: "url must be a full http(s) link" };
   const pages = (Array.isArray(a.pages) ? a.pages : []).map((p) => fullUrl(str(p))).filter(okUrl).slice(0, 4);
+  const openUrl = await browsableUrl(url);
+  const openPages = await Promise.all(pages.map(browsableUrl));
   const vm = await browserVm();
   if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
-  const cap = await captureSite(vm, url, pages);
+  const cap = await captureSite(vm, openUrl, openPages);
   if (!cap.spec) return { ok: false, output: `couldn't capture ${url} on ${vm.name}: ${cap.fatal || cap.error || "the page didn't load"}` };
   const host = url.replace(/^https?:\/\//, "").replace(/[^A-Za-z0-9.-]+/g, "-").slice(0, 50);
   const desk = (cap.desktop?.shots ?? []).map((s) => Buffer.from(s.b64, "base64"));
@@ -2002,7 +2042,9 @@ async function compareTool(call: ToolCall, input: OperatorInput, emit: (e: Opera
   if (!okUrl(original) || !okUrl(clone)) return { ok: false, output: "original and clone must be full http(s) links" };
   const vm = await browserVm();
   if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
-  const r = await compareSites(vm, original, clone);
+  // private clones open with their own token link (the browser on the machine isn't signed in to the dashboard)
+  const r = await compareSites(vm, await browsableUrl(original), await browsableUrl(clone));
+  r.meta = r.meta?.map((m) => ({ ...m, url: hideToken(m.url) }));
   const bands = (r.bands ?? []).map((b) => Buffer.from(b, "base64"));
   if (!bands.length) return { ok: false, output: `couldn't compare: ${r.fatal || JSON.stringify(r.meta ?? {})}` };
   let diff = "";

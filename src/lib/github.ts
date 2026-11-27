@@ -652,14 +652,25 @@ export async function importAssets(repo: string, branch: string | undefined, url
     }
     tree.push({ path: `${folder}/${g.name}`, mode: "100644", type: "blob", sha: ((await b.json()) as { sha: string }).sha });
   }
-  const base = (await (await call(token, `/repos/${repo}/git/commits/${head}`)).json()) as { tree: { sha: string } };
-  const t = await call(token, `/repos/${repo}/git/trees`, { method: "POST", body: JSON.stringify({ base_tree: base.tree.sha, tree }) });
-  if (!t.ok) throw new Error(`GitHub tree write failed (${t.status}): ${(await t.text()).slice(0, 200)}`);
-  const c = await call(token, `/repos/${repo}/git/commits`, { method: "POST", body: JSON.stringify({ message: `Add ${tree.length} assets to ${folder}`, tree: ((await t.json()) as { sha: string }).sha, parents: [head] }) });
-  if (!c.ok) throw new Error(`GitHub commit failed (${c.status})`);
-  const sha = ((await c.json()) as { sha: string }).sha;
-  const ref = await call(token, `/repos/${repo}/git/refs/heads/${br}`, { method: "PATCH", body: JSON.stringify({ sha, force: false }) });
-  if (!ref.ok) throw new Error(`GitHub branch update failed (${ref.status}): ${(await ref.text()).slice(0, 200)}`);
+  // someone else may commit meanwhile (another tool call, a deploy bot): rebuild on the new head and try again
+  let sha = "";
+  let parent = head;
+  for (let attempt = 0; ; attempt++) {
+    const base = (await (await call(token, `/repos/${repo}/git/commits/${parent}`)).json()) as { tree: { sha: string } };
+    const t = await call(token, `/repos/${repo}/git/trees`, { method: "POST", body: JSON.stringify({ base_tree: base.tree.sha, tree }) });
+    if (!t.ok) throw new Error(`GitHub tree write failed (${t.status}): ${(await t.text()).slice(0, 200)}`);
+    const c = await call(token, `/repos/${repo}/git/commits`, { method: "POST", body: JSON.stringify({ message: `Add ${tree.length} assets to ${folder}`, tree: ((await t.json()) as { sha: string }).sha, parents: [parent] }) });
+    if (!c.ok) throw new Error(`GitHub commit failed (${c.status})`);
+    sha = ((await c.json()) as { sha: string }).sha;
+    const ref = await call(token, `/repos/${repo}/git/refs/heads/${br}`, { method: "PATCH", body: JSON.stringify({ sha, force: false }) });
+    if (ref.ok) break;
+    const why = (await ref.text()).slice(0, 200);
+    if (ref.status === 422 && /fast forward/i.test(why) && attempt < 3) {
+      parent = (await refSha(token, repo, br)) ?? parent;
+      continue;
+    }
+    throw new Error(`GitHub branch update failed (${ref.status}): ${why}`);
+  }
   const web = (p: string) => (p.startsWith("public/") ? `/${p.slice("public/".length)}` : undefined);
   const saved = got.filter((g) => tree.some((x) => x.path === `${folder}/${g.name}`)).map((g) => ({ url: g.url, path: `${folder}/${g.name}`, web: web(`${folder}/${g.name}`) }));
   const summary = [
@@ -686,14 +697,17 @@ export async function createFromTemplate(template: string, name: string, isPriva
   const made = (await r.json()) as { full_name: string; default_branch?: string; html_url: string };
   const branch = made.default_branch || (await getRepo(template)).defaultBranch;
   let ready = false;
-  for (let i = 0; i < 20 && !ready; i++) {
+  for (let i = 0; i < 45 && !ready; i++) {
     ready = Boolean(await refSha(token, made.full_name, branch));
     if (!ready) await new Promise((res) => setTimeout(res, 2000));
   }
   // templates often still use "master": rename it to "main" so every tool and deploy agrees on one branch
   if (ready && branch !== "main") {
-    const rn = await call(token, `/repos/${made.full_name}/branches/${encodeURIComponent(branch)}/rename`, { method: "POST", body: JSON.stringify({ new_name: "main" }) });
-    if (rn.ok) return { repo: made.full_name, branch: "main", url: made.html_url };
+    for (let i = 0; i < 4; i++) {
+      const rn = await call(token, `/repos/${made.full_name}/branches/${encodeURIComponent(branch)}/rename`, { method: "POST", body: JSON.stringify({ new_name: "main" }) });
+      if (rn.ok) return { repo: made.full_name, branch: "main", url: made.html_url };
+      await new Promise((res) => setTimeout(res, 3000));
+    }
   }
   return { repo: made.full_name, branch, url: made.html_url };
 }
