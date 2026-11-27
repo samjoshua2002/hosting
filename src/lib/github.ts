@@ -385,7 +385,8 @@ export async function listBranches(repo: string): Promise<{ name: string; protec
 
 async function refSha(token: string, repo: string, branch: string): Promise<string | null> {
   const r = await call(token, `/repos/${repo}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`);
-  if (r.status === 404) return null;
+  // 409 = the repository has no commits yet (no branches at all)
+  if (r.status === 404 || r.status === 409) return null;
   if (!r.ok) throw new Error(`GitHub ref ${branch} failed (${r.status})`);
   return ((await r.json()) as { object: { sha: string } }).object.sha;
 }
@@ -422,6 +423,8 @@ export interface Plan {
   branch: string;
   /** branch doesn't exist yet: it is created from base */
   createFrom: string | null;
+  /** the repository has no commits yet: the first commit creates its default branch */
+  empty?: boolean;
   files: { path: string; before: string | null; after: string | null }[];
 }
 
@@ -434,16 +437,22 @@ export async function planChanges(repo: string, branch: string, base: string | u
   const token = await githubToken();
   const exists = await refSha(token, repo, branch);
   let createFrom: string | null = null;
+  let empty = false;
   if (!exists) {
     createFrom = base || (await getRepo(repo)).defaultBranch;
-    if (!(await refSha(token, repo, createFrom))) throw new Error(`base branch ${createFrom} not found`);
+    if (!(await refSha(token, repo, createFrom))) {
+      // a brand-new repository with no commits: nothing to branch from, the first commit starts it
+      if (!(await repoIsEmpty(token, repo))) throw new Error(`base branch ${createFrom} not found`);
+      empty = true;
+      createFrom = null;
+    }
   }
-  const readRef = exists ? branch : createFrom!;
+  const readRef = exists ? branch : createFrom;
   const files: Plan["files"] = [];
   for (const c of changes) {
     const path = String(c.path ?? "").replace(/^\/+/, "");
     if (!path || path.includes("..") || path.startsWith(".git/")) throw new Error(`bad path ${path}`);
-    const before = await file(token, repo, path.split("/").map(encodeURIComponent).join("/"), readRef);
+    const before = readRef ? await file(token, repo, path.split("/").map(encodeURIComponent).join("/"), readRef) : null;
     let after: string | null;
     if (c.delete) after = null;
     else if (typeof c.content === "string") after = c.content;
@@ -459,17 +468,58 @@ export async function planChanges(repo: string, branch: string, base: string | u
     } else throw new Error(`${path}: give content, edits or delete`);
     files.push({ path, before, after });
   }
-  return { repo, branch, createFrom, files };
+  return { repo, branch, createFrom, files, ...(empty ? { empty } : {}) };
+}
+
+/** True when the repository exists but has no commits (GitHub answers 409 for its commit list). */
+async function repoIsEmpty(token: string, repo: string): Promise<boolean> {
+  const r = await call(token, `/repos/${repo}/commits?per_page=1`);
+  return r.status === 409;
+}
+
+/**
+ * The first commit of an empty repository. GitHub's Git Data API can't create a ref there, but the
+ * Contents API can: write one file (this creates the default branch), then the rest is a normal commit.
+ * A just-created repository can answer 409 for a few seconds, so this retries with backoff.
+ */
+async function startEmptyRepo(token: string, p: Plan, message: string): Promise<{ head: string; branch: string; rest: Plan["files"] }> {
+  const first = p.files.find((f) => f.after !== null);
+  if (!first) throw new Error("the repository is empty: the first commit needs at least one file with content");
+  const path = first.path.split("/").map(encodeURIComponent).join("/");
+  const body = JSON.stringify({ message: message.slice(0, 2000), content: Buffer.from(first.after!, "utf8").toString("base64") });
+  let last = "";
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1)));
+    const r = await call(token, `/repos/${p.repo}/contents/${path}`, { method: "PUT", body });
+    if (r.ok) {
+      const head = ((await r.json()) as { commit: { sha: string } }).commit.sha;
+      const branch = (await getRepo(p.repo)).defaultBranch;
+      return { head, branch, rest: p.files.filter((f) => f !== first) };
+    }
+    last = `${r.status}: ${(await r.text()).slice(0, 200)}`;
+    if (r.status !== 409 && r.status !== 404 && r.status < 500) break;
+  }
+  throw new Error(`GitHub couldn't start the empty repository (${last})`);
 }
 
 export function planDiff(p: Plan): string {
-  const head = p.createFrom ? `New branch ${p.branch} from ${p.createFrom}` : `Branch ${p.branch}`;
+  const head = p.empty ? `First commit of the empty repository (starts ${p.branch})` : p.createFrom ? `New branch ${p.branch} from ${p.createFrom}` : `Branch ${p.branch}`;
   return [head, ...p.files.map((f) => unifiedDiff(f.path, f.before, f.after))].join("\n\n");
 }
 
 /** One commit with all the changes (Git Data API); creates the branch if needed. */
 export async function commitPlan(p: Plan, message: string): Promise<{ sha: string; url: string; branch: string; created: boolean }> {
   const token = await githubToken();
+  if (p.empty) {
+    // first commit of a new repository: start it with one file, then commit the rest on top
+    const start = await startEmptyRepo(token, p, message);
+    const onDefault = start.branch === p.branch;
+    if (!start.rest.length && onDefault) return { sha: start.head, url: `https://github.com/${p.repo}/commit/${start.head}`, branch: p.branch, created: true };
+    const next: Plan = { repo: p.repo, branch: p.branch, createFrom: onDefault ? null : start.branch, files: start.rest };
+    if (!next.files.length) next.files = [];
+    const r = next.files.length ? await commitPlan(next, message) : await branchFrom(token, p.repo, p.branch, start.head);
+    return { ...r, created: true };
+  }
   const head = (await refSha(token, p.repo, p.branch)) ?? (await refSha(token, p.repo, p.createFrom ?? ""));
   if (!head) throw new Error("branch to commit on is gone");
   const commit = (await (await call(token, `/repos/${p.repo}/git/commits/${head}`)).json()) as { tree: { sha: string } };
@@ -497,6 +547,13 @@ export async function commitPlan(p: Plan, message: string): Promise<{ sha: strin
     throw new Error(ref.status === 404 || ref.status === 403 ? `GitHub refused the push (${ref.status}); workflow files need the workflow scope. ${why}` : `GitHub branch update failed (${ref.status}): ${why}`);
   }
   return { sha, url: `https://github.com/${p.repo}/commit/${sha}`, branch: p.branch, created };
+}
+
+/** Point a new branch at a commit. */
+async function branchFrom(token: string, repo: string, branch: string, sha: string): Promise<{ sha: string; url: string; branch: string; created: boolean }> {
+  const r = await call(token, `/repos/${repo}/git/refs`, { method: "POST", body: JSON.stringify({ ref: `refs/heads/${branch}`, sha }) });
+  if (!r.ok) throw new Error(`GitHub branch create failed (${r.status}): ${(await r.text()).slice(0, 200)}`);
+  return { sha, url: `https://github.com/${repo}/commit/${sha}`, branch, created: true };
 }
 
 export async function openPullRequest(repo: string, head: string, base: string, title: string, body: string): Promise<{ number: number; url: string }> {

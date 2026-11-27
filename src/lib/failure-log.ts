@@ -55,13 +55,15 @@ interface RunState {
   loggedSteps: Set<string>;
   /** the run is only pausing (waiting for the user, out of time for this request, or stopped): open steps are not a failure */
   paused: boolean;
+  /** loops found since the loop last asked (the Assistant is told to change approach) */
+  stuck: { tool: string; error: string; count: number }[];
 }
 
 const runs = new AsyncLocalStorage<RunState>();
 
 /** Run fn with failure tracking for one Assistant run. Waits for log writes before returning. */
 export async function withFailureLog<T>(ctx: { sessionId?: string; model?: string; source?: string }, fn: () => Promise<T>): Promise<T> {
-  const state: RunState = { ...ctx, pending: [], repeats: new Map(), plans: new Map(), loggedSteps: new Set(), paused: false };
+  const state: RunState = { ...ctx, pending: [], repeats: new Map(), plans: new Map(), loggedSteps: new Set(), paused: false, stuck: [] };
   try {
     return await runs.run(state, fn);
   } catch (e) {
@@ -108,6 +110,41 @@ export function recordToolResult(opts: { tool: string; label?: string; args?: st
   const n = (state.repeats.get(key) ?? 0) + 1;
   state.repeats.set(key, n);
   if (n === 3) write(state, { kind: "stuck_loop", tool: opts.tool, label: opts.label, args: opts.args, error, count: n });
+  if (n >= 3) state.stuck.push({ tool: opts.tool, error: error.slice(0, 300), count: n });
+}
+
+/** Loops found since the last call (and clears them): the Assistant loop tells the model to change approach. */
+export function takeStuck(): { tool: string; error: string; count: number }[] {
+  const state = runs.getStore();
+  if (!state?.stuck.length) return [];
+  const out = state.stuck;
+  state.stuck = [];
+  return out;
+}
+
+/** Plan steps still todo or doing in this run (the loop sends the model back to work while any remain). */
+export function openPlanSteps(): string[] {
+  const state = runs.getStore();
+  if (!state) return [];
+  return [...state.plans.values()].flatMap((steps) => steps.filter((s) => s.status === "todo" || s.status === "doing").map((s) => s.text));
+}
+
+/**
+ * What the Assistant should learn from past runs: the open failures that keep coming back, grouped by tool
+ * and error, most frequent first. Injected into its instructions so it avoids the same dead ends.
+ */
+export async function knownFailureSpots(max = 8): Promise<string> {
+  const items = (await listFailures()).filter((f) => !f.resolved && (f.kind === "tool_failed" || f.kind === "tool_crashed" || f.kind === "stuck_loop"));
+  const groups = new Map<string, { tool: string; error: string; n: number; last: number }>();
+  for (const f of items) {
+    const key = fingerprint(f.tool ?? "?", f.error);
+    const g = groups.get(key) ?? { tool: f.tool ?? "?", error: f.error.replace(/\s+/g, " ").slice(0, 200), n: 0, last: 0 };
+    g.n++;
+    g.last = Math.max(g.last, f.at);
+    groups.set(key, g);
+  }
+  const top = [...groups.values()].filter((g) => g.n >= 2).sort((a, b) => b.n - a.n || b.last - a.last).slice(0, max);
+  return top.map((g) => `- ${g.tool} failed ${g.n}x: ${g.error}`).join("\n");
 }
 
 /** The model call failed (timeout, content filter, bad deployment, …). */

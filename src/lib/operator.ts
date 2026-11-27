@@ -1,7 +1,8 @@
 // The Assistant: an operator that does the work on the fleet, end to end.
 // It runs commands, starts and watches background jobs, deploys and manages projects, and connects machines
 // to the database machine. Only destructive actions pause for the user's approval; then it carries on.
-import { markPaused, recordModelError, recordPlan, recordStop, recordToolResult, withFailureLog } from "./failure-log";
+import { knownFailureSpots, markPaused, openPlanSteps, recordModelError, recordPlan, recordStop, recordToolResult, takeStuck, withFailureLog } from "./failure-log";
+import { searchStackOverflow } from "./stackoverflow";
 import { recordSpan, traceOutput, withTrace } from "./telemetry";
 import { chat, describeImage, type ChatMessage, type ToolCall, type ToolDef } from "./ai";
 import type { ArtifactType, DiagramEdge, DiagramNode, OperatorEvent, Shell } from "./assistant-items";
@@ -225,7 +226,8 @@ Databases
 
 Working on code (GitHub)
 - repo_branches, repo_files and repo_read inspect a repo; repo_commit commits one or more files in a single commit (full content, or exact find/replace edits for small changes); repo_pull_request opens a PR. github_api calls any other GitHub REST endpoint the token allows (issues, releases, actions runs, gists, workflows…).
-- Before the first change in a session, call ask_user to pick the branch unless the user already said: offer the default branch (pushes there redeploy projects with auto-deploy) and a new branch like "assistant/<short-topic>" with a pull request. Read the files you change first; keep edits minimal and in the repo's style. After committing, give the commit link; if a project auto-deploys from that branch, follow its deploy (fleet_status shows running deploy jobs) and report the result.
+- Branch: don't ask. Repos you created or imported in this conversation, empty repos and repos with no deployed project: commit straight to the default branch. An existing repo whose default branch auto-deploys a live project: for small fixes commit to the default branch; for big or risky changes use a branch "assistant/<short-topic>" and open a pull request, then say so in one line. Only ask if the user said they want to choose. Read the files you change first; keep edits minimal and in the repo's style.
+- A new or empty repo needs no setup first: repo_commit handles the very first commit (it starts the repo and its main branch). Commit all the project's files in as few commits as possible (up to 40 files each). After committing, give the commit link; if a project auto-deploys from that branch, follow its deploy (fleet_status shows running deploy jobs) and report the result.
 - Review mode is chosen by the user: in manual mode every action waits for approval (commits show the diff first); in auto mode only destructive actions wait. Either way, never commit secrets.
 
 You are the brain of this platform
@@ -259,6 +261,13 @@ Moving an app off Render, Vercel, Heroku, Netlify or Railway (the user wants eve
 - Env: ask the user to paste their .env (it is hidden from you as {{secret:NAME}} placeholders) or attach it; list exactly which keys are missing (from .env.example). Never guess secrets. Platform variables: set RENDER_EXTERNAL_URL / VERCEL_URL / BACKEND_URL / FRONTEND_URL / NEXT_PUBLIC_API_URL to the new projects' real https links (deploy the API first, then the web app with the API's link baked in, then update the API's FRONTEND_URL/CORS and redeploy it).
 - Webhooks and OAuth callbacks (Meta/Instagram, Stripe, GitHub, Google sign-in) must use the project's real https link, not the /go short link (providers don't follow redirects for POST). Tell the user exactly what to paste into the provider's dashboard (callback URL, webhook URL, verify token) — that step is theirs.
 - Background jobs or schedules the old platform ran (Render cron, Vercel cron): schedule_task, or an n8n workflow when it is an automation the user wants to see and edit visually.
+
+Finish the task (this matters more than anything else)
+- Keep going until the user's request is completely done and verified, then end your turn. Don't stop at a plan, a partial result or a question you can answer yourself.
+- Don't ask the user to confirm or clarify assumptions: pick the sensible default, do it, and state the assumption in one line (you can always adjust later). Defaults to just pick: names (repo, project, branch), private repos, the main branch, Next.js App Router for "a Next.js app", Tailwind for styling, the machine (placement is automatic), ports, service names. Ask (with ask_user) only for: secrets or accounts you don't have, overwriting or deleting the user's existing work, DNS or payment changes, or a choice that is clearly a matter of taste with no good default.
+- Keep update_plan current. You can't end with plan steps still "todo" or "doing": finish them, or mark them "failed" or "skipped" with the reason in the note.
+- Never repeat a failing action unchanged. After a failure, read the whole error and change something (the command, the approach, the tool). If the same thing fails twice: check logs, read the docs (context7), search_stackoverflow with the key part of the error, then try the fix that fits this setup. After 3 different approaches fail, stop and explain exactly what failed and what you tried.
+- Known failure spots from earlier runs are listed under "Known failure spots" below when there are any: avoid those dead ends from the start, and when you find the fix for one, save it with remember as "Lesson: …".
 
 When things go wrong (decide like a senior SRE: pick the safest option that gets the user what they want, do it, then say in one line what you chose and why; only ask_user when the choice really is theirs)
 - Low disk (under ~1.5 GB free, or "No space left on device"): measure first (df -h ~ /; du -xh --max-depth=2 ~ | sort -h | tail; docker system df). Free the safe things yourself: docker image/builder prune (unused only), ~/.cache/pip, ~/.npm/_cacache, ~/.cache/ms-playwright and other caches, sudo journalctl --vacuum-size=100M, sudo apt-get clean, old *.log and finished job logs in ~/.hosting/jobs. Never delete ~/data, project code or anything you can't recreate without approval. If still short: move the next deploy to a machine with room, or propose moving a big project elsewhere (ask_user), or adding a machine.
@@ -295,6 +304,12 @@ export function toolCatalog(): { name: string; description: string }[] {
 }
 
 const TOOLS: ToolDef[] = [
+  fn(
+    "search_stackoverflow",
+    "Search Stack Overflow for how others fixed an error or did a task. Returns the best matching questions with their accepted or top answer. Use it when an error isn't obvious, when a fix failed twice, or for framework or tool know-how. Query: the key part of the error message (no paths, ids or secrets) plus the tool or framework.",
+    { query: { type: "string", description: "e.g. 'next build Module not found: Can't resolve fs'" }, tags: { type: "string", description: "optional tags separated by ;, e.g. 'next.js;docker'" } },
+    ["query"],
+  ),
   fn("fleet_status", "Health of every machine: reachable, CPU, memory, disk, projects with state/port/URL, running jobs, tunnels.", {}),
   fn(
     "run_command",
@@ -924,6 +939,8 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `${a.disconnect ? "Disconnected" : "Connected"} ${str(a.from)} ${a.disconnect ? "from" : "→"} ${str(a.to)}`, needsApproval: false, detail: "" };
     case "github_repos":
       return { label: a.repo ? `Inspected GitHub repo ${str(a.repo)}` : "Listed GitHub repos", needsApproval: false, detail: "" };
+    case "search_stackoverflow":
+      return { label: `Searched Stack Overflow: ${str(a.query).slice(0, 80)}`, needsApproval: false, detail: "" };
     case "link_databases":
       return { label: `${a.unlink ? "Disconnected" : "Connected"} ${on(a.vms)} ${a.unlink ? "from" : "to"} databases on ${str(a.db_vm)}`, needsApproval: false, detail: "" };
     default:
@@ -971,6 +988,8 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
   }
   try {
     switch (call.function.name) {
+      case "search_stackoverflow":
+        return { ok: true, output: await searchStackOverflow(str(a.query), { tags: str(a.tags) || undefined }) };
       case "fleet_status": {
         const all = await mapLimit(getVms(), 12, (vm) => probe(vm, 9_999_999_999));
         return {
@@ -1959,6 +1978,7 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
   const names = await secretNames().catch(() => []);
   const hubSkills = await installedSkills().catch(() => []);
   const standing = await getInstructions().catch(() => "");
+  const known = await knownFailureSpots().catch(() => "");
   const [mcp, fleetNow, connected, prefs, mailboxes] = await Promise.all([
     mcpSummary(input.connectorsOff).catch(() => ""),
     fleetSnapshot(),
@@ -1972,6 +1992,7 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
     `Review mode: ${review === "manual" ? "manual (the user approves every action)" : "auto (only destructive actions wait for approval)"}.`,
     `Your fleet right now (live; every machine and everything installed on it; call fleet_status for full detail, logs and jobs):\n${fleetNow}`,
     preferenceRules(prefs),
+    known ? `Known failure spots (from the failure log; open, repeated failures of earlier runs; don't walk into them again):\n${known}` : "",
     connected,
     mailboxes ||
       "Email accounts: none connected. The server's report sender (EMAIL_USER) is not the user's mailbox and can't be used to draft or send their mail: to email someone, ask the user to add Gmail or Zoho Mail in Settings → Connectors.",
@@ -2017,6 +2038,7 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
   }
   if (input.message && !consumedMessage) messages.push({ role: "user", content: input.message.slice(0, 8000) });
 
+  let nudges = 0;
   for (let round = 0; round < 40; round++) {
     if (round > 0) await input.onRound?.();
     if (signal.aborted) break;
@@ -2034,7 +2056,19 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
     const msg = res.message;
     messages.push({ role: "assistant", content: msg.content ?? null, tool_calls: msg.tool_calls });
     if (msg.content?.trim()) emit({ type: "text", content: msg.content });
-    if (!msg.tool_calls?.length) break;
+    if (!msg.tool_calls?.length) {
+      // it stopped talking with plan steps still open: send it back to finish them (a few times at most)
+      const open = openPlanSteps();
+      if (open.length && nudges < 4 && !signal.aborted) {
+        nudges++;
+        messages.push({
+          role: "user",
+          content: `[System note, not from the user] Your plan still has open steps: ${open.slice(0, 6).join("; ")}. Continue and finish them now. If a step can't be done, mark it failed or skipped with the reason in update_plan. Only use ask_user if the next step truly needs the user's decision or a secret you don't have.`,
+        });
+        continue;
+      }
+      break;
+    }
 
     let waiting = false;
     // run the safe calls (in parallel); park the ones that need approval
@@ -2105,6 +2139,14 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
       }),
     );
     messages.push(...results);
+    // the same action failed the same way 3+ times: make it change approach instead of looping
+    const loops = takeStuck();
+    if (loops.length) {
+      messages.push({
+        role: "user",
+        content: `[System note, not from the user] You are stuck in a loop: ${loops.map((l) => `${l.tool} failed ${l.count} times with "${l.error.slice(0, 160)}"`).join("; ")}. Don't repeat it. Change approach: read the full error and the logs, check the docs (context7) or search_stackoverflow for the key part of the error, then try a different fix. If nothing works after 3 different approaches, explain what failed and what you tried.`,
+      });
+    }
     if (waiting) {
       emit({ type: "done", transcript: messages, waiting: true, paused: false });
       return;
