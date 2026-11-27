@@ -4,7 +4,8 @@
 import { knownFailureSpots, markPaused, openPlanSteps, recordModelError, recordPlan, recordStop, recordToolResult, takeStuck, withFailureLog } from "./failure-log";
 import { searchStackOverflow } from "./stackoverflow";
 import { captureSite, compareSites } from "./site-capture";
-import { importAssets } from "./github";
+import { createFromTemplate, importAssets } from "./github";
+import { cloneTemplateSkill } from "./clone-template";
 import { recordSpan, traceOutput, withTrace } from "./telemetry";
 import { chat, describeImage, type ChatMessage, type ToolCall, type ToolDef } from "./ai";
 import type { ArtifactType, DiagramEdge, DiagramNode, OperatorEvent, Shell } from "./assistant-items";
@@ -317,6 +318,12 @@ const TOOLS: ToolDef[] = [
     "Screenshot the original page and your clone at the same size, side by side (original left, clone right), look at them and list the concrete differences per band, with a similarity score. Use after deploying a clone, then fix the biggest differences and compare again.",
     { original: { type: "string", description: "the original page URL" }, clone: { type: "string", description: "your clone's URL for the same page (full https link or /go/<project>/path)" } },
     ["original", "clone"],
+  ),
+  fn(
+    "create_repo_from_template",
+    "Create a new GitHub repository for the user from a template repository and wait until it is ready. Default template: JCodesMore/ai-website-cloner-template (Next.js 16, React 19, shadcn/ui, Tailwind v4, Dockerfile), the starting point for every website clone. Returns the repo name and its default branch.",
+    { name: { type: "string", description: "new repo name, e.g. linear-clone" }, template: { type: "string", description: "owner/name of a template repo (optional)" }, private: { type: "boolean", description: "default true" } },
+    ["name"],
   ),
   fn(
     "import_assets",
@@ -969,6 +976,8 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Captured ${str(a.url).replace(/^https?:\/\//, "").slice(0, 60)}${Array.isArray(a.pages) && a.pages.length ? ` and ${a.pages.length} more page${a.pages.length === 1 ? "" : "s"}` : ""}`, needsApproval: false, detail: "" };
     case "compare_sites":
       return { label: `Compared ${str(a.original).replace(/^https?:\/\//, "").slice(0, 40)} with the clone`, needsApproval: false, detail: "" };
+    case "create_repo_from_template":
+      return { label: `Created repo ${str(a.name)} from ${str(a.template) || "the website cloner template"}`, needsApproval: false, detail: "" };
     case "import_assets":
       return { label: `Downloaded ${Array.isArray(a.urls) ? a.urls.length : 0} assets into ${str(a.repo)}`, needsApproval: false, detail: (Array.isArray(a.urls) ? a.urls : []).map(String).slice(0, 40).join("\n") };
     case "view_image":
@@ -1022,6 +1031,10 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
   }
   try {
     switch (call.function.name) {
+      case "create_repo_from_template": {
+        const r = await createFromTemplate(str(a.template) || "JCodesMore/ai-website-cloner-template", str(a.name), a.private !== false);
+        return { ok: true, output: `Created ${r.repo} (default branch ${r.branch}): ${r.url}. Template layout: src/app/ (routes), src/components/sites/<site>/ (components and extracted SVGs), public/sites/<site>/ (assets), docs/research/<site>/ (notes). Deploy with its Dockerfile (Node 24, port 3000).` };
+      }
       case "import_assets": {
         const urls = (Array.isArray(a.urls) ? a.urls : []).map(String).filter((u) => /^https?:\/\//i.test(u));
         const r = await importAssets(str(a.repo), str(a.branch) || undefined, urls, str(a.dir) || "public/assets");
@@ -2182,6 +2195,7 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
   const wantsClone = /https?:\/\/\S+/.test(input.message ?? "") && /\b(clone|copy|replicat|recreat|rebuild|mirror|same as|like this (site|website|page)|look like)\w*/i.test(input.message ?? "");
   const wantsMotion = /\b(animat|motion|reanimate|transition|marquee|carousel|parallax|scroll effect|hover effect|framer|gsap|three\.?js|webgl)\w*/i.test(input.message ?? "");
   const routed = [wantsClone ? skill("clone-website") : undefined, wantsMotion ? skill("motion") : undefined].filter((x): x is NonNullable<typeof x> => Boolean(x));
+  const templateSkill = wantsClone ? await cloneTemplateSkill().catch(() => "") : "";
   const [mcp, fleetNow, connected, prefs, mailboxes] = await Promise.all([
     mcpSummary(input.connectorsOff).catch(() => ""),
     fleetSnapshot(),
@@ -2196,6 +2210,7 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
     `Your fleet right now (live; every machine and everything installed on it; call fleet_status for full detail, logs and jobs):\n${fleetNow}`,
     preferenceRules(prefs),
     ...routed.map((sk) => `Playbook "${sk.id}" (already loaded for this request; follow it):\n${sk.body}`),
+    templateSkill,
     known ? `Known failure spots (from the failure log; open, repeated failures of earlier runs; don't walk into them again):\n${known}` : "",
     connected,
     mailboxes ||

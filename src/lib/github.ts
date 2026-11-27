@@ -666,3 +666,25 @@ export async function importAssets(repo: string, branch: string | undefined, url
   ].join("\n");
   return { saved, summary };
 }
+
+/**
+ * A new repository from a GitHub template repository (e.g. JCodesMore/ai-website-cloner-template), owned by the
+ * connected account. GitHub fills it in the background, so this waits (up to ~40 s) until its default branch exists.
+ */
+export async function createFromTemplate(template: string, name: string, isPrivate = true): Promise<{ repo: string; branch: string; url: string }> {
+  if (!REPO_RE.test(template)) throw new Error("template must look like owner/name");
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) throw new Error("repo name: letters, numbers, . _ - only");
+  const token = await githubToken();
+  const auth = await githubAuth();
+  if (!auth) throw new Error("GitHub is not connected");
+  const r = await call(token, `/repos/${template}/generate`, { method: "POST", body: JSON.stringify({ owner: auth.login, name, private: isPrivate, include_all_branches: false }) });
+  if (r.status === 422 && /already exists/i.test(await r.clone().text())) throw new Error(`${auth.login}/${name} already exists: pick another name or use that repo`);
+  if (!r.ok) throw new Error(`GitHub couldn't create the repo from ${template} (${r.status}): ${(await r.text()).slice(0, 200)}`);
+  const made = (await r.json()) as { full_name: string; default_branch?: string; html_url: string };
+  const branch = made.default_branch || (await getRepo(template)).defaultBranch;
+  for (let i = 0; i < 20; i++) {
+    if (await refSha(token, made.full_name, branch)) return { repo: made.full_name, branch, url: made.html_url };
+    await new Promise((res) => setTimeout(res, 2000));
+  }
+  return { repo: made.full_name, branch, url: made.html_url };
+}
