@@ -4,6 +4,7 @@
 import { knownFailureSpots, markPaused, openPlanSteps, recordModelError, recordPlan, recordStop, recordToolResult, takeStuck, withFailureLog } from "./failure-log";
 import { searchStackOverflow } from "./stackoverflow";
 import { captureSite, compareSites, snapshotSite } from "./site-capture";
+import { restoreSavedPage } from "./saved-page";
 import { cached, markChanged, remember as rememberResult } from "./tool-cache";
 import { commitFiles, createFromTemplate, importAssets } from "./github";
 import { cloneTemplateSkill } from "./clone-template";
@@ -320,6 +321,7 @@ const TOOLS: ToolDef[] = [
       repo: { type: "string", description: "owner/name of the clone repo (from create_repo_from_template)" },
       branch: { type: "string", description: "default: the repo's default branch" },
       own_site: { type: "boolean", description: "true only when the user said the site is theirs (no 'recreation for study' badge)" },
+      html_attachment: { type: "string", description: "id of an .html page the user saved from their browser and attached (for sites that block automated browsers). Its links are pointed back at the real servers and its scripts kept, so its animations run. url = the page's original address." },
     },
     ["url", "repo"],
   ),
@@ -1105,7 +1107,7 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
         return { ok: r.saved.length > 0, output: r.summary };
       }
       case "snapshot_site":
-        return snapshotTool(a);
+        return snapshotTool(a, ctx.sessionId);
       case "search_stackoverflow":
         return { ok: true, output: await searchStackOverflow(str(a.query), { tags: str(a.tags) || undefined }) };
       case "fleet_status": {
@@ -1910,6 +1912,13 @@ async function existingBranch(repo: string, asked: string): Promise<string> {
   return !bs || bs.some((b) => b.name === asked) ? asked : def;
 }
 
+/** A bot check page instead of the site (Cloudflare and similar). */
+const BOT_CHECK = /just a moment|performing security verification|attention required|checking your browser|verify you are human|cf-chl|challenge-platform/i;
+
+function botCheckHelp(url: string): string {
+  return `${url} sent a bot check page ("verify you are human"): the site doesn't let automated browsers in, and that check must not be bypassed. Don't clone the check page. If the user attached a saved copy of the page (an .html file), use snapshot_site with html_attachment = its id. Otherwise ask them (ask_user) to open the page in their own browser, use File → Save Page As (Chrome: "Webpage, Complete"; Safari: "Page Source") and attach the .html here; for scroll animations they can also attach a screen recording of scrolling through it. If it's their own site, they can instead allow the server machines in their Cloudflare settings (Security → WAF → a skip rule for the machines' IPs).`;
+}
+
 /** The next.config.ts that serves the snapshots; null when the file was customised (the model then edits it itself). */
 function snapshotConfig(current: string | null, routes: string[]): string | null {
   const known = current?.match(/const SNAPSHOT_ROUTES[^=]*=\s*(\[[^\]]*\])/);
@@ -1944,16 +1953,29 @@ export default nextConfig;
 }
 
 /** snapshot_site: the original pages as drawn, into the clone repo, served at their routes. */
-async function snapshotTool(a: Args): Promise<{ ok: boolean; output: string }> {
+async function snapshotTool(a: Args, sessionId?: string): Promise<{ ok: boolean; output: string }> {
   const url = fullUrl(str(a.url));
   const repo = str(a.repo);
   if (!okUrl(url)) return { ok: false, output: "url must be a full http(s) link" };
   if (!REPO_RE.test(repo)) return { ok: false, output: "repo must look like owner/name (make one with create_repo_from_template first)" };
   const pages = (Array.isArray(a.pages) ? a.pages : []).map((p) => fullUrl(str(p))).filter(okUrl).slice(0, 7);
   const branch = await existingBranch(repo, str(a.branch));
-  const vm = await browserVm();
-  if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
-  const snap = await snapshotSite(vm, url, pages);
+  let snap: Awaited<ReturnType<typeof snapshotSite>>;
+  if (str(a.html_attachment)) {
+    // a page the user saved from their own browser: back to the real servers, scripts kept (animations run)
+    if (!sessionId) return { ok: false, output: "no session: attachments are unavailable" };
+    const f = await loadAttachment(sessionId, str(a.html_attachment));
+    if (!f) return { ok: false, output: `no attachment ${str(a.html_attachment)} in this conversation` };
+    const text = f.data.toString("utf8");
+    if (!/<html|<body|<head/i.test(text)) return { ok: false, output: `${f.name} isn't an HTML page. Ask the user for File → Save Page As (Webpage, HTML) from their browser.` };
+    snap = { pages: [{ url, status: 200, html: restoreSavedPage(text, url) }], fonts: [] };
+  } else {
+    const vm = await browserVm();
+    if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
+    snap = await snapshotSite(vm, url, pages);
+    const blocked = snap.pages.find((p) => p.html && BOT_CHECK.test(p.html.slice(0, 20_000)));
+    if (blocked) return { ok: false, output: botCheckHelp(url) };
+  }
   const done = snap.pages.filter((p) => p.html);
   if (!done.length) return { ok: false, output: `Couldn't snapshot ${url}: ${snap.fatal || snap.pages.map((p) => `${p.url}: ${p.error ?? `HTTP ${p.status}`}`).join("; ")}` };
   const host = new URL(url).hostname.replace(/^www\./, "");
@@ -2106,6 +2128,7 @@ async function doCapture(call: ToolCall, input: OperatorInput, emit: (e: Operato
     }
   }
   if (!cap.spec) return { ok: false, output: `couldn't capture ${url} on ${vm.name}: ${cap.fatal || cap.error || "the page didn't load"}` };
+  if (BOT_CHECK.test(String(cap.spec.title ?? "")) || (cap.status === 403 && /cloudflare|verif/i.test(JSON.stringify(cap.spec).slice(0, 4000)))) return { ok: false, output: botCheckHelp(url) };
   const host = url.replace(/^https?:\/\//, "").replace(/[^A-Za-z0-9.-]+/g, "-").slice(0, 50);
   const desk = (cap.desktop?.shots ?? []).map((s) => Buffer.from(s.b64, "base64"));
   const mob = (cap.mobile?.shots ?? []).map((s) => Buffer.from(s.b64, "base64"));
