@@ -4,6 +4,7 @@
 import { knownFailureSpots, markPaused, openPlanSteps, recordModelError, recordPlan, recordStop, recordToolResult, takeStuck, withFailureLog } from "./failure-log";
 import { searchStackOverflow } from "./stackoverflow";
 import { captureSite, compareSites } from "./site-capture";
+import { cached, markChanged, remember as rememberResult } from "./tool-cache";
 import { createFromTemplate, importAssets } from "./github";
 import { cloneTemplateSkill } from "./clone-template";
 import { continueFrom, listVersions, saveVersion, switchVersion } from "./versions";
@@ -313,13 +314,13 @@ const TOOLS: ToolDef[] = [
   fn(
     "capture_site",
     "Open a website in a real browser (scrolls it so lazy content loads) and capture in ONE call everything needed to rebuild it: every section in order (headings, text, buttons, links, images with sizes, columns, backgrounds), design tokens (fonts and font links, colours, text sizes, radii, CSS variables), nav, footer, forms, the site's other pages, and desktop + mobile screenshots it looks at for you. Use it to clone or study a site instead of reading pages with curl. pages: up to 4 more URLs of the same site to capture in the same call.",
-    { url: { type: "string" }, pages: { type: "array", items: { type: "string" }, description: "optional, up to 4 more page URLs of the same site" } },
+    { url: { type: "string" }, pages: { type: "array", items: { type: "string" }, description: "optional, up to 4 more page URLs of the same site" }, fresh: { type: "boolean", description: "capture again even if reused automatically" } },
     ["url"],
   ),
   fn(
     "compare_sites",
     "Screenshot the original page and your clone at the same size, side by side (original left, clone right), look at them and list the concrete differences per band, with a similarity score. Use after deploying a clone, then fix the biggest differences and compare again.",
-    { original: { type: "string", description: "the original page URL" }, clone: { type: "string", description: "your clone's URL for the same page (full https link or /go/<project>/path)" } },
+    { original: { type: "string", description: "the original page URL" }, clone: { type: "string", description: "your clone's URL for the same page (full https link or /go/<project>/path)" }, fresh: { type: "boolean", description: "compare again even if reused automatically" } },
     ["original", "clone"],
   ),
   fn(
@@ -606,7 +607,7 @@ const TOOLS: ToolDef[] = [
   fn(
     "screenshot",
     "Open a web page in a real browser (headless Chrome on one of the machines), show the screenshot in the chat, and look at it: says what the page actually shows and whether it looks right/finished. Use it to verify every site you deploy or change (home page, a key page, /wp-admin login), before saying it's done. full_page captures a taller view. question: what to check (e.g. 'Does this look like the Spexo Digital Agency demo, not a default WordPress page?').",
-    { url: { type: "string" }, question: { type: "string" }, full_page: { type: "boolean" } },
+    { url: { type: "string" }, question: { type: "string" }, full_page: { type: "boolean" }, fresh: { type: "boolean", description: "take a new one even if this page was looked at already in this session (it is reused automatically while it can't have changed)" } },
     ["url"],
   ),
   fn(
@@ -1020,6 +1021,8 @@ async function execute(call: ToolCall, ctx: { sessionId?: string; connectorsOff?
   if (blocked) return { ok: false, output: `${blocked} is switched off for this conversation (the + menu → Connectors). Ask the user to switch it on, or do the task another way.` };
   const real: ToolCall = { ...call, function: { ...call.function, arguments: await revealIn(call.function.arguments || "{}", true) } };
   const r = await executeRaw(real, ctx);
+  // the user's pages may look different now: screenshots and comparisons of them are taken fresh
+  if (r.ok && /^(repo_commit|deploy_project|import_assets|project_versions|project_action|import_zip|add_service|use_service)$/.test(call.function.name)) await markChanged(ctx.sessionId);
   // a pasted/attached .env read here is vaulted too, then anything known is masked
   // a pasted/attached .env is vaulted; the capture files the Assistant saved itself are not (their long hex asset names looked like secrets)
   let out = call.function.name === "read_attachment" && !/^site-(capture|assets|svgs)-/.test(r.output) ? await vaultText(r.output) : r.output;
@@ -1916,29 +1919,62 @@ const fullUrl = (u: string) => (u.startsWith("/go/") ? `${siteUrl()}${u}` : u.tr
  * A private project's link (its /go link or its raw address without the token) as a browser on the machines can open it:
  * the project's stored token link plus the path. Returns the URL unchanged when it isn't one of our private projects.
  */
-async function browsableUrl(u: string): Promise<string> {
+interface Page {
+  /** what a browser on the machines should open (a private project's token link, or the URL as given) */
+  open: string;
+  /** one of the user's own projects (it changes when the session commits or deploys) */
+  own: boolean;
+  /** our project has no live link right now: don't spend a browser run on it */
+  noLink?: string;
+}
+
+async function resolvePage(u: string): Promise<Page> {
   let url: URL;
   try {
     url = new URL(fullUrl(u));
   } catch {
-    return u;
+    return { open: u, own: false };
   }
   const site = new URL(siteUrl());
+  const ownHost = url.host === site.host || /\.instabox\.tech$/i.test(url.hostname);
+  if (!ownHost) return { open: url.toString(), own: false };
   const fleet = await mapLimit(getVms(), 12, (vm) => probe(vm, 9_999_999_999)).catch(() => []);
-  const projects = fleet.flatMap((s) => (s.ok && s.agent ? s.agent.projects : []));
+  const projects = fleet.flatMap((st) => (st.ok && st.agent ? st.agent.projects : []));
   let p: (typeof projects)[number] | undefined;
   let rest = url.pathname;
   if (url.host === site.host && url.pathname.startsWith("/go/")) {
     const [, , name, ...more] = url.pathname.split("/");
     p = projects.find((x) => x.manifest.name === name);
     rest = `/${more.join("/")}`;
+    if (!p?.url)
+      return {
+        open: url.toString(),
+        own: true,
+        noLink: `${name} has no live link right now (${p ? `it is ${p.active}; its deploy may still be running or has failed` : "no such project on any reachable machine"}). Don't screenshot it yet: check fleet_status and the deploy's job_log, fix the deploy, then look.`,
+      };
   } else p = projects.find((x) => x.url && new URL(x.url).host === url.host);
-  if (!p?.url || !/[?&]_token=/.test(p.url)) return url.toString();
+  if (!p?.url) return { open: url.toString(), own: true };
   const t = new URL(p.url);
   t.pathname = rest || "/";
   for (const [k, v] of url.searchParams) t.searchParams.set(k, v);
-  return t.toString();
+  return { open: t.toString(), own: true };
 }
+
+async function browsableUrl(u: string): Promise<string> {
+  return (await resolvePage(u)).open;
+}
+
+/** Run a browser tool, or reuse its result for the same page in this session while the page can't have changed. */
+async function reuseOr(input: OperatorInput, tool: string, args: unknown[], own: boolean, fresh: boolean, run: () => Promise<{ ok: boolean; output: string }>): Promise<{ ok: boolean; output: string }> {
+  if (!fresh) {
+    const hit = await cached(input.sessionId, tool, args, own);
+    if (hit) return { ok: true, output: `(Reused the result from ${hit.ageMin} min ago: ${own ? "nothing was committed or deployed since" : "an outside page doesn't change that fast"}. Pass fresh: true only if you know it changed.)\n${hit.output}` };
+  }
+  const r = await run();
+  if (r.ok) await rememberResult(input.sessionId, tool, args, r.output);
+  return r;
+}
+
 const hideToken = (s: string) => s.replace(/([?&]_token=)[^&\s"']+/g, "$1••••");
 const okUrl = (u: string) => /^https?:\/\/[^\s'"`$]+$/i.test(u);
 
@@ -1960,8 +1996,15 @@ async function captureTool(call: ToolCall, input: OperatorInput, emit: (e: Opera
   const url = fullUrl(str(a.url));
   if (!okUrl(url)) return { ok: false, output: "url must be a full http(s) link" };
   const pages = (Array.isArray(a.pages) ? a.pages : []).map((p) => fullUrl(str(p))).filter(okUrl).slice(0, 4);
-  const openUrl = await browsableUrl(url);
-  const openPages = await Promise.all(pages.map(browsableUrl));
+  const target = await resolvePage(url);
+  if (target.noLink) return { ok: false, output: target.noLink };
+  const subs = await Promise.all(pages.map(resolvePage));
+  const openUrl = target.open;
+  const openPages = subs.map((x) => x.open);
+  return reuseOr(input, "capture_site", [url, pages], target.own || subs.some((x) => x.own), a.fresh === true, () => doCapture(call, input, emit, url, openUrl, openPages));
+}
+
+async function doCapture(call: ToolCall, input: OperatorInput, emit: (e: OperatorEvent) => void, url: string, openUrl: string, openPages: string[]): Promise<{ ok: boolean; output: string }> {
   const vm = await browserVm();
   if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
   const cap = await captureSite(vm, openUrl, openPages);
@@ -2040,10 +2083,16 @@ async function compareTool(call: ToolCall, input: OperatorInput, emit: (e: Opera
   const original = fullUrl(str(a.original));
   const clone = fullUrl(str(a.clone));
   if (!okUrl(original) || !okUrl(clone)) return { ok: false, output: "original and clone must be full http(s) links" };
+  const [po, pc] = await Promise.all([resolvePage(original), resolvePage(clone)]);
+  if (pc.noLink || po.noLink) return { ok: false, output: (pc.noLink || po.noLink)! };
+  return reuseOr(input, "compare_sites", [original, clone], true, a.fresh === true, () => doCompare(call, input, emit, po.open, pc.open, clone));
+}
+
+async function doCompare(call: ToolCall, input: OperatorInput, emit: (e: OperatorEvent) => void, openOriginal: string, openClone: string, clone: string): Promise<{ ok: boolean; output: string }> {
   const vm = await browserVm();
   if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
   // private clones open with their own token link (the browser on the machine isn't signed in to the dashboard)
-  const r = await compareSites(vm, await browsableUrl(original), await browsableUrl(clone));
+  const r = await compareSites(vm, openOriginal, openClone);
   r.meta = r.meta?.map((m) => ({ ...m, url: hideToken(m.url) }));
   const bands = (r.bands ?? []).map((b) => Buffer.from(b, "base64"));
   if (!bands.length) return { ok: false, output: `couldn't compare: ${r.fatal || JSON.stringify(r.meta ?? {})}` };
@@ -2117,6 +2166,12 @@ async function screenshot(call: ToolCall, input: OperatorInput, emit: (e: Operat
   let url = str(a.url).trim();
   if (url.startsWith("/go/")) url = `${siteUrl()}${url}`;
   if (!/^https?:\/\/[^\s'"`$]+$/i.test(url)) return { ok: false, output: "url must be a full http(s) link" };
+  const page = await resolvePage(url);
+  if (page.noLink) return { ok: false, output: page.noLink };
+  return reuseOr(input, "screenshot", [url, Boolean(a.full_page), str(a.question)], page.own, a.fresh === true, () => doScreenshot(call, input, emit, a, url, page.open));
+}
+
+async function doScreenshot(call: ToolCall, input: OperatorInput, emit: (e: OperatorEvent) => void, a: Args, url: string, openUrl: string): Promise<{ ok: boolean; output: string }> {
   const fleet = await mapLimit(getVms(), 12, (vm) => probe(vm, 9_999_999_999));
   const pick = fleet
     .filter((s) => s.ok && s.agent && (s.agent.diskTotalKb - s.agent.diskUsedKb) / 1048576 > 1)
@@ -2128,7 +2183,7 @@ async function screenshot(call: ToolCall, input: OperatorInput, emit: (e: Operat
   const cmd = [
     'D="$HOME/.hosting/shots"; mkdir -p "$D"; chmod 777 "$D"',
     "docker image inspect zenika/alpine-chrome >/dev/null 2>&1 || docker pull -q zenika/alpine-chrome >/dev/null 2>&1",
-    `timeout 100 docker run --rm --shm-size=1g -v "$D":/out zenika/alpine-chrome --no-sandbox --disable-gpu --hide-scrollbars --ignore-certificate-errors --window-size=${size} --virtual-time-budget=12000 --screenshot=/out/${id}.png ${shq(url)} >/dev/null 2>&1`,
+    `timeout 100 docker run --rm --shm-size=1g -v "$D":/out zenika/alpine-chrome --no-sandbox --disable-gpu --hide-scrollbars --ignore-certificate-errors --window-size=${size} --virtual-time-budget=12000 --screenshot=/out/${id}.png ${shq(openUrl)} >/dev/null 2>&1`,
     `f="$D/${id}.png"; if [ -s "$f" ]; then base64 -w0 "$f"; rm -f "$f"; else echo NOSHOT; fi`,
   ].join("; ");
   const r = await withVm(vm, (c) => run(c, cmd, { timeoutMs: 240_000, maxBytes: 12 * 1024 * 1024 })).catch((e: Error) => ({ code: 1, stdout: "", stderr: e.message, truncated: false }));
