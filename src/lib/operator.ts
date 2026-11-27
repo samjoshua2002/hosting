@@ -1960,10 +1960,6 @@ async function resolvePage(u: string): Promise<Page> {
   return { open: t.toString(), own: true };
 }
 
-async function browsableUrl(u: string): Promise<string> {
-  return (await resolvePage(u)).open;
-}
-
 /** Run a browser tool, or reuse its result for the same page in this session while the page can't have changed. */
 async function reuseOr(input: OperatorInput, tool: string, args: unknown[], own: boolean, fresh: boolean, run: () => Promise<{ ok: boolean; output: string }>): Promise<{ ok: boolean; output: string }> {
   if (!fresh) {
@@ -2007,7 +2003,17 @@ async function captureTool(call: ToolCall, input: OperatorInput, emit: (e: Opera
 async function doCapture(call: ToolCall, input: OperatorInput, emit: (e: OperatorEvent) => void, url: string, openUrl: string, openPages: string[]): Promise<{ ok: boolean; output: string }> {
   const vm = await browserVm();
   if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
-  const cap = await captureSite(vm, openUrl, openPages);
+  let cap = await captureSite(vm, openUrl, openPages);
+  // a template viewer (Wix, Webflow, ThemeForest…) shows the real site inside one big frame: capture that site instead
+  const frame = (cap.spec?.frames as { src: string; share: number }[] | undefined)?.[0];
+  let framed = "";
+  if (frame && frame.share >= 55 && frame.src !== openUrl) {
+    const inner = await captureSite(vm, frame.src, []).catch(() => null);
+    if (inner?.spec) {
+      cap = inner;
+      framed = `\nNote: ${url} is a viewer that shows the site inside a frame; this is the framed site itself (${frame.src}). Clone that, not the viewer's toolbar.`;
+    }
+  }
   if (!cap.spec) return { ok: false, output: `couldn't capture ${url} on ${vm.name}: ${cap.fatal || cap.error || "the page didn't load"}` };
   const host = url.replace(/^https?:\/\//, "").replace(/[^A-Za-z0-9.-]+/g, "-").slice(0, 50);
   const desk = (cap.desktop?.shots ?? []).map((s) => Buffer.from(s.b64, "base64"));
@@ -2068,7 +2074,7 @@ async function doCapture(call: ToolCall, input: OperatorInput, emit: (e: Operato
   const sub = subs.map((p) => `\n\n## Page ${p.url}${p.error ? ` (load problem: ${p.error})` : ""}\n${clip(JSON.stringify(p.parts.rest), 8000)}`).join("");
   return {
     ok: true,
-    output: `Captured ${url} on ${vm.name} (HTTP ${cap.status ?? "?"}${cap.error ? `, ${cap.error}` : ""}; page ${cap.desktop?.height ?? "?"}px tall, ${desk.length} desktop + ${mob.length} phone screenshots). Assets: ${Object.entries(kinds).map(([k, n]) => `${n} ${k}`).join(", ") || "none"}; ${allSvgs.length} inline SVGs.${notes.length ? `\nSaved (read_attachment):\n- ${notes.join("\n- ")}` : ""}\n\n## What it looks like\n${look}\n\n## Structure, design tokens and motion (from the live page)\n${clip(JSON.stringify(main.rest), 18000)}${sub}`,
+    output: `${framed ? `${framed.trim()}\n` : ""}Captured ${url} on ${vm.name} (HTTP ${cap.status ?? "?"}${cap.error ? `, ${cap.error}` : ""}; page ${cap.desktop?.height ?? "?"}px tall, ${desk.length} desktop + ${mob.length} phone screenshots). Assets: ${Object.entries(kinds).map(([k, n]) => `${n} ${k}`).join(", ") || "none"}; ${allSvgs.length} inline SVGs.${notes.length ? `\nSaved (read_attachment):\n- ${notes.join("\n- ")}` : ""}\n\n## What it looks like\n${look}\n\n## Structure, design tokens and motion (from the live page)\n${clip(JSON.stringify(main.rest), 18000)}${sub}`,
   };
 }
 

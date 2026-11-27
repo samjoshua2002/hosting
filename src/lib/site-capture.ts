@@ -200,6 +200,8 @@ function extract() {
     design: { fonts: top(fonts, 6), fontLinks, textColors: top(colors, 8), backgrounds: top(bgs, 10), textSizes: top(sizes, 10), radii: top(radii, 5), cssVariables: vars },
     nav: navLinks, sections: blocks, forms, pages, height: document.documentElement.scrollHeight,
     motion, assets: [...assets.values()], svgs,
+    // a page that is mostly one embedded frame (template viewers like Wix, Webflow and ThemeForest previews): the real site is inside it
+    frames: [...document.querySelectorAll("iframe")].map((f) => { const r = f.getBoundingClientRect(); return { src: abs(f.src || ""), w: Math.round(r.width), h: Math.round(r.height), share: Math.round((100 * Math.max(0, r.width) * Math.max(0, Math.min(r.height, innerHeight))) / (innerWidth * innerHeight)) }; }).filter((f) => /^https?:/.test(f.src) && f.src !== location.href).sort((a, b) => b.share - a.share).slice(0, 5),
   };
 }
 
