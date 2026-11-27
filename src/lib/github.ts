@@ -584,3 +584,85 @@ export async function githubApiRaw(method: string, path: string, body?: unknown)
   const r = await call(await githubToken(), path, { method, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
   return { status: r.status, text: await r.text() };
 }
+
+const EXT_BY_TYPE: Record<string, string> = {
+  "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/avif": "avif", "image/gif": "gif", "image/svg+xml": "svg", "image/x-icon": "ico", "image/vnd.microsoft.icon": "ico",
+  "video/mp4": "mp4", "video/webm": "webm", "font/woff2": "woff2", "font/woff": "woff", "font/ttf": "ttf", "font/otf": "otf", "application/font-woff2": "woff2", "application/json": "json",
+};
+
+/**
+ * Download files from the web and commit them into a repo in one commit (binary-safe, via Git blobs).
+ * Used to bring a cloned site's images, SVG files, videos and fonts into the clone.
+ */
+export async function importAssets(repo: string, branch: string | undefined, urls: string[], dir = "public/assets"): Promise<{ saved: { url: string; path: string; web?: string }[]; summary: string }> {
+  if (!REPO_RE.test(repo)) throw new Error("repo must look like owner/name");
+  const folder = dir.replace(/^\/+|\/+$/g, "");
+  if (!/^[A-Za-z0-9._/-]{1,120}$/.test(folder) || folder.includes("..")) throw new Error("bad dir");
+  const list = [...new Set(urls)].slice(0, 80);
+  if (!list.length) throw new Error("no urls");
+  const token = await githubToken();
+  const br = branch || (await getRepo(repo)).defaultBranch;
+  const head = await refSha(token, repo, br);
+  if (!head) throw new Error(`branch ${br} has no commits yet: commit the project's files first, then import assets`);
+
+  const PER = 8 * 1024 * 1024;
+  const TOTAL = 60 * 1024 * 1024;
+  let total = 0;
+  const used = new Set<string>();
+  const got: { url: string; name: string; data: Buffer }[] = [];
+  const failed: string[] = [];
+  let i = 0;
+  const worker = async () => {
+    while (i < list.length) {
+      const url = list[i++];
+      try {
+        const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; hosting-dashboard)", Accept: "*/*" }, signal: AbortSignal.timeout(25_000), redirect: "follow" });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const len = Number(r.headers.get("content-length") || 0);
+        if (len > PER) throw new Error("larger than 8 MB");
+        const data = Buffer.from(await r.arrayBuffer());
+        if (data.length > PER) throw new Error("larger than 8 MB");
+        if (total + data.length > TOTAL) throw new Error("over the 60 MB total");
+        total += data.length;
+        const type = (r.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+        let base = decodeURIComponent(new URL(url).pathname.split("/").pop() || "asset").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "asset";
+        // Next.js image URLs (/_next/image?url=...) and extensionless CDN paths: name from the content type
+        if (!/\.[a-z0-9]{2,5}$/i.test(base) && EXT_BY_TYPE[type]) base = `${base}.${EXT_BY_TYPE[type]}`;
+        let name = base;
+        for (let n = 2; used.has(name.toLowerCase()); n++) name = base.replace(/(\.[a-z0-9]+)?$/i, (ext) => `-${n}${ext}`);
+        used.add(name.toLowerCase());
+        got.push({ url, name, data });
+      } catch (e) {
+        failed.push(`${url}: ${(e as Error).message}`);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: 6 }, worker));
+  if (!got.length) return { saved: [], summary: `Nothing downloaded.\n${failed.join("\n")}` };
+
+  const tree: { path: string; mode: string; type: string; sha: string }[] = [];
+  for (const g of got) {
+    const b = await call(token, `/repos/${repo}/git/blobs`, { method: "POST", body: JSON.stringify({ content: g.data.toString("base64"), encoding: "base64" }) });
+    if (!b.ok) {
+      failed.push(`${g.url}: GitHub blob failed (${b.status})`);
+      continue;
+    }
+    tree.push({ path: `${folder}/${g.name}`, mode: "100644", type: "blob", sha: ((await b.json()) as { sha: string }).sha });
+  }
+  const base = (await (await call(token, `/repos/${repo}/git/commits/${head}`)).json()) as { tree: { sha: string } };
+  const t = await call(token, `/repos/${repo}/git/trees`, { method: "POST", body: JSON.stringify({ base_tree: base.tree.sha, tree }) });
+  if (!t.ok) throw new Error(`GitHub tree write failed (${t.status}): ${(await t.text()).slice(0, 200)}`);
+  const c = await call(token, `/repos/${repo}/git/commits`, { method: "POST", body: JSON.stringify({ message: `Add ${tree.length} assets to ${folder}`, tree: ((await t.json()) as { sha: string }).sha, parents: [head] }) });
+  if (!c.ok) throw new Error(`GitHub commit failed (${c.status})`);
+  const sha = ((await c.json()) as { sha: string }).sha;
+  const ref = await call(token, `/repos/${repo}/git/refs/heads/${br}`, { method: "PATCH", body: JSON.stringify({ sha, force: false }) });
+  if (!ref.ok) throw new Error(`GitHub branch update failed (${ref.status}): ${(await ref.text()).slice(0, 200)}`);
+  const web = (p: string) => (p.startsWith("public/") ? `/${p.slice("public/".length)}` : undefined);
+  const saved = got.filter((g) => tree.some((x) => x.path === `${folder}/${g.name}`)).map((g) => ({ url: g.url, path: `${folder}/${g.name}`, web: web(`${folder}/${g.name}`) }));
+  const summary = [
+    `Committed ${saved.length} files (${Math.round(total / 1024)} KB) to ${repo}@${br}: https://github.com/${repo}/commit/${sha}`,
+    ...saved.map((s) => `${s.url} -> ${s.path}${s.web ? ` (use "${s.web}" in the code)` : ""}`),
+    ...(failed.length ? ["Not downloaded:", ...failed] : []),
+  ].join("\n");
+  return { saved, summary };
+}

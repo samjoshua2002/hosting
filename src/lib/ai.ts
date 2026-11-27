@@ -145,7 +145,7 @@ export async function chat(opts: {
 }
 
 /** Look at an image (a screenshot) with the vision deployment and answer a question about it. */
-export async function describeImage(image: Buffer, question: string, mime = "image/png"): Promise<string> {
+export async function describeImage(image: Buffer | Buffer[], question: string, mime = "image/png", maxTokens = 500): Promise<string> {
   if (!aiConfigured()) throw new Error("Azure OpenAI is not configured");
   const deployments = [...new Set([process.env.AZURE_OPENAI_VISION_DEPLOYMENT, "gpt-4o", agentModel()].filter((m): m is string => Boolean(m)))];
   let last = "";
@@ -154,8 +154,8 @@ export async function describeImage(image: Buffer, question: string, mime = "ima
       method: "POST",
       headers: { "api-key": key(), "Content-Type": "application/json" },
       body: JSON.stringify({
-        max_completion_tokens: 500,
-        messages: [{ role: "user", content: [{ type: "text", text: question }, { type: "image_url", image_url: { url: `data:${mime};base64,${image.toString("base64")}` } }] }],
+        max_completion_tokens: maxTokens,
+        messages: [{ role: "user", content: [{ type: "text", text: question }, ...(Array.isArray(image) ? image : [image]).map((b) => ({ type: "image_url", image_url: { url: `data:${mime};base64,${b.toString("base64")}` } }))] }],
       }),
       signal: AbortSignal.timeout(60_000),
     }).catch((e: Error) => ({ ok: false, status: 0, text: async () => e.message }) as unknown as Response);

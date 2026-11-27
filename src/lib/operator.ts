@@ -3,6 +3,8 @@
 // to the database machine. Only destructive actions pause for the user's approval; then it carries on.
 import { knownFailureSpots, markPaused, openPlanSteps, recordModelError, recordPlan, recordStop, recordToolResult, takeStuck, withFailureLog } from "./failure-log";
 import { searchStackOverflow } from "./stackoverflow";
+import { captureSite, compareSites } from "./site-capture";
+import { importAssets } from "./github";
 import { recordSpan, traceOutput, withTrace } from "./telemetry";
 import { chat, describeImage, type ChatMessage, type ToolCall, type ToolDef } from "./ai";
 import type { ArtifactType, DiagramEdge, DiagramNode, OperatorEvent, Shell } from "./assistant-items";
@@ -304,6 +306,30 @@ export function toolCatalog(): { name: string; description: string }[] {
 }
 
 const TOOLS: ToolDef[] = [
+  fn(
+    "capture_site",
+    "Open a website in a real browser (scrolls it so lazy content loads) and capture in ONE call everything needed to rebuild it: every section in order (headings, text, buttons, links, images with sizes, columns, backgrounds), design tokens (fonts and font links, colours, text sizes, radii, CSS variables), nav, footer, forms, the site's other pages, and desktop + mobile screenshots it looks at for you. Use it to clone or study a site instead of reading pages with curl. pages: up to 4 more URLs of the same site to capture in the same call.",
+    { url: { type: "string" }, pages: { type: "array", items: { type: "string" }, description: "optional, up to 4 more page URLs of the same site" } },
+    ["url"],
+  ),
+  fn(
+    "compare_sites",
+    "Screenshot the original page and your clone at the same size, side by side (original left, clone right), look at them and list the concrete differences per band, with a similarity score. Use after deploying a clone, then fix the biggest differences and compare again.",
+    { original: { type: "string", description: "the original page URL" }, clone: { type: "string", description: "your clone's URL for the same page (full https link or /go/<project>/path)" } },
+    ["original", "clone"],
+  ),
+  fn(
+    "import_assets",
+    "Download files from the web (images, SVG files, videos, font files, e.g. from capture_site's asset list) and commit them into a GitHub repo in one commit, under dir (default public/assets). Returns each URL's path in the repo, to use in the code (e.g. /assets/hero.webp). Max 80 files, 8 MB each, 60 MB total. The branch must already have a commit.",
+    { repo: { type: "string", description: "owner/name" }, branch: { type: "string" }, urls: { type: "array", items: { type: "string" } }, dir: { type: "string", description: "default public/assets" } },
+    ["repo", "urls"],
+  ),
+  fn(
+    "view_image",
+    "Look at an image file on a machine (png, jpg, webp), e.g. reanimate's filmstrip and compare sheets or a generated chart, and answer a question about it. The image is also shown to the user.",
+    { vm: { type: "string" }, path: { type: "string", description: "absolute path or ~/..." }, question: { type: "string" } },
+    ["vm", "path"],
+  ),
   fn(
     "search_stackoverflow",
     "Search Stack Overflow for how others fixed an error or did a task. Returns the best matching questions with their accepted or top answer. Use it when an error isn't obvious, when a fix failed twice, or for framework or tool know-how. Query: the key part of the error message (no paths, ids or secrets) plus the tool or framework.",
@@ -707,7 +733,7 @@ function vmsFrom(v: unknown): VmConfig[] {
 }
 
 /** What a call does in plain words, and whether it must wait for the user. */
-const READ_ONLY = new Set(["share_file", "mcp_tools", "update_plan", "load_skill", "find_skills", "fleet_status", "job_log", "ask_user", "read_attachment", "github_repos", "show_diagram", "repo_branches", "repo_files", "repo_read", "create_artifact", "remember", "forget"]);
+const READ_ONLY = new Set(["search_stackoverflow", "capture_site", "compare_sites", "view_image", "share_file", "mcp_tools", "update_plan", "load_skill", "find_skills", "fleet_status", "job_log", "ask_user", "read_attachment", "github_repos", "show_diagram", "repo_branches", "repo_files", "repo_read", "create_artifact", "remember", "forget"]);
 
 const SQL_WRITE = /\b(insert|update|delete|drop|alter|truncate|create|grant|revoke|replace|merge|copy|vacuum|reindex|rename|lock)\b/i;
 const MONGO_WRITE = /\b(insert\w*|update\w*|delete\w*|remove|drop\w*|replace\w*|create\w*|rename\w*|bulkWrite|findOneAnd\w+|\$out|\$merge)\b/i;
@@ -939,6 +965,14 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `${a.disconnect ? "Disconnected" : "Connected"} ${str(a.from)} ${a.disconnect ? "from" : "→"} ${str(a.to)}`, needsApproval: false, detail: "" };
     case "github_repos":
       return { label: a.repo ? `Inspected GitHub repo ${str(a.repo)}` : "Listed GitHub repos", needsApproval: false, detail: "" };
+    case "capture_site":
+      return { label: `Captured ${str(a.url).replace(/^https?:\/\//, "").slice(0, 60)}${Array.isArray(a.pages) && a.pages.length ? ` and ${a.pages.length} more page${a.pages.length === 1 ? "" : "s"}` : ""}`, needsApproval: false, detail: "" };
+    case "compare_sites":
+      return { label: `Compared ${str(a.original).replace(/^https?:\/\//, "").slice(0, 40)} with the clone`, needsApproval: false, detail: "" };
+    case "import_assets":
+      return { label: `Downloaded ${Array.isArray(a.urls) ? a.urls.length : 0} assets into ${str(a.repo)}`, needsApproval: false, detail: (Array.isArray(a.urls) ? a.urls : []).map(String).slice(0, 40).join("\n") };
+    case "view_image":
+      return { label: `Looked at ${str(a.path).split("/").pop()} on ${str(a.vm)}`, needsApproval: false, detail: "" };
     case "search_stackoverflow":
       return { label: `Searched Stack Overflow: ${str(a.query).slice(0, 80)}`, needsApproval: false, detail: "" };
     case "link_databases":
@@ -988,6 +1022,11 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
   }
   try {
     switch (call.function.name) {
+      case "import_assets": {
+        const urls = (Array.isArray(a.urls) ? a.urls : []).map(String).filter((u) => /^https?:\/\//i.test(u));
+        const r = await importAssets(str(a.repo), str(a.branch) || undefined, urls, str(a.dir) || "public/assets");
+        return { ok: r.saved.length > 0, output: r.summary };
+      }
       case "search_stackoverflow":
         return { ok: true, output: await searchStackOverflow(str(a.query), { tags: str(a.tags) || undefined }) };
       case "fleet_status": {
@@ -1768,6 +1807,166 @@ async function shareFile(call: ToolCall, input: OperatorInput, emit: (e: Operato
   return { ok: true, output: `Shared ${name} (${Math.round(data.length / 1024)} KB) in the chat: the user can preview it and download it right there. Don't repeat a download link.` };
 }
 
+/** The reachable machine with the most free memory and some disk: where a headless browser runs. */
+async function browserVm(): Promise<VmConfig | undefined> {
+  const fleet = await mapLimit(getVms(), 12, (vm) => probe(vm, 9_999_999_999));
+  const pick = fleet.filter((s) => s.ok && s.agent && (s.agent.diskTotalKb - s.agent.diskUsedKb) / 1048576 > 1.5).sort((x, y) => y.agent!.memAvailKb - x.agent!.memAvailKb)[0];
+  return pick ? getVm(pick.name) : undefined;
+}
+
+const fullUrl = (u: string) => (u.startsWith("/go/") ? `${siteUrl()}${u}` : u.trim());
+const okUrl = (u: string) => /^https?:\/\/[^\s'"`$]+$/i.test(u);
+
+/** Save a screenshot to the session and show it in the chat. */
+async function showShot(input: OperatorInput, emit: (e: OperatorEvent) => void, id: string, title: string, name: string, jpeg: Buffer, url?: string, caption?: string): Promise<void> {
+  if (!input.sessionId) return;
+  const att = await saveAttachment(input.sessionId, name, "image/jpeg", jpeg).catch(() => null);
+  if (att) emit({ type: "image", id, title, src: `/api/attachments?session=${input.sessionId}&id=${att.id}&inline=1`, url, caption });
+}
+
+/** capture_site: the whole page (and up to 4 more) in one call, for cloning. */
+async function captureTool(call: ToolCall, input: OperatorInput, emit: (e: OperatorEvent) => void): Promise<{ ok: boolean; output: string }> {
+  let a: Args;
+  try {
+    a = JSON.parse(call.function.arguments || "{}") as Args;
+  } catch {
+    return { ok: false, output: "Arguments were not valid JSON." };
+  }
+  const url = fullUrl(str(a.url));
+  if (!okUrl(url)) return { ok: false, output: "url must be a full http(s) link" };
+  const pages = (Array.isArray(a.pages) ? a.pages : []).map((p) => fullUrl(str(p))).filter(okUrl).slice(0, 4);
+  const vm = await browserVm();
+  if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
+  const cap = await captureSite(vm, url, pages);
+  if (!cap.spec) return { ok: false, output: `couldn't capture ${url} on ${vm.name}: ${cap.fatal || cap.error || "the page didn't load"}` };
+  const host = url.replace(/^https?:\/\//, "").replace(/[^A-Za-z0-9.-]+/g, "-").slice(0, 50);
+  const desk = (cap.desktop?.shots ?? []).map((s) => Buffer.from(s.b64, "base64"));
+  const mob = (cap.mobile?.shots ?? []).map((s) => Buffer.from(s.b64, "base64"));
+  // what it looks like: one look at the whole desktop page (and the top of the mobile one)
+  let look = "";
+  try {
+    look = await describeImage(
+      [...desk.slice(0, 6), ...mob.slice(0, 1)],
+      "These are consecutive screenshots of one web page at 1440px wide, top to bottom (each about 1600px tall), and the last one is the top of the same page on a phone. A developer must rebuild it to look the same. Describe it section by section, top to bottom: layout (columns, alignment, widths), spacing, typography (serif/sans, weights, relative sizes, letter case), colours (backgrounds, text, accents, gradients), imagery (photos, illustrations, icons, 3D, video), buttons and cards (shape, radius, borders, shadows), decorative details, and anything that looks animated. Then summarise the overall visual style and how the phone layout differs. Be specific and concrete.",
+      "image/jpeg",
+      1800,
+    );
+  } catch (e) {
+    look = `(couldn't look at the screenshots: ${(e as Error).message})`;
+  }
+  for (const [i, b] of desk.slice(0, 2).entries()) await showShot(input, emit, `${call.id}-d${i}`, `${url.replace(/^https?:\/\//, "")} (desktop ${i + 1}/${desk.length})`, `capture-${host}-desktop-${i + 1}.jpg`, b, url, i === 0 ? look.slice(0, 600) : undefined);
+  if (mob[0]) await showShot(input, emit, `${call.id}-m0`, `${url.replace(/^https?:\/\//, "")} (phone)`, `capture-${host}-phone.jpg`, mob[0], url);
+  // SVG markup and the asset list go to their own attachments (read_attachment shows 20k characters at a time)
+  type Spec = { svgs?: { w: number; h: number; y: number; label: string; svg: string }[]; assets?: { url: string; kind: string }[]; motion?: unknown };
+  const strip = (sp: unknown) => {
+    const { svgs, assets, ...rest } = (sp ?? {}) as Spec & Record<string, unknown>;
+    return { rest, svgs: svgs ?? [], assets: assets ?? [] };
+  };
+  const main = strip(cap.spec);
+  const subs = (cap.subpages ?? []).map((p) => ({ ...p, parts: strip(p.spec) }));
+  const allSvgs = [...main.svgs, ...subs.flatMap((p) => p.parts.svgs)].filter((v, i, arr) => arr.findIndex((x) => x.svg === v.svg) === i);
+  const allAssets = [...main.assets, ...subs.flatMap((p) => p.parts.assets)].filter((v, i, arr) => arr.findIndex((x) => x.url === v.url) === i);
+  const notes: string[] = [];
+  if (input.sessionId) {
+    const sid = input.sessionId;
+    const save = async (name: string, data: unknown) => (await saveAttachment(sid, name, "application/json", Buffer.from(JSON.stringify(data, null, 1))).catch(() => null))?.id;
+    const specId = await save(`site-capture-${host}.json`, { url, status: cap.status, spec: main.rest, subpages: subs.map((p) => ({ url: p.url, status: p.status, error: p.error, spec: p.parts.rest })) });
+    if (specId) notes.push(`full structure of every captured page: attachment ${specId}`);
+    if (allAssets.length) {
+      const id = await save(`site-assets-${host}.json`, allAssets);
+      if (id) notes.push(`all ${allAssets.length} asset URLs (images, backgrounds, videos, font files): attachment ${id}; download them into the repo with import_assets`);
+    }
+    const chunks: (typeof allSvgs)[] = [];
+    let cur: typeof allSvgs = [];
+    let size = 0;
+    for (const v of allSvgs) {
+      if (size + v.svg.length > 17_000 && cur.length) {
+        chunks.push(cur);
+        cur = [];
+        size = 0;
+      }
+      cur.push(v);
+      size += v.svg.length + 80;
+    }
+    if (cur.length) chunks.push(cur);
+    for (const [i, c] of chunks.entries()) {
+      const id = await save(`site-svgs-${host}-${i + 1}.json`, c);
+      if (id) notes.push(`inline SVG markup ${i + 1}/${chunks.length} (${c.length} icons/logos: ${c.slice(0, 6).map((x) => x.label || `${x.w}x${x.h}`).join(", ")}${c.length > 6 ? ", …" : ""}): attachment ${id}`);
+    }
+  }
+  const kinds = allAssets.reduce<Record<string, number>>((m, x) => ((m[x.kind] = (m[x.kind] ?? 0) + 1), m), {});
+  const sub = subs.map((p) => `\n\n## Page ${p.url}${p.error ? ` (load problem: ${p.error})` : ""}\n${clip(JSON.stringify(p.parts.rest), 8000)}`).join("");
+  return {
+    ok: true,
+    output: `Captured ${url} on ${vm.name} (HTTP ${cap.status ?? "?"}${cap.error ? `, ${cap.error}` : ""}; page ${cap.desktop?.height ?? "?"}px tall, ${desk.length} desktop + ${mob.length} phone screenshots). Assets: ${Object.entries(kinds).map(([k, n]) => `${n} ${k}`).join(", ") || "none"}; ${allSvgs.length} inline SVGs.${notes.length ? `\nSaved (read_attachment):\n- ${notes.join("\n- ")}` : ""}\n\n## What it looks like\n${look}\n\n## Structure, design tokens and motion (from the live page)\n${clip(JSON.stringify(main.rest), 18000)}${sub}`,
+  };
+}
+
+/** compare_sites: original left, clone right, and what differs. */
+async function compareTool(call: ToolCall, input: OperatorInput, emit: (e: OperatorEvent) => void): Promise<{ ok: boolean; output: string }> {
+  let a: Args;
+  try {
+    a = JSON.parse(call.function.arguments || "{}") as Args;
+  } catch {
+    return { ok: false, output: "Arguments were not valid JSON." };
+  }
+  const original = fullUrl(str(a.original));
+  const clone = fullUrl(str(a.clone));
+  if (!okUrl(original) || !okUrl(clone)) return { ok: false, output: "original and clone must be full http(s) links" };
+  const vm = await browserVm();
+  if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
+  const r = await compareSites(vm, original, clone);
+  const bands = (r.bands ?? []).map((b) => Buffer.from(b, "base64"));
+  if (!bands.length) return { ok: false, output: `couldn't compare: ${r.fatal || JSON.stringify(r.meta ?? {})}` };
+  let diff = "";
+  try {
+    diff = await describeImage(
+      bands.slice(0, 4),
+      "Each image is one horizontal band of the same web page, top to bottom (band 1 is the top). LEFT of the red line: the ORIGINAL website. RIGHT: the CLONE someone built. Both were rendered at 1440px wide and are shown at half size. List the concrete differences that matter, most important first, per band: missing, extra or reordered sections; layout and columns; spacing and sizes; typography (font, weight, size, case); colours and backgrounds; images and icons; buttons, cards, borders, radii, shadows; text. Be specific, e.g. 'band 1: clone heading about 30% smaller and left-aligned, original is centred'. End with one line 'Similarity: NN/100' for the whole page.",
+      "image/jpeg",
+      1800,
+    );
+  } catch (e) {
+    diff = `(couldn't look at the comparison: ${(e as Error).message})`;
+  }
+  for (const [i, b] of bands.slice(0, 3).entries()) await showShot(input, emit, `${call.id}-b${i}`, `Original (left) vs clone (right), band ${i + 1}`, `compare-band-${i + 1}.jpg`, b, clone, i === 0 ? diff.slice(0, 600) : undefined);
+  const meta = (r.meta ?? []).map((m) => `${m.url}: HTTP ${m.status ?? "?"}${m.error ? ` (${m.error})` : ""}, ${m.height ?? "?"}px tall`).join("; ");
+  return { ok: true, output: `Compared on ${vm.name}. ${meta}\n\n${diff}` };
+}
+
+/** view_image: look at an image file on a machine. */
+async function viewImageTool(call: ToolCall, input: OperatorInput, emit: (e: OperatorEvent) => void): Promise<{ ok: boolean; output: string }> {
+  let a: Args;
+  try {
+    a = JSON.parse(call.function.arguments || "{}") as Args;
+  } catch {
+    return { ok: false, output: "Arguments were not valid JSON." };
+  }
+  const vm = getVm(str(a.vm));
+  if (!vm) return { ok: false, output: `unknown machine ${str(a.vm)}` };
+  const path = str(a.path).trim();
+  const ext = path.toLowerCase().match(/\.(png|jpe?g|webp)$/)?.[1];
+  if (!path || !ext) return { ok: false, output: "path must be a .png, .jpg or .webp file" };
+  const p = path.startsWith("~/") ? `"$HOME"/${shq(path.slice(2))}` : shq(path);
+  const r = await withVm(vm, (c) => run(c, `f=${p}; [ -f "$f" ] || { echo NOFILE; exit 0; }; [ "$(stat -c %s "$f")" -le 8000000 ] || { echo TOOBIG; exit 0; }; base64 -w0 "$f"`, { timeoutMs: 60_000, maxBytes: 12 * 1024 * 1024 }));
+  const out = r.stdout.trim();
+  if (out === "NOFILE") return { ok: false, output: `${path} not found on ${vm.name}` };
+  if (out === "TOOBIG") return { ok: false, output: `${path} is larger than 8 MB` };
+  const buf = Buffer.from(out, "base64");
+  const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+  let seen = "";
+  try {
+    seen = await describeImage(buf, str(a.question) || "Describe this image in detail: what it shows, any labels, numbers and differences it highlights.", mime, 1500);
+  } catch (e) {
+    seen = `(couldn't look at it: ${(e as Error).message})`;
+  }
+  if (input.sessionId) {
+    const att = await saveAttachment(input.sessionId, path.split("/").pop() || "image", mime, buf).catch(() => null);
+    if (att) emit({ type: "image", id: call.id, title: path.split("/").pop() || "Image", src: `/api/attachments?session=${input.sessionId}&id=${att.id}&inline=1`, caption: seen.slice(0, 600) });
+  }
+  return { ok: true, output: seen };
+}
+
 async function screenshot(call: ToolCall, input: OperatorInput, emit: (e: OperatorEvent) => void): Promise<{ ok: boolean; output: string }> {
   let a: Args;
   try {
@@ -1979,6 +2178,10 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
   const hubSkills = await installedSkills().catch(() => []);
   const standing = await getInstructions().catch(() => "");
   const known = await knownFailureSpots().catch(() => "");
+  // cloning a site is too important to leave to whether the model remembers to load the playbook
+  const wantsClone = /https?:\/\/\S+/.test(input.message ?? "") && /\b(clone|copy|replicat|recreat|rebuild|mirror|same as|like this (site|website|page)|look like)\w*/i.test(input.message ?? "");
+  const wantsMotion = /\b(animat|motion|reanimate|transition|marquee|carousel|parallax|scroll effect|hover effect|framer|gsap|three\.?js|webgl)\w*/i.test(input.message ?? "");
+  const routed = [wantsClone ? skill("clone-website") : undefined, wantsMotion ? skill("motion") : undefined].filter((x): x is NonNullable<typeof x> => Boolean(x));
   const [mcp, fleetNow, connected, prefs, mailboxes] = await Promise.all([
     mcpSummary(input.connectorsOff).catch(() => ""),
     fleetSnapshot(),
@@ -1992,6 +2195,7 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
     `Review mode: ${review === "manual" ? "manual (the user approves every action)" : "auto (only destructive actions wait for approval)"}.`,
     `Your fleet right now (live; every machine and everything installed on it; call fleet_status for full detail, logs and jobs):\n${fleetNow}`,
     preferenceRules(prefs),
+    ...routed.map((sk) => `Playbook "${sk.id}" (already loaded for this request; follow it):\n${sk.body}`),
     known ? `Known failure spots (from the failure log; open, repeated failures of earlier runs; don't walk into them again):\n${known}` : "",
     connected,
     mailboxes ||
@@ -2121,6 +2325,13 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
           const r = await traced(call, () => shareFile(call, input, emit));
           emit({ type: "tool_result", id: call.id, ok: r.ok, output: clip(r.output, 3000) });
           return { role: "tool" as const, tool_call_id: call.id, content: clip(r.output) };
+        }
+        if (call.function.name === "capture_site" || call.function.name === "compare_sites" || call.function.name === "view_image") {
+          emit({ type: "tool", id: call.id, label: d.label, tool: toolTag(call) });
+          const go = call.function.name === "capture_site" ? captureTool : call.function.name === "compare_sites" ? compareTool : viewImageTool;
+          const r = await traced(call, () => go(call, input, emit));
+          emit({ type: "tool_result", id: call.id, ok: r.ok, output: clip(r.output, 3000) });
+          return { role: "tool" as const, tool_call_id: call.id, content: clip(r.output, 40_000) };
         }
         if (call.function.name === "screenshot") {
           emit({ type: "tool", id: call.id, label: d.label, tool: toolTag(call) });
