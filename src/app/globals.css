@@ -249,6 +249,9 @@ a {
  */
 :root[data-theme="light"] {
   color-scheme: light;
+  /* status text needs darker shades to be readable on white */
+  --critical-text: #b42323;
+  --good-text: #15803d;
   --bg: #f7f7f8;
   --sidebar: #f1f1f3;
   --panel: #ffffff;

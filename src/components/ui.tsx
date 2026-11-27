@@ -28,7 +28,7 @@ export function Button({
         variant === "primary" && "rounded-lg bg-[var(--accent)] text-[var(--accent-ink)] hover:brightness-110 shadow-sm [&_svg]:text-[var(--accent-ink)]",
         variant === "default" && "rounded-lg border border-[var(--line-strong)] bg-[var(--panel-2)] text-zinc-200 hover:bg-pop [&_svg]:text-[var(--accent)]",
         variant === "ghost" && "rounded-lg text-muted hover:bg-white/5 hover:text-zinc-100",
-        variant === "danger" && "rounded-lg border border-rose-900/70 bg-rose-950/40 text-rose-300 hover:bg-rose-900/40",
+        variant === "danger" && "rounded-lg border border-[var(--critical)]/50 bg-[var(--critical)]/10 text-[var(--critical-text)] hover:bg-[var(--critical)]/20 [&_svg]:text-[var(--critical-text)]",
         className,
       )}
     >

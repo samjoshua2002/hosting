@@ -142,7 +142,7 @@ export default function FailuresPage() {
           </div>
         }
       />
-      {error && <p className="rounded-lg bg-rose-950/40 p-3 text-sm text-rose-300">{error}</p>}
+      {error && <p className="rounded-lg border border-[var(--critical)]/40 bg-[var(--critical)]/10 p-3 text-sm text-[var(--critical-text)]">{error}</p>}
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
         <Card className="p-5">
