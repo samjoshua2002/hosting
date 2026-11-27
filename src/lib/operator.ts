@@ -6,6 +6,7 @@ import { searchStackOverflow } from "./stackoverflow";
 import { captureSite, compareSites } from "./site-capture";
 import { createFromTemplate, importAssets } from "./github";
 import { cloneTemplateSkill } from "./clone-template";
+import { continueFrom, listVersions, saveVersion, switchVersion } from "./versions";
 import { recordSpan, traceOutput, withTrace } from "./telemetry";
 import { chat, describeImage, type ChatMessage, type ToolCall, type ToolDef } from "./ai";
 import type { ArtifactType, DiagramEdge, DiagramNode, OperatorEvent, Shell } from "./assistant-items";
@@ -231,6 +232,7 @@ Working on code (GitHub)
 - repo_branches, repo_files and repo_read inspect a repo; repo_commit commits one or more files in a single commit (full content, or exact find/replace edits for small changes); repo_pull_request opens a PR. github_api calls any other GitHub REST endpoint the token allows (issues, releases, actions runs, gists, workflows…).
 - Branch: don't ask. Repos you created or imported in this conversation, empty repos and repos with no deployed project: commit straight to the default branch. An existing repo whose default branch auto-deploys a live project: for small fixes commit to the default branch; for big or risky changes use a branch "assistant/<short-topic>" and open a pull request, then say so in one line. Only ask if the user said they want to choose. Read the files you change first; keep edits minimal and in the repo's style.
 - Never git pull/clone/push the user's private repos by hand with run_command (the machines have no GitHub login). Change code with repo_commit; a project with auto-deploy redeploys on each commit; deploy_project again redeploys any project from its repo with the token.
+- Versions (project_versions): a version is a complete change the user is happy with (a new theme, a redesign, a big feature), never a fix or correction. Save one only when the user says so or clearly approves the result ("perfect", "I like it", "keep this", "save it"). After finishing a complete change, end with the suggestion ">> Save this as version N (<short name>)". "Go back to v1" / "show the dark version" → switch (it only changes what is live); "continue from v1" / "undo everything after v1" → continue (new commit, later versions kept). Before the first version of a project that already has work the user liked, save that as v1 first so it isn't lost.
 - A new or empty repo needs no setup first: repo_commit handles the very first commit (it starts the repo and its main branch). Commit all the project's files in as few commits as possible (up to 40 files each). After committing, give the commit link; if a project auto-deploys from that branch, follow its deploy (fleet_status shows running deploy jobs) and report the result.
 - Review mode is chosen by the user: in manual mode every action waits for approval (commits show the diff first); in auto mode only destructive actions wait. Either way, never commit secrets.
 
@@ -319,6 +321,19 @@ const TOOLS: ToolDef[] = [
     "Screenshot the original page and your clone at the same size, side by side (original left, clone right), look at them and list the concrete differences per band, with a similarity score. Use after deploying a clone, then fix the biggest differences and compare again.",
     { original: { type: "string", description: "the original page URL" }, clone: { type: "string", description: "your clone's URL for the same page (full https link or /go/<project>/path)" } },
     ["original", "clone"],
+  ),
+  fn(
+    "project_versions",
+    "Named versions of a GitHub project (git tags v1, v2, … with a name and note). action save: tag the repo's current code as the next version (only when the user is happy with a complete change, never for fixes); list: the versions; switch: make a version live for a project (redeploys it from that tag; version \"latest\" follows the branch again and resumes auto-deploy); continue: make an old version's code the current code with a new commit, to keep working from it (later versions stay saved).",
+    {
+      action: { type: "string", enum: ["save", "list", "switch", "continue"] },
+      repo: { type: "string", description: "owner/name (save, list, continue)" },
+      project: { type: "string", description: "project name (switch)" },
+      version: { type: "string", description: "v1, v2, … or latest (switch, continue)" },
+      name: { type: "string", description: "short version name for save, e.g. Light theme" },
+      note: { type: "string", description: "what changed, one line (save)" },
+    },
+    ["action"],
   ),
   fn(
     "create_repo_from_template",
@@ -977,6 +992,13 @@ function describeCall(call: ToolCall): { label: string; needsApproval: boolean; 
       return { label: `Captured ${str(a.url).replace(/^https?:\/\//, "").slice(0, 60)}${Array.isArray(a.pages) && a.pages.length ? ` and ${a.pages.length} more page${a.pages.length === 1 ? "" : "s"}` : ""}`, needsApproval: false, detail: "" };
     case "compare_sites":
       return { label: `Compared ${str(a.original).replace(/^https?:\/\//, "").slice(0, 40)} with the clone`, needsApproval: false, detail: "" };
+    case "project_versions":
+      return {
+        label: str(a.action) === "save" ? `Saved ${str(a.repo)} as a new version: ${str(a.name)}` : str(a.action) === "switch" ? `Made ${str(a.version) || "latest"} live for ${str(a.project)}` : str(a.action) === "continue" ? `Continued ${str(a.repo)} from ${str(a.version)}` : `Listed versions of ${str(a.repo)}`,
+        needsApproval: false,
+        detail: "",
+        readOnly: str(a.action) === "list",
+      };
     case "create_repo_from_template":
       return { label: `Created repo ${str(a.name)} from ${str(a.template) || "the website cloner template"}`, needsApproval: false, detail: "" };
     case "import_assets":
@@ -1035,6 +1057,26 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
   }
   try {
     switch (call.function.name) {
+      case "project_versions": {
+        const act = str(a.action);
+        if (act === "save") {
+          const v = await saveVersion(str(a.repo), { name: str(a.name), note: str(a.note) });
+          return { ok: true, output: `Saved ${v.tag} "${v.name}" (${v.sha.slice(0, 7)}) for ${str(a.repo)}. The user can switch between versions on the project's Versions tab, or ask you.` };
+        }
+        if (act === "list") {
+          const vs = await listVersions(str(a.repo));
+          return { ok: true, output: vs.length ? vs.map((v) => `${v.tag} "${v.name}" ${new Date(v.at).toISOString().slice(0, 10)} ${v.sha.slice(0, 7)}${v.note ? ` · ${v.note}` : ""}`).join("\n") : "No versions saved yet." };
+        }
+        if (act === "switch") {
+          const r = await switchVersion(str(a.project), str(a.version) || "latest");
+          return { ok: true, output: `${str(a.project)} is now deploying ${/^v\d+$/.test(r.live) ? `version ${r.live}` : `the latest code (${r.live}, auto-deploy resumes)`} on ${r.jobs.map((j) => `${j.vm} (job ${j.id})`).join(", ")}. Follow it with job_log, then check the link.` };
+        }
+        if (act === "continue") {
+          const r = await continueFrom(str(a.repo), str(a.version));
+          return { ok: true, output: `The current code on ${r.branch} is now ${str(a.version)}'s (commit ${r.url}). Projects that auto-deploy from ${r.branch} redeploy it. Later versions stay saved.` };
+        }
+        return { ok: false, output: "action must be save, list, switch or continue" };
+      }
       case "create_repo_from_template": {
         const r = await createFromTemplate(str(a.template) || "JCodesMore/ai-website-cloner-template", str(a.name), a.private !== false);
         return { ok: true, output: `Created ${r.repo} (default branch ${r.branch}): ${r.url}. Template layout: src/app/ (routes), src/components/sites/<site>/ (components and extracted SVGs), public/sites/<site>/ (assets), docs/research/<site>/ (notes). Deploy with its Dockerfile (Node 24, port 3000).` };

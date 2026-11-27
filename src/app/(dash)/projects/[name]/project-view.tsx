@@ -14,7 +14,7 @@ import { projectType, TYPE_LABEL } from "@/lib/project-type";
 import { fmtDuration, timeAgo, vmState } from "@/lib/format";
 import type { JobStartResult, ProjectState } from "@/lib/types";
 
-type Tab = "logs" | "deploys" | "env" | "settings";
+type Tab = "logs" | "deploys" | "versions" | "env" | "settings";
 
 export function ProjectView() {
   const { name } = useParams<{ name: string }>();
@@ -161,6 +161,7 @@ export function ProjectView() {
           [
             ["logs", "Logs"],
             ["deploys", "Deploys"],
+            ...(m.github ? ([["versions", "Versions"]] as [Tab, string][]) : []),
             ["env", "Environment"],
             ["settings", "Settings"],
           ] as [Tab, string][]
@@ -177,6 +178,16 @@ export function ProjectView() {
 
       {tab === "logs" && <Logs name={name} vms={instances.map((i) => i.vm)} />}
       {tab === "deploys" && <Deploys name={name} vms={instances.map((i) => i.vm)} />}
+      {tab === "versions" && m.github && (
+        <Versions
+          name={name}
+          repo={m.github.repo}
+          onDeploy={(jobs) => {
+            if (jobs[0]) openJob({ vm: jobs[0].vm, id: jobs[0].id, title: `deploy ${name}` });
+            void refresh(instances.map((i) => i.vm));
+          }}
+        />
+      )}
       {tab === "env" && <Env name={name} instances={instances} />}
       {tab === "settings" && (
         <Card className="p-6">
@@ -294,6 +305,143 @@ function Logs({ name, vms }: { name: string; vms: string[] }) {
       >
         {error ? <span className="text-[var(--critical-text)]">{error}</span> : text || "Loading…"}
       </pre>
+    </div>
+  );
+}
+
+interface Version {
+  n: number;
+  tag: string;
+  name: string;
+  note: string;
+  sha: string;
+  branch: string;
+  at: number;
+}
+
+/** Named versions of the project: save the current code as one, make any of them live, or continue from one. */
+function Versions({ name, repo, onDeploy }: { name: string; repo: string; onDeploy: (jobs: { vm: string; id: string }[]) => void }) {
+  const [data, setData] = useState<{ versions: Version[]; live: string | null } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [vname, setVname] = useState("");
+  const [note, setNote] = useState("");
+  const q = `/api/projects/versions?project=${encodeURIComponent(name)}&repo=${encodeURIComponent(repo)}`;
+  const fetchData = useCallback(
+    () =>
+      api<{ versions: Version[]; live: string | null }>(q)
+        .then((d) => {
+          setData(d);
+          setError(null);
+        })
+        .catch((e) => setError((e as Error).message)),
+    [q],
+  );
+  useEffect(() => {
+    void fetchData();
+  }, [fetchData]);
+
+  const run = async (key: string, body: Record<string, unknown>, after?: (r: { jobs?: { vm: string; id: string }[] }) => void) => {
+    setBusy(key);
+    setError(null);
+    try {
+      const r = await api<{ jobs?: { vm: string; id: string }[] }>("/api/projects/versions", body);
+      after?.(r);
+      await fetchData();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const versions = [...(data?.versions ?? [])].reverse();
+  const tagLive = data?.live && /^v\d+$/.test(data.live) ? data.live : null;
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-5">
+        <p className="text-sm text-muted">
+          Save a version when a complete change is done and you are happy with it (a new theme, a redesign, a feature). Fixes in between are normal commits, not versions.
+        </p>
+        <form
+          className="mt-4 flex flex-wrap items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!vname.trim()) return;
+            void run("save", { action: "save", repo, name: vname, note }, () => {
+              setVname("");
+              setNote("");
+            });
+          }}
+        >
+          <input className={cx(inputCls, "h-9 w-56")} placeholder={`Name, e.g. "Light theme"`} value={vname} onChange={(e) => setVname(e.target.value)} maxLength={80} aria-label="Version name" />
+          <input className={cx(inputCls, "h-9 min-w-0 flex-1")} placeholder="What changed (optional)" value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} aria-label="Version note" />
+          <Button type="submit" variant="primary" loading={busy === "save"} disabled={!vname.trim()}>
+            Save current code as v{(data?.versions.at(-1)?.n ?? 0) + 1}
+          </Button>
+        </form>
+        {error && <p className="mt-3 rounded-lg bg-rose-950/40 p-3 text-sm text-rose-300">{error}</p>}
+      </Card>
+
+      <Card className="overflow-hidden">
+        <div className="flex items-center justify-between border-b border-white/[0.06] px-6 py-3 text-sm">
+          <span className="text-muted">
+            Live now: <b className="text-ink">{tagLive ? `${tagLive} · ${data?.versions.find((v) => v.tag === tagLive)?.name ?? ""}` : `latest (${data?.live ?? "…"})`}</b>
+          </span>
+          {tagLive && (
+            <Button size="sm" onClick={() => void run("latest", { action: "switch", project: name, version: "latest" }, (r) => onDeploy(r.jobs ?? []))} loading={busy === "latest"}>
+              <RotateCw className="size-3.5" /> Back to latest
+            </Button>
+          )}
+        </div>
+        {data === null ? (
+          <div className="space-y-2 p-6">
+            {[0, 1].map((i) => (
+              <div key={i} className="h-10 animate-pulse rounded-lg bg-white/[0.04]" />
+            ))}
+          </div>
+        ) : versions.length === 0 ? (
+          <p className="p-6 text-sm text-muted">No versions yet. Save one above, or tell the Assistant &ldquo;save this as a version&rdquo; when you&apos;re happy with a change.</p>
+        ) : (
+          <ul className="divide-y divide-white/[0.05]">
+            {versions.map((v) => {
+              const live = tagLive === v.tag;
+              return (
+                <li key={v.tag} className="flex flex-wrap items-center gap-3 px-6 py-3">
+                  <Badge tone={live ? "green" : "gray"}>{v.tag}</Badge>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-ink">
+                      {v.name} {live && <span className="text-xs font-normal text-[var(--good-text)]">· live</span>}
+                    </p>
+                    <p className="truncate text-xs text-muted">
+                      {timeAgo(v.at)} · <a className="hover:text-ink" href={`https://github.com/${repo}/tree/${v.tag}`} target="_blank" rel="noreferrer">{v.sha.slice(0, 7)}</a>
+                      {v.note ? ` · ${v.note}` : ""}
+                    </p>
+                  </div>
+                  {!live && (
+                    <Button size="sm" onClick={() => void run(`switch-${v.tag}`, { action: "switch", project: name, version: v.tag }, (r) => onDeploy(r.jobs ?? []))} loading={busy === `switch-${v.tag}`}>
+                      <Play className="size-3.5" /> Make live
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    title="Make this version's code the current code (a new commit), to keep working from it. Later versions stay saved."
+                    onClick={() => {
+                      if (confirm(`Continue from ${v.tag} (${v.name})? The current code becomes ${v.tag}'s code in a new commit; later versions stay saved.`))
+                        void run(`continue-${v.tag}`, { action: "continue", repo, version: v.tag });
+                    }}
+                    loading={busy === `continue-${v.tag}`}
+                  >
+                    <RefreshCw className="size-3.5" /> Continue from here
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
     </div>
   );
 }
