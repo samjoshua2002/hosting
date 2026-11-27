@@ -122,7 +122,7 @@ export default function FailuresPage() {
   const openCount = (items ?? []).filter((f) => !f.resolved).length;
 
   return (
-    <div className="space-y-5">
+    <div className="mx-auto w-full max-w-7xl space-y-6 px-10 py-8">
       <PageHero
         eyebrow="Assistant"
         title="Failure log"

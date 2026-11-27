@@ -25,6 +25,8 @@ export interface SessionDoc extends SessionMeta {
   items: Item[];
   transcript: unknown[];
   attachments: Att[];
+  /** time slices continued by the server on its own since the user last wrote (long tasks) */
+  autoSlices?: number;
 }
 
 export const sessionPath = (id: string) => `sessions/${id}.json`;

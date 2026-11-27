@@ -7,7 +7,7 @@ import { LOCAL_URL, useNiceLink } from "@/components/nice-links";
 
 import { Activity, Blocks, SquareTerminal, ArrowDown, ArrowUpRight, Cpu, FolderOpen, Globe, Hash, MessagesSquare, MoreHorizontal, Settings, Camera, FileText, GitBranch, Layers, Link2, ListChecks, Loader2, MessageSquarePlus, Paperclip, Pencil, Pin, PinOff, Search, Server, ShieldCheck, Sparkles, Trash2, Workflow, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { addFiles, currentDoc, editSession, hydrate, newSession, openSession, removeSession, send, setModel, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
+import { addFiles, currentDoc, editSession, followServer, hydrate, newSession, openSession, removeSession, send, setModel, setReview, setTitle, stop, updateItems, useAssistant, type Meta } from "@/components/assistant-store";
 import { ArtifactView } from "@/components/artifact-view";
 import { Monitor, TerminalPanel } from "@/components/assistant-panel";
 import { BrandMark } from "@/components/brand";
@@ -143,7 +143,10 @@ export default function AssistantPage() {
         setCountdown((c) => {
           if (c === null || c <= 1) {
             clearInterval(iv);
-            void send(sid, { message: "Continue." });
+            // the server continues long runs by itself: follow it; only nudge it if it didn't pick the run up
+            void followServer(sid).then((following) => {
+              if (!following) void send(sid, { message: "Continue." });
+            });
             return null;
           }
           return c - 1;

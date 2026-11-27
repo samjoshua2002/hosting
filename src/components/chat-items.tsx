@@ -1,10 +1,10 @@
 "use client";
 
-import { Archive, AudioLines, Check, ChevronRight, Download, Eye, FileCode2, FileText, ListChecks, Loader2, Search, ShieldAlert, X } from "lucide-react";
+import { Archive, AudioLines, Check, ChevronRight, CirclePause, Download, Eye, FileCode2, FileText, ListChecks, Loader2, Search, ShieldAlert, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Item } from "@/lib/assistant-items";
 import { useStored } from "@/lib/client";
-import { answer, decide, decideAll } from "./assistant-store";
+import { answer, currentDoc, decide, decideAll, useAssistant } from "./assistant-store";
 import { ArtifactCard } from "./artifact-view";
 import { DiffView, TerminalBlock } from "./chat-blocks";
 import { FlowDiagram } from "./flow-diagram";
@@ -335,6 +335,10 @@ function Bubble({
 
 /** The Assistant's live plan: a checklist that ticks itself off while it works. */
 export function PlanCard({ plan, compact }: { plan: Extract<Item, { kind: "plan" }>; compact?: boolean }) {
+  // a step is only spinning while the session is really working (here, or on the server)
+  const st = useAssistant();
+  const cur = currentDoc(st);
+  const live = cur.busy || cur.remote;
   const done = plan.steps.filter((s) => s.status === "done" || s.status === "skipped").length;
   const pct = plan.steps.length ? Math.round((done / plan.steps.length) * 100) : 0;
   const failed = plan.steps.some((s) => s.status === "failed");
@@ -357,7 +361,7 @@ export function PlanCard({ plan, compact }: { plan: Extract<Item, { kind: "plan"
               {s.status === "done" ? (
                 <Check className="size-3.5 text-[var(--good)]" />
               ) : s.status === "doing" ? (
-                <Loader2 className="size-3.5 animate-spin text-[var(--accent)]" />
+                live ? <Loader2 className="size-3.5 animate-spin text-[var(--accent)]" /> : <CirclePause className="size-3.5 text-[var(--warning)]" aria-label="paused" />
               ) : s.status === "failed" ? (
                 <X className="size-3.5 text-[var(--critical)]" />
               ) : (

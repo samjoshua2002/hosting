@@ -8,6 +8,7 @@ import { runOperator } from "./operator";
 import { titleFor } from "./session-title";
 import { listSessions, saveSessionDoc, sessionPath, updateIndex, type SessionDoc } from "./sessions";
 import { storeGetJson } from "./store";
+import { createHash } from "node:crypto";
 
 export interface RunRequest {
   sessionId: string;
@@ -26,7 +27,12 @@ export interface RunRequest {
   source?: SessionDoc["source"];
   /** only for a brand-new session that has history elsewhere */
   transcript?: ChatMessage[];
+  /** the server continuing its own paused run (next time slice): no new message, and the session is already marked running */
+  resume?: boolean;
 }
+
+/** Long tasks: how many time slices (~4 min each) the server continues on its own before waiting for the user. */
+const MAX_AUTO_SLICES = 40;
 
 export class BusyError extends Error {}
 
@@ -37,7 +43,7 @@ export async function prepareRun(r: RunRequest): Promise<{ doc: SessionDoc; hist
   // the chat shows "••••(NAME, saved)" where a secret was
   if (r.display) r.display = displayMasked(await vaultText(maskTokens(r.display)));
   const prev = await storeGetJson<SessionDoc>(sessionPath(r.sessionId)); // missing → null; SSH trouble → error, never a silent reset
-  if (prev?.running && Date.now() - prev.updatedAt < 6 * 60_000) throw new BusyError("This session is still working. Wait for it or press Stop.");
+  if (prev?.running && !r.resume && Date.now() - prev.updatedAt < 6 * 60_000) throw new BusyError("This session is still working. Wait for it or press Stop.");
   let items: Item[] = prev?.items ?? [];
   const { approvals, answers } = r;
   if (approvals) items = items.map((i) => (i.kind === "approval" && approvals[i.id] !== undefined ? { ...i, decision: approvals[i.id] } : i));
@@ -52,6 +58,8 @@ export async function prepareRun(r: RunRequest): Promise<{ doc: SessionDoc; hist
   const history = (prev?.transcript as ChatMessage[] | undefined) ?? r.transcript ?? [];
   const doc: SessionDoc = {
     ...(prev ? { pinned: prev.pinned, named: prev.named, titled: prev.titled, source: prev.source } : { source: r.source }),
+    // a message from the user starts the count again; each server continuation adds one
+    autoSlices: r.resume ? (prev?.autoSlices ?? 0) + 1 : 0,
     id: r.sessionId,
     title: prev?.title ?? (r.title ?? "New session").slice(0, 120),
     updatedAt: Date.now(),
@@ -77,9 +85,13 @@ export async function runSession(r: RunRequest, doc: SessionDoc, history: ChatMe
       .catch((e) => console.error("session save failed", e));
     return saving;
   };
+  let lastDone: Extract<OperatorEvent, { type: "done" }> | null = null;
   const emit = (e: OperatorEvent) => {
     doc.items = applyEvent(doc.items, e);
-    if (e.type === "done") doc.transcript = e.transcript;
+    if (e.type === "done") {
+      doc.transcript = e.transcript;
+      lastDone = e;
+    }
     onEvent?.(e);
   };
 
@@ -96,8 +108,11 @@ export async function runSession(r: RunRequest, doc: SessionDoc, history: ChatMe
     emit({ type: "text", content: `Stopped: ${(e as Error).message}` });
     emit({ type: "done", transcript: doc.transcript, waiting: false, paused: false });
   }
+  // out of time for this slice (not waiting for the user, not stopped): the server carries on by itself
+  const done = lastDone as Extract<OperatorEvent, { type: "done" }> | null;
+  const carryOn = Boolean(done?.paused && !done.waiting && !stopper.signal.aborted && (doc.autoSlices ?? 0) < MAX_AUTO_SLICES);
   doc.items = settle(doc.items);
-  doc.running = false;
+  doc.running = carryOn;
   // the user may have renamed or pinned it while it ran
   const cur = (await listSessions().catch(() => [])).find((x) => x.id === doc.id);
   if (cur?.named) Object.assign(doc, { title: cur.title, named: true });
@@ -111,5 +126,27 @@ export async function runSession(r: RunRequest, doc: SessionDoc, history: ChatMe
     }
   }
   await save();
-  await updateIndex({ id: doc.id, title: doc.title, updatedAt: Date.now(), running: false, pinned: doc.pinned, named: doc.named, titled: doc.titled, source: doc.source }).catch(() => {});
+  if (carryOn && !(await continueOnServer(r).catch(() => false))) {
+    doc.running = false;
+    await save();
+  }
+  await updateIndex({ id: doc.id, title: doc.title, updatedAt: Date.now(), running: doc.running, pinned: doc.pinned, named: doc.named, titled: doc.titled, source: doc.source }).catch(() => {});
+}
+
+/** The secret the server uses to continue its own runs (derived from the sign-in secrets; never sent to a browser). */
+export function continueToken(): string {
+  return createHash("sha256").update(`continue:${process.env.SESSION_SECRET ?? ""}:${process.env.ADMIN_PASSWORD ?? ""}`).digest("hex");
+}
+
+/** Start the next time slice in a fresh server invocation (it answers at once and works in the background). */
+async function continueOnServer(r: RunRequest): Promise<boolean> {
+  const base = (process.env.APP_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")).replace(/\/$/, "");
+  if (!base) return false;
+  const res = await fetch(`${base}/api/ai/continue`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-continue-token": continueToken() },
+    body: JSON.stringify({ session: r.sessionId, model: r.model, review: r.review, connectorsOff: r.connectorsOff }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  return res.status === 202;
 }

@@ -192,6 +192,13 @@ export async function openSession(id: string) {
   }
 }
 
+/** Look at the server copy and follow it if the server is still working on it (a long run continuing by itself). */
+export async function followServer(id: string): Promise<boolean> {
+  if (streams.has(id)) return true;
+  await refreshFromServer(id).catch(() => false);
+  return Boolean(state.docs[id]?.remote);
+}
+
 export function newSession() {
   const id = newId();
   set({ current: id, docs: { ...state.docs, [id]: empty() } });
