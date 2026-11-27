@@ -2017,7 +2017,18 @@ async function compareTool(call: ToolCall, input: OperatorInput, emit: (e: Opera
   }
   for (const [i, b] of bands.slice(0, 3).entries()) await showShot(input, emit, `${call.id}-b${i}`, `Original (left) vs clone (right), band ${i + 1}`, `compare-band-${i + 1}.jpg`, b, clone, i === 0 ? diff.slice(0, 600) : undefined);
   const meta = (r.meta ?? []).map((m) => `${m.url}: HTTP ${m.status ?? "?"}${m.error ? ` (${m.error})` : ""}, ${m.height ?? "?"}px tall`).join("; ");
-  return { ok: true, output: `Compared on ${vm.name}. ${meta}\n\n${diff}` };
+  // a hard finish line: the score and the page heights decide whether this page is done
+  const score = Number(/Similarity:\s*(\d{1,3})/i.exec(diff)?.[1] ?? NaN);
+  const [ho, hc] = [r.meta?.[0]?.height ?? 0, r.meta?.[1]?.height ?? 0];
+  const short = ho > 0 && hc > 0 && hc < ho * 0.75 ? ` The clone is ${Math.round(100 - (100 * hc) / ho)}% shorter than the original (${hc}px vs ${ho}px): sections are missing.` : "";
+  const verdict = Number.isFinite(score)
+    ? score >= 85 && !short
+      ? `\n\nVerdict: ${score}/100, this page matches. Mark it done.`
+      : `\n\nVerdict: ${score}/100, NOT done (needs 85 and similar height).${short} Fix the biggest differences above from the capture, commit, redeploy and compare again.`
+    : short
+      ? `\n\nVerdict: NOT done.${short}`
+      : "";
+  return { ok: true, output: `Compared on ${vm.name}. ${meta}\n\n${diff}${verdict}` };
 }
 
 /** view_image: look at an image file on a machine. */
