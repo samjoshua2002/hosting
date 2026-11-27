@@ -684,9 +684,15 @@ export async function createFromTemplate(template: string, name: string, isPriva
   if (!r.ok) throw new Error(`GitHub couldn't create the repo from ${template} (${r.status}): ${(await r.text()).slice(0, 200)}`);
   const made = (await r.json()) as { full_name: string; default_branch?: string; html_url: string };
   const branch = made.default_branch || (await getRepo(template)).defaultBranch;
-  for (let i = 0; i < 20; i++) {
-    if (await refSha(token, made.full_name, branch)) return { repo: made.full_name, branch, url: made.html_url };
-    await new Promise((res) => setTimeout(res, 2000));
+  let ready = false;
+  for (let i = 0; i < 20 && !ready; i++) {
+    ready = Boolean(await refSha(token, made.full_name, branch));
+    if (!ready) await new Promise((res) => setTimeout(res, 2000));
+  }
+  // templates often still use "master": rename it to "main" so every tool and deploy agrees on one branch
+  if (ready && branch !== "main") {
+    const rn = await call(token, `/repos/${made.full_name}/branches/${encodeURIComponent(branch)}/rename`, { method: "POST", body: JSON.stringify({ new_name: "main" }) });
+    if (rn.ok) return { repo: made.full_name, branch: "main", url: made.html_url };
   }
   return { repo: made.full_name, branch, url: made.html_url };
 }

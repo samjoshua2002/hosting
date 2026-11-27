@@ -1673,14 +1673,16 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
       case "repo_files": {
         const repo = str(a.repo);
         const branch = str(a.branch) || (await getRepo(repo)).defaultBranch;
-        const t = await repoTree(repo, branch, str(a.path));
+        const t = await repoTree(repo, branch, str(a.path)).catch(async (e: Error) => {
+          throw new Error(`${e.message}${await branchHint(repo, branch)}`);
+        });
         return { ok: true, output: `${branch}: ${t.paths.length} files${t.truncated ? " (truncated)" : ""}\n${t.paths.join("\n")}` };
       }
       case "repo_read": {
         const repo = str(a.repo);
         const branch = str(a.branch) || (await getRepo(repo)).defaultBranch;
         const text = await readRepoFile(repo, branch, str(a.path));
-        if (text === null) return { ok: false, output: `${str(a.path)} not found on ${branch}` };
+        if (text === null) return { ok: false, output: `${str(a.path)} not found on ${branch}${await branchHint(repo, branch)}` };
         return { ok: true, output: clip(text, 30_000) };
       }
       case "repo_commit": {
@@ -1864,6 +1866,18 @@ async function shareFile(call: ToolCall, input: OperatorInput, emit: (e: Operato
   const att = await saveAttachment(input.sessionId, name, m[1] === "dir" ? "application/zip" : "", data);
   emit({ type: "file", id: att.id, name, size: data.length, note: str(a.note) || undefined });
   return { ok: true, output: `Shared ${name} (${Math.round(data.length / 1024)} KB) in the chat: the user can preview it and download it right there. Don't repeat a download link.` };
+}
+
+/** When a branch doesn't exist, say which ones do (a template repo may use master, a new repo may be empty). */
+async function branchHint(repo: string, branch: string): Promise<string> {
+  try {
+    const [info, branches] = await Promise.all([getRepo(repo), listBranches(repo)]);
+    if (branches.some((b) => b.name === branch)) return "";
+    if (!branches.length) return `. ${repo} has no commits yet (empty, or GitHub is still creating it from a template: wait a few seconds and retry).`;
+    return `. Branch "${branch}" doesn't exist in ${repo}; its default branch is "${info.defaultBranch}" (branches: ${branches.map((b) => b.name).slice(0, 10).join(", ")}). Use that branch.`;
+  } catch {
+    return "";
+  }
 }
 
 /** The reachable machine with the most free memory and some disk: where a headless browser runs. */
