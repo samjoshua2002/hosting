@@ -45,10 +45,10 @@ async function load(): Promise<void> {
 
 /**
  * Keep the added machines fresh. The first call in a server instance waits (at most a few seconds);
- * after that the list refreshes in the background about once a minute, so requests never wait on it.
+ * after that the list refreshes in the background every 15 s, so a machine added on another server instance shows up quickly and requests never wait on it.
  */
 export async function refreshMachines(force = false): Promise<void> {
-  if (!force && loadedAt && Date.now() - loadedAt < 60_000) return;
+  if (!force && loadedAt && Date.now() - loadedAt < 15_000) return;
   if (!loading)
     loading = load()
       .catch((e) => console.error("machine registry", e))

@@ -193,6 +193,9 @@ export async function openSession(id: string) {
 }
 
 /** Look at the server copy and follow it if the server is still working on it (a long run continuing by itself). */
+/** add_machine / remove_machine calls in flight: when one finishes, the machine list reloads everywhere */
+const machineCalls = new Set<string>();
+
 export async function followServer(id: string): Promise<boolean> {
   if (streams.has(id)) return true;
   await refreshFromServer(id).catch(() => false);
@@ -355,6 +358,11 @@ export async function send(
         buf = buf.slice(nl + 1);
         if (!line) continue;
         const e = JSON.parse(line) as OperatorEvent;
+        if (e.type === "tool" && /add_machine|remove_machine/.test(e.tool ?? "")) machineCalls.add(e.id);
+        if (e.type === "tool_result" && machineCalls.has(e.id)) {
+          machineCalls.delete(e.id);
+          window.dispatchEvent(new Event("hosting:machines-changed"));
+        }
         patchDoc(id, (x) => (e.type === "done" ? { ...x, transcript: e.transcript, paused: e.paused } : { ...x, items: applyEvent(x.items, e) }));
       }
       if (done) break;

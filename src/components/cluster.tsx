@@ -36,7 +36,7 @@ interface ClusterCtx {
   checking: Record<string, boolean>;
   refresh: (names?: string[]) => Promise<void>;
   /** fetch the machine list again (after adding or removing one) */
-  reloadVms: () => Promise<void>;
+  reloadVms: (fresh?: boolean) => Promise<void>;
   auto: boolean;
   setAuto: (v: boolean) => void;
   inflight: Record<string, Inflight | undefined>;
@@ -81,6 +81,7 @@ export function ClusterProvider({ children }: { children: ReactNode }) {
   const [job, setJob] = useState<OpenJob | null>(null);
   const eventId = useRef(0);
   const vmsRef = useRef<VmInfo[]>([]);
+  const loadedOnce = useRef(false);
   const busy = useRef(new Set<string>());
   const pendingAlerts = useRef<{ tone: string; title: string; detail?: string }[]>([]);
   const alertTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -156,18 +157,22 @@ export function ClusterProvider({ children }: { children: ReactNode }) {
   }, [log, queueAlert]);
 
   // Load the VM list (again after a machine is added or removed), then probe everything.
-  const reloadVms = useCallback(async () => {
+  const reloadVms = useCallback(async (fresh = false) => {
     try {
-      const d = await api<{ vms: VmInfo[]; errors: string[]; agentVersion: string; hostKeyPinned: boolean }>("/api/vms");
+      const d = await api<{ vms: VmInfo[]; errors: string[]; agentVersion: string; hostKeyPinned: boolean }>(`/api/vms${fresh ? "?fresh=1" : ""}`);
       const isNew = d.vms.filter((v) => !vmsRef.current.some((o) => o.name === v.name)).map((v) => v.name);
+      const prevCount = vmsRef.current.length;
       vmsRef.current = d.vms;
       setVms(d.vms);
       setConfigErrors(d.errors);
       setAgentVersion(d.agentVersion);
       setHostKeyPinned(d.hostKeyPinned);
       setLoaded(true);
-      log(null, "info", `control plane connected, ${d.vms.length} VM${d.vms.length === 1 ? "" : "s"} configured`);
-      void refresh(isNew.length && isNew.length < d.vms.length ? isNew : undefined);
+      const gone = prevCount !== d.vms.length;
+      if (!prevCount || isNew.length || gone) log(null, "info", `control plane connected, ${d.vms.length} VM${d.vms.length === 1 ? "" : "s"} configured`);
+      // probe only what's new (or everything on first load); an unchanged list needs no extra probes
+      if (isNew.length || !loadedOnce.current) void refresh(isNew.length && isNew.length < d.vms.length ? isNew : undefined);
+      loadedOnce.current = true;
     } catch (e) {
       setConfigErrors([(e as Error).message]);
       setLoaded(true);
@@ -175,6 +180,18 @@ export function ClusterProvider({ children }: { children: ReactNode }) {
   }, [log, refresh]);
   useEffect(() => {
     queueMicrotask(() => void reloadVms());
+  }, [reloadVms]);
+  // a machine added or removed by the Assistant (or in another tab) shows up without reloading the page
+  useEffect(() => {
+    const now = () => void reloadVms(true);
+    window.addEventListener("hosting:machines-changed", now);
+    const t = setInterval(() => {
+      if (document.visibilityState === "visible") void reloadVms();
+    }, REFRESH_MS);
+    return () => {
+      window.removeEventListener("hosting:machines-changed", now);
+      clearInterval(t);
+    };
   }, [reloadVms]);
 
   // Auto refresh while the tab is visible.
