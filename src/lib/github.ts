@@ -459,7 +459,9 @@ export async function planChanges(repo: string, branch: string, base: string | u
     else if (Array.isArray(c.edits) && c.edits.length) {
       if (before === null) throw new Error(`${path} doesn't exist; give its full content instead of edits`);
       after = before;
-      for (const e of c.edits) {
+      for (const [k, e] of c.edits.entries()) {
+        if (!e || typeof e.find !== "string" || typeof e.replace !== "string")
+          throw new Error(`${path}: edit ${k + 1} of ${c.edits.length} is malformed (each edit needs "find" and "replace" text). Send valid edits, or the file's full new content instead.`);
         const n = after.split(e.find).length - 1;
         if (!e.find || n === 0) throw new Error(`${path}: text to replace not found: ${String(e.find).slice(0, 80)}`);
         if (n > 1) throw new Error(`${path}: text to replace appears ${n} times; include more surrounding lines`);

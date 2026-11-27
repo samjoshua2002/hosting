@@ -230,6 +230,7 @@ Databases
 Working on code (GitHub)
 - repo_branches, repo_files and repo_read inspect a repo; repo_commit commits one or more files in a single commit (full content, or exact find/replace edits for small changes); repo_pull_request opens a PR. github_api calls any other GitHub REST endpoint the token allows (issues, releases, actions runs, gists, workflows…).
 - Branch: don't ask. Repos you created or imported in this conversation, empty repos and repos with no deployed project: commit straight to the default branch. An existing repo whose default branch auto-deploys a live project: for small fixes commit to the default branch; for big or risky changes use a branch "assistant/<short-topic>" and open a pull request, then say so in one line. Only ask if the user said they want to choose. Read the files you change first; keep edits minimal and in the repo's style.
+- Never git pull/clone/push the user's private repos by hand with run_command (the machines have no GitHub login). Change code with repo_commit; a project with auto-deploy redeploys on each commit; deploy_project again redeploys any project from its repo with the token.
 - A new or empty repo needs no setup first: repo_commit handles the very first commit (it starts the repo and its main branch). Commit all the project's files in as few commits as possible (up to 40 files each). After committing, give the commit link; if a project auto-deploys from that branch, follow its deploy (fleet_status shows running deploy jobs) and report the result.
 - Review mode is chosen by the user: in manual mode every action waits for approval (commits show the diff first); in auto mode only destructive actions wait. Either way, never commit secrets.
 
@@ -998,7 +999,10 @@ async function execute(call: ToolCall, ctx: { sessionId?: string; connectorsOff?
   const real: ToolCall = { ...call, function: { ...call.function, arguments: await revealIn(call.function.arguments || "{}", true) } };
   const r = await executeRaw(real, ctx);
   // a pasted/attached .env read here is vaulted too, then anything known is masked
-  const out = call.function.name === "read_attachment" ? await vaultText(r.output) : r.output;
+  let out = call.function.name === "read_attachment" ? await vaultText(r.output) : r.output;
+  // the machines have no GitHub login: hand-run git on a private repo always fails this way
+  if (!r.ok && /could not read Username for 'https:\/\/github\.com'|Authentication failed for 'https:\/\/github\.com|Repository not found/i.test(out))
+    out += "\n[hint] The machines have no GitHub login, so git pull/clone of a private repo by hand fails. Don't retry it. To update a deployed project, commit with repo_commit (auto-deploy redeploys) or call deploy_project again for it: both fetch with the user's GitHub token. To inspect code, use repo_read/repo_files.";
   return { ok: r.ok, output: await maskSecrets(out) };
 }
 
@@ -2192,8 +2196,10 @@ async function runOperatorInner(input: OperatorInput, emit: (e: OperatorEvent) =
   const standing = await getInstructions().catch(() => "");
   const known = await knownFailureSpots().catch(() => "");
   // cloning a site is too important to leave to whether the model remembers to load the playbook
-  const wantsClone = /https?:\/\/\S+/.test(input.message ?? "") && /\b(clone|copy|replicat|recreat|rebuild|mirror|same as|like this (site|website|page)|look like)\w*/i.test(input.message ?? "");
-  const wantsMotion = /\b(animat|motion|reanimate|transition|marquee|carousel|parallax|scroll effect|hover effect|framer|gsap|three\.?js|webgl)\w*/i.test(input.message ?? "");
+  // decided from the whole conversation, so "Continue." or "fix the pricing page" in a clone session keeps the playbook
+  const asked = [...input.transcript.filter((m) => m.role === "user").map((m) => (typeof m.content === "string" ? m.content : "")), input.message ?? ""].join("\n").slice(-20_000);
+  const wantsClone = /https?:\/\/\S+/.test(asked) && /\b(clone|copy|replicat|recreat|rebuild|mirror|same as|like this (site|website|page)|look like)\w*/i.test(asked);
+  const wantsMotion = /\b(animat|motion|reanimate|transition|marquee|carousel|parallax|scroll effect|hover effect|framer|gsap|three\.?js|webgl)\w*/i.test(asked);
   const routed = [wantsClone ? skill("clone-website") : undefined, wantsMotion ? skill("motion") : undefined].filter((x): x is NonNullable<typeof x> => Boolean(x));
   const templateSkill = wantsClone ? await cloneTemplateSkill().catch(() => "") : "";
   const [mcp, fleetNow, connected, prefs, mailboxes] = await Promise.all([
