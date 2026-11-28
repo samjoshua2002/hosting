@@ -6,6 +6,7 @@ Built with Next.js 16, deployed on Vercel. No database: machines come from envir
 
 ## What's inside
 
+
 | Page | What it's for |
 |---|---|
 | **Overview** | Fleet totals (machines, CPU, memory, storage, projects), one row per machine, usage over time, problems, suggestions |
