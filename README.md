@@ -20,7 +20,6 @@ Built with Next.js 16, deployed on Vercel. No database: machines come from envir
 The theme comes from a random Unsplash photo on every visit. The whole palette follows the photo's colour; the shuffle button on the Overview picks a new one.
 
 ## How it works
-
 ```
 Browser ──HTTPS──▶ Vercel (Next.js: UI + API routes, session auth)
                        │  SSH (ssh2, host key pinned)
