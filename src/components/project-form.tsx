@@ -342,6 +342,7 @@ export function ProjectForm({
     if (!importFirst || started.current) return;
     started.current = true;
     queueMicrotask(() => void importRepo(importFirst));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [importFirst]);
 
   const submit = async (e: FormEvent) => {

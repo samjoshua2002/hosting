@@ -40,7 +40,6 @@ export function ColumnChart({
   const top = niceMax(maxVal);
   const ticks = [top, top / 2, 0];
   const hasData = buckets.some((b) => b.value !== null);
-  const activeIdx = hover ?? (buckets.length ? buckets.length - 1 : null);
 
   return (
     <div className={height === "fill" ? "flex flex-1 flex-col" : undefined}>

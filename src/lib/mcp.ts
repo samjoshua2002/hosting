@@ -255,7 +255,8 @@ export async function addServer(
       env,
     };
     await save([...list, s]);
-    const { auth, ...info } = s;
+    const info = { ...s };
+    delete (info as { auth?: unknown }).auth;
     return { ...info, transport: "stdio", hasToken: false };
   } else {
     const clean = checkUrl(urlOrCommand);
@@ -270,8 +271,9 @@ export async function addServer(
       transport: "http",
     };
     await save([...list, s]);
-    const { auth, ...info } = s;
-    return { ...info, transport: "http", hasToken: Boolean(auth) };
+    const info = { ...s };
+    delete (info as { auth?: unknown }).auth;
+    return { ...info, transport: "http", hasToken: Boolean(s.auth) };
   }
 }
 

@@ -137,25 +137,28 @@ export default function AssistantPage() {
   const [countdown, setCountdown] = useState<number | null>(null);
 
   useEffect(() => {
-    if (doc.paused && !busy && autoContinue) {
-      setCountdown(2);
-      const iv = setInterval(() => {
-        setCountdown((c) => {
-          if (c === null || c <= 1) {
-            clearInterval(iv);
-            // the server continues long runs by itself: follow it; only nudge it if it didn't pick the run up
-            void followServer(sid).then((following) => {
-              if (!following) void send(sid, { message: "Continue." });
-            });
-            return null;
-          }
-          return c - 1;
-        });
-      }, 1000);
-      return () => clearInterval(iv);
-    } else {
-      setCountdown(null);
+    if (!doc.paused || busy || !autoContinue) {
+      const t = setTimeout(() => setCountdown(null), 0);
+      return () => clearTimeout(t);
     }
+    const t0 = setTimeout(() => setCountdown(2), 0);
+    const iv = setInterval(() => {
+      setCountdown((c) => {
+        if (c === null || c <= 1) {
+          clearInterval(iv);
+          // the server continues long runs by itself: follow it; only nudge it if it didn't pick the run up
+          void followServer(sid).then((following) => {
+            if (!following) void send(sid, { message: "Continue." });
+          });
+          return null;
+        }
+        return c - 1;
+      });
+    }, 1000);
+    return () => {
+      clearTimeout(t0);
+      clearInterval(iv);
+    };
   }, [doc.paused, busy, autoContinue, sid]);
   const onScroll = () => {
     const el = scroller.current;

@@ -358,6 +358,7 @@ function AutopilotCard({ compact }: { compact?: boolean }) {
 function SignOut({ compact }: { compact?: boolean }) {
   const logout = async () => {
     await api("/api/auth/logout", {}).catch(() => {});
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.href = "/login";
   };
   if (compact)

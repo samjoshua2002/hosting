@@ -12,6 +12,7 @@ export async function api<T>(path: string, body?: unknown, init?: RequestInit): 
     ...init,
   });
   if (res.status === 401) {
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.href = "/login";
     throw new Error("Signed out");
   }
@@ -37,6 +38,7 @@ export async function apiStream<T>(path: string, body: unknown, onLine: (line: T
     cache: "no-store",
   });
   if (res.status === 401) {
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.href = "/login";
     throw new Error("Signed out");
   }

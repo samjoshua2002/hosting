@@ -35,16 +35,33 @@ function csvRows(t: string): string[][] {
   for (let i = 0; i < t.length; i++) {
     const c = t[i];
     if (q) {
-      if (c === '"' && t[i + 1] === '"') (cell += '"'), i++;
-      else if (c === '"') q = false;
-      else cell += c;
-    } else if (c === '"') q = true;
-    else if (c === sep) row.push(cell), (cell = "");
-    else if (c === "\n") row.push(cell.replace(/\r$/, "")), rows.push(row), (row = []), (cell = "");
-    else cell += c;
+      if (c === '"' && t[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (c === '"') {
+        q = false;
+      } else {
+        cell += c;
+      }
+    } else if (c === '"') {
+      q = true;
+    } else if (c === sep) {
+      row.push(cell);
+      cell = "";
+    } else if (c === "\n") {
+      row.push(cell.replace(/\r$/, ""));
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += c;
+    }
     if (rows.length > 2000) break;
   }
-  if (cell || row.length) row.push(cell), rows.push(row);
+  if (cell || row.length) {
+    row.push(cell);
+    rows.push(row);
+  }
   return rows;
 }
 
