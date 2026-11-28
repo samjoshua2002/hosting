@@ -3,6 +3,7 @@
 // left to the Assistant in a daily "Autopilot" session. Destructive steps still wait for the user.
 import { cronAction, probe, projectAction } from "./agent";
 import { aiConfigured } from "./ai";
+import { catchUpPushes } from "./auto-deploy";
 import { getVms } from "./config";
 import { failover, snapshotFleet } from "./failover";
 import { logEvents, maybeSendReport } from "./report";
@@ -147,6 +148,11 @@ async function pass(state: AutopilotState): Promise<AutopilotState> {
       problems.push(`couldn't copy the dashboard's data to a second machine: ${(e as Error).message.slice(0, 140)}`);
     }
   }
+
+  // pushes the GitHub webhook missed: redeploy projects whose branch has moved on
+  const cu = await catchUpPushes(fleet).catch((e) => ({ actions: [] as string[], problems: [`auto-deploy check failed: ${(e as Error).message.slice(0, 120)}`] }));
+  actions.push(...cu.actions);
+  problems.push(...cu.problems);
 
   // keep a copy of every app's settings, and move apps off machines that stay down
   await snapshotFleet(fleet).catch((e) => problems.push(`couldn't save the fleet's settings copy: ${(e as Error).message.slice(0, 120)}`));

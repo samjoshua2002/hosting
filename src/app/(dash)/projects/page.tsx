@@ -13,6 +13,7 @@ import { api } from "@/lib/client";
 import { timeAgo } from "@/lib/format";
 import { rankMachines } from "@/lib/placement";
 import { shortLabel, shortLink } from "@/lib/short-link";
+import { groupProjects, type Group } from "@/lib/project-groups";
 import { projectType, TYPE_LABEL, TYPE_ORDER, type ProjectType } from "@/lib/project-type";
 import type { CommitInfo, JobStartResult, JobState, ProjectManifest, ProjectState, VmStatus } from "@/lib/types";
 
@@ -104,16 +105,20 @@ export default function ProjectsPage() {
     return [...map.values()].sort((a, b) => latest(b) - latest(a) || a.name.localeCompare(b.name));
   }, [vms, status]);
 
+  // an app's website, API, worker and own database are one card (like a Vercel project), not separate projects
+  const groups = useMemo(() => groupProjects(projects, partRank).sort((a, b) => Math.max(...b.parts.map(latest)) - Math.max(...a.parts.map(latest)) || a.title.localeCompare(b.title)), [projects]);
+
   const counts = useMemo(() => {
     const c: Partial<Record<ProjectType, number>> = {};
-    for (const p of projects) c[p.type] = (c[p.type] ?? 0) + 1;
+    for (const g of groups) for (const t of new Set(g.parts.map((p) => p.type))) c[t] = (c[t] ?? 0) + 1;
     return c;
-  }, [projects]);
+  }, [groups]);
 
-  const shown = projects.filter((p) => {
-    if (filter !== "all" && p.type !== filter) return false;
+  const matches = (p: Project, t: string) => p.name.includes(t) || (p.m.github?.repo ?? p.m.repo).toLowerCase().includes(t) || (p.m.framework ?? "").toLowerCase().includes(t);
+  const shown = groups.filter((g) => {
+    if (filter !== "all" && !g.parts.some((p) => p.type === filter)) return false;
     const t = q.trim().toLowerCase();
-    return !t || p.name.includes(t) || (p.m.github?.repo ?? p.m.repo).toLowerCase().includes(t) || (p.m.framework ?? "").toLowerCase().includes(t);
+    return !t || g.title.toLowerCase().includes(t) || g.parts.some((p) => matches(p, t));
   });
 
   // new projects start on the best machine for their type; the form can change it
@@ -130,8 +135,9 @@ export default function ProjectsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const actAll = async (p: Project, action: "deploy" | "restart" | "stop" | "start" | "remove") => {
-    if (action === "remove" && !confirm(`Remove ${p.name} from ${p.instances.map((i) => i.vm).join(", ")}? This stops it and deletes its files there.`)) return;
+  const actAll = async (p: Project, action: "deploy" | "restart" | "stop" | "start" | "remove" | "remove-confirmed") => {
+    if (action === "remove-confirmed") action = "remove";
+    else if (action === "remove" && !confirm(`Remove ${p.name} from ${p.instances.map((i) => i.vm).join(", ")}? This stops it and deletes its files there.`)) return;
     setError(null);
     const results = await Promise.allSettled(p.instances.map((i) => api<{ jobId?: string }>("/api/projects/action", { vm: i.vm, name: p.name, action })));
     const failed = results.flatMap((r, k) => (r.status === "rejected" ? [`${p.instances[k].vm}: ${(r.reason as Error).message}`] : []));
@@ -139,6 +145,15 @@ export default function ProjectsPage() {
     const first = results.find((r): r is PromiseFulfilledResult<{ jobId?: string }> => r.status === "fulfilled" && Boolean(r.value.jobId));
     if (action === "deploy" && first) openJob({ vm: p.instances[results.indexOf(first)].vm, id: first.value.jobId!, title: `deploy ${p.name}` });
     void refresh(p.instances.map((i) => i.vm));
+  };
+
+  // an app's actions run on every part: redeploy, restart, stop and start all of it together
+  const actGroup = async (g: Group<Project>, action: "deploy" | "restart" | "stop" | "start" | "remove") => {
+    if (g.parts.length === 1) return actAll(g.main, action);
+    if (action === "remove" && !confirm(`Remove all of ${g.title} (${g.parts.map((p) => p.name).join(", ")})? This stops each part and deletes its files on its machines.`)) return;
+    // databases first on start, last on stop, so the app finds them up
+    const order = action === "stop" || action === "remove" ? [...g.parts] : [...g.parts].reverse();
+    for (const p of order) await actAll(p, action === "remove" ? "remove-confirmed" : action);
   };
 
   return (
@@ -173,12 +188,12 @@ export default function ProjectsPage() {
         <section className="min-w-0">
           <div className="mb-3 flex h-9 items-center gap-2">
             <h2 className="text-[15px] font-semibold text-white">Projects</h2>
-            {projects.length > 0 && <span className="text-sm text-muted">{projects.length}</span>}
+            {groups.length > 0 && <span className="text-sm text-muted">{groups.length}</span>}
             <span className="flex-1" />
             {projects.length > 0 && (
               <>
                 <SearchToggle value={q} onChange={setQ} />
-                <TypeFilter value={filter} onChange={setFilter} counts={counts} total={projects.length} />
+                <TypeFilter value={filter} onChange={setFilter} counts={counts} total={groups.length} />
               </>
             )}
           </div>
@@ -197,7 +212,7 @@ export default function ProjectsPage() {
           ) : projects.length === 0 ? (
             <Welcome connected={gh.status?.connected} onImport={(r) => newProject({}, r)} onConnect={() => setConnect(true)} onTemplate={(v) => newProject(v)} />
           ) : shown.length ? (
-            <Grid list={shown} status={status} onAct={actAll} onEdit={(p) => setForm({ state: formFromManifest(p.m, p.instances.map((i) => i.vm)) })} />
+            <Grid list={shown} status={status} onAct={actGroup} onEdit={(p) => setForm({ state: formFromManifest(p.m, p.instances.map((i) => i.vm)) })} />
           ) : (
             <p className="py-16 text-center text-sm text-muted">No projects match.</p>
           )}
@@ -229,23 +244,41 @@ export default function ProjectsPage() {
   );
 }
 
+/** Which part leads an app's card: websites before APIs before databases; then the auto-deployed, public one (production) before previews. */
+function partRank(p: Project): number {
+  return TYPE_ORDER.indexOf(p.type) * 10 + (p.m.github?.autoDeploy ? 0 : 2) + (p.instances.some((i) => i.url) ? 0 : 1) + (/^(main|master)$/.test(p.m.branch) ? 0 : 4);
+}
+
 function latest(p: Project): number {
   return Math.max(0, ...p.instances.map((i) => i.state.commit?.time ?? i.state.deployedAt ?? 0));
 }
 
-function Grid({ list, status, onAct, onEdit }: { list: Project[]; status: Record<string, VmStatus | undefined>; onAct: (p: Project, a: "deploy" | "restart" | "stop" | "start" | "remove") => Promise<void>; onEdit: (p: Project) => void }) {
+function Grid({ list, status, onAct, onEdit }: { list: Group<Project>[]; status: Record<string, VmStatus | undefined>; onAct: (g: Group<Project>, a: "deploy" | "restart" | "stop" | "start" | "remove") => Promise<void>; onEdit: (p: Project) => void }) {
   return (
     <div className="grid grid-cols-2 gap-4">
-      {list.map((p) => (
-        <ProjectCard key={p.name} p={p} online={p.instances.every((i) => status[i.vm]?.ok)} onAct={(a) => onAct(p, a)} onEdit={() => onEdit(p)} />
+      {list.map((g) => (
+        <ProjectCard key={g.key} g={g} online={g.parts.every((p) => p.instances.every((i) => status[i.vm]?.ok))} onAct={(a) => onAct(g, a)} onEdit={() => onEdit(g.main)} />
       ))}
     </div>
   );
 }
 
-function ProjectCard({ p, online, onAct, onEdit }: { p: Project; online: boolean; onAct: (a: "deploy" | "restart" | "stop" | "start" | "remove") => Promise<void>; onEdit: () => void }) {
+/** The app's overall state: the worst part wins. */
+function groupHealth(g: Group<Project>): { label: string; tone: Tone } {
+  if (g.parts.length === 1) return health(g.main);
+  const hs = g.parts.map(health);
+  for (const tone of ["bad", "busy", "off"] as Tone[]) {
+    const hit = hs.filter((x) => x.tone === tone);
+    if (hit.length) return { label: tone === "bad" ? "Error" : tone === "busy" ? hit[0].label : `${hs.length - hit.length}/${hs.length} running`, tone };
+  }
+  return { label: "Ready", tone: "ok" };
+}
+
+function ProjectCard({ g, online, onAct, onEdit }: { g: Group<Project>; online: boolean; onAct: (a: "deploy" | "restart" | "stop" | "start" | "remove") => Promise<void>; onEdit: () => void }) {
+  const p = g.main;
   const Icon = ICON[p.type];
-  const h = health(p);
+  const h = groupHealth(g);
+  const machines = [...new Set(g.parts.flatMap((x) => x.instances.map((i) => i.vm)))];
   const addr = address(p);
   const src = source(p.m);
   const commit = p.instances.find((i) => i.state.commit)?.state.commit;
@@ -260,7 +293,7 @@ function ProjectCard({ p, online, onAct, onEdit }: { p: Project; online: boolean
         </span>
         <div className="min-w-0 flex-1">
           <Link href={`/projects/${p.name}`} className="block truncate font-semibold text-white after:absolute after:inset-0 after:rounded-2xl">
-            {p.name}
+            {g.title}
           </Link>
           {addr.href ? (
             <a href={addr.href} target="_blank" rel="noreferrer" className="relative z-10 flex items-center gap-1 truncate text-sm text-muted hover:text-white hover:underline">
@@ -274,11 +307,11 @@ function ProjectCard({ p, online, onAct, onEdit }: { p: Project; online: boolean
             </p>
           )}
         </div>
-        <span className="flex shrink-0 items-center gap-1.5 pt-0.5 text-xs text-ink" title={p.instances.map((i) => `${i.vm}: ${i.state.active}`).join("\n")}>
+        <span className="flex shrink-0 items-center gap-1.5 pt-0.5 text-xs text-ink" title={g.parts.flatMap((x) => x.instances.map((i) => `${x.name} on ${i.vm}: ${i.state.active}`)).join("\n")}>
           <span className={cx("size-2 rounded-full", TONE_DOT[h.tone])} />
           {h.label}
         </span>
-        <Menu p={p} addr={addr.href} onAct={onAct} onEdit={onEdit} />
+        <Menu p={p} whole={g.parts.length > 1} addr={addr.href} onAct={onAct} onEdit={onEdit} />
       </div>
 
       <div className="mt-4 flex min-w-0 items-center gap-2">
@@ -293,6 +326,8 @@ function ProjectCard({ p, online, onAct, onEdit }: { p: Project; online: boolean
         {line.text}
       </p>
 
+      {g.parts.length > 1 && <Parts g={g} />}
+
       <div className="mt-auto flex items-center gap-1.5 pt-3 text-xs text-muted">
         <span>{timeAgo(commit?.time ? commit.time * 1000 : deployedAt ? deployedAt * 1000 : null)}</span>
         {p.m.repo && (
@@ -305,9 +340,9 @@ function ProjectCard({ p, online, onAct, onEdit }: { p: Project; online: boolean
         {p.m.github?.autoDeploy && <span title="Redeploys on every push">· auto</span>}
         <span className="flex-1" />
         {!online && <span className="text-[var(--critical-text)]">machine asleep</span>}
-        {p.instances.map((i) => (
-          <span key={i.vm} className="rounded bg-chip px-1.5 py-px font-mono text-[11px] text-ink">
-            {i.vm}
+        {machines.map((vm) => (
+          <span key={vm} className="rounded bg-chip px-1.5 py-px font-mono text-[11px] text-ink">
+            {vm}
           </span>
         ))}
       </div>
@@ -315,7 +350,40 @@ function ProjectCard({ p, online, onAct, onEdit }: { p: Project; online: boolean
   );
 }
 
-function Menu({ p, addr, onAct, onEdit }: { p: Project; addr?: string; onAct: (a: "deploy" | "restart" | "stop" | "start" | "remove") => Promise<void>; onEdit: () => void }) {
+/** The app's parts (website, API, database…), each with its own state and page. */
+function Parts({ g }: { g: Group<Project> }) {
+  return (
+    <ul className="relative z-10 mt-3 divide-y divide-line rounded-xl border border-line-strong bg-white/[0.02]">
+      {g.parts.map((x) => {
+        const PartIcon = ICON[x.type];
+        const ph = health(x);
+        const env = x.m.branch && x.m.branch !== g.main.m.branch ? x.m.branch : "";
+        return (
+          <li key={x.name}>
+            <Link href={`/projects/${x.name}`} className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-xs hover:bg-white/[0.04]">
+              <PartIcon className="size-3.5 shrink-0 text-muted" />
+              <span className="truncate text-ink">{x.name}</span>
+              <span className="shrink-0 text-muted">{TYPE_LABEL[x.type].one}</span>
+              {env && (
+                <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[11px] text-muted">
+                  <GitBranch className="size-3" />
+                  {env}
+                </span>
+              )}
+              <span className="flex-1" />
+              <span className="flex shrink-0 items-center gap-1.5 text-ink">
+                <span className={cx("size-1.5 rounded-full", TONE_DOT[ph.tone])} />
+                {ph.label}
+              </span>
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function Menu({ p, whole, addr, onAct, onEdit }: { p: Project; whole?: boolean; addr?: string; onAct: (a: "deploy" | "restart" | "stop" | "start" | "remove") => Promise<void>; onEdit: () => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -350,12 +418,12 @@ function Menu({ p, addr, onAct, onEdit }: { p: Project; addr?: string; onAct: (a
               Visit <ExternalLink className="size-3.5 text-muted" />
             </a>
           )}
-          {item(p.m.repo ? "Redeploy latest" : "Redeploy", () => void onAct("deploy"))}
-          {item("Restart", () => void onAct("restart"))}
+          {item(whole ? "Redeploy all parts" : p.m.repo ? "Redeploy latest" : "Redeploy", () => void onAct("deploy"))}
+          {item(whole ? "Restart all parts" : "Restart", () => void onAct("restart"))}
           {running ? item("Stop", () => void onAct("stop")) : item("Start", () => void onAct("start"))}
-          {item("Settings", onEdit)}
+          {item(whole ? `Settings (${p.name})` : "Settings", onEdit)}
           <div className="my-1 border-t border-line-strong" />
-          {item("Remove", () => void onAct("remove"), true)}
+          {item(whole ? "Remove all parts" : "Remove", () => void onAct("remove"), true)}
         </div>
       )}
     </div>

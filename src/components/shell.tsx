@@ -5,6 +5,8 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { isService } from "@/lib/catalog";
+import { groupProjects } from "@/lib/project-groups";
+import type { ProjectManifest } from "@/lib/types";
 import { api } from "@/lib/client";
 import { findProblems, investigatePrompt } from "@/lib/health";
 import type { MailItem } from "@/lib/mail";
@@ -129,10 +131,12 @@ function Nav({ path, compact }: { path: string | null; compact?: boolean }) {
   const working = useAssistantBusy();
   const { vms, status } = useCluster();
   const counts = useMemo(() => {
-    const names = new Map<string, boolean>();
-    for (const v of vms) for (const p of status[v.name]?.agent?.projects ?? []) names.set(p.manifest.name, isService(p.manifest));
-    const services = [...names.values()].filter(Boolean).length;
-    return { "/projects": names.size - services, "/services": services, "/machines": vms.length } as Record<string, number>;
+    const all = new Map<string, ProjectManifest>();
+    for (const v of vms) for (const p of status[v.name]?.agent?.projects ?? []) all.set(p.manifest.name, p.manifest);
+    const services = [...all.values()].filter((m) => isService(m)).length;
+    // the Projects page shows one card per app (its website, API and database together): count apps
+    const apps = groupProjects([...all.values()].map((m) => ({ name: m.name, m })), () => 0).filter((g) => g.parts.some((x) => !isService(x.m))).length;
+    return { "/projects": apps, "/services": services, "/machines": vms.length } as Record<string, number>;
   }, [vms, status]);
 
   const navRef = useRef<HTMLElement>(null);

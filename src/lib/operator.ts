@@ -410,7 +410,7 @@ const TOOLS: ToolDef[] = [
       type: { type: "string", enum: ["website", "service", "worker", "database", "tool"] },
       framework: { type: "string", description: 'for display, e.g. "Next.js"' },
       github_repo: { type: "string", description: "owner/name of a GitHub repo (instead of repo)" },
-      github_auto_deploy: { type: "boolean", description: "redeploy on every push to the branch (GitHub repos)" },
+      github_auto_deploy: { type: "boolean", description: "redeploy on every push to the branch (GitHub repos). On by default; pass false only when the user wants manual deploys" },
       service: {
         type: "object",
         description: "third-party software (not the user's own code): how it shows on the Services page",
@@ -1270,7 +1270,7 @@ async function executeRaw(call: ToolCall, ctx: { sessionId?: string }): Promise<
           if (!(await githubAuth())) return { ok: false, output: "GitHub is not connected. Ask the user to click Connect GitHub on the Projects page." };
           const info = await getRepo(ghName);
           ghDefault = info.defaultBranch;
-          github = { repo: info.fullName, private: info.private, autoDeploy: a.github_auto_deploy === true };
+          github = { repo: info.fullName, private: info.private, autoDeploy: a.github_auto_deploy !== false };
           if (github.autoDeploy) {
             const url = webhookUrl("");
             if (!url.startsWith("https://")) note = "\nAuto-deploy not set up: APP_URL is not configured.";
