@@ -1042,6 +1042,13 @@ async function execute(call: ToolCall, ctx: { sessionId?: string; connectorsOff?
   // a pasted/attached .env read here is vaulted too, then anything known is masked
   // a pasted/attached .env is vaulted; the capture files the Assistant saved itself are not (their long hex asset names looked like secrets)
   let out = call.function.name === "read_attachment" && !/^site-(capture|assets|svgs)-/.test(r.output) ? await vaultText(r.output) : r.output;
+  // a Python script needs a package the machine doesn't have: say how to install it instead of retrying
+  const mod = !r.ok && /ModuleNotFoundError: No module named '([\w.]+)'/.exec(out);
+  if (mod) {
+    const top = mod[1].split(".")[0];
+    const pkg = ({ bs4: "beautifulsoup4", PIL: "pillow", cv2: "opencv-python-headless", yaml: "pyyaml", sklearn: "scikit-learn", dotenv: "python-dotenv" } as Record<string, string>)[top] ?? top;
+    out += `\n[hint] Python module ${top} isn't installed on that machine. Install it first (pip3 install --user ${pkg}, or python3 -m pip install --break-system-packages ${pkg}), or do the same with tools you already have (node, curl, grep) instead of retrying.`;
+  }
   // the machines have no GitHub login: hand-run git on a private repo always fails this way
   if (!r.ok && /could not read Username for 'https:\/\/github\.com'|Authentication failed for 'https:\/\/github\.com|Repository not found/i.test(out))
     out += "\n[hint] The machines have no GitHub login, so git pull/clone of a private repo by hand fails. Don't retry it. To update a deployed project, commit with repo_commit (auto-deploy redeploys) or call deploy_project again for it: both fetch with the user's GitHub token. To inspect code, use repo_read/repo_files.";
@@ -1970,9 +1977,7 @@ async function snapshotTool(a: Args, sessionId?: string): Promise<{ ok: boolean;
     if (!/<html|<body|<head/i.test(text)) return { ok: false, output: `${f.name} isn't an HTML page. Ask the user for File → Save Page As (Webpage, HTML) from their browser.` };
     snap = { pages: [{ url, status: 200, html: restoreSavedPage(text, url) }], fonts: [] };
   } else {
-    const vm = await browserVm();
-    if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
-    snap = await snapshotSite(vm, url, pages);
+    snap = (await onBrowser((m) => snapshotSite(m, url, pages))).result;
     const blocked = snap.pages.find((p) => p.html && BOT_CHECK.test(p.html.slice(0, 20_000)));
     if (blocked) return { ok: false, output: botCheckHelp(url) };
   }
@@ -2020,10 +2025,29 @@ async function branchHint(repo: string, branch: string): Promise<string> {
 }
 
 /** The reachable machine with the most free memory and some disk: where a headless browser runs. */
-async function browserVm(): Promise<VmConfig | undefined> {
+/** Machines that can run a browser now (disk to spare), most free memory first. */
+async function browserVms(): Promise<VmConfig[]> {
   const fleet = await mapLimit(getVms(), 12, (vm) => probe(vm, 9_999_999_999));
-  const pick = fleet.filter((s) => s.ok && s.agent && (s.agent.diskTotalKb - s.agent.diskUsedKb) / 1048576 > 1.5).sort((x, y) => y.agent!.memAvailKb - x.agent!.memAvailKb)[0];
-  return pick ? getVm(pick.name) : undefined;
+  return fleet
+    .filter((s) => s.ok && s.agent && (s.agent.diskTotalKb - s.agent.diskUsedKb) / 1048576 > 1.5)
+    .sort((x, y) => y.agent!.memAvailKb - x.agent!.memAvailKb)
+    .map((s) => getVm(s.name))
+    .filter((v): v is VmConfig => Boolean(v));
+}
+
+/** Run a browser job, moving to the next machine when one crashes or returns nothing (up to 3 machines). */
+async function onBrowser<T>(fn: (vm: VmConfig) => Promise<T>): Promise<{ vm: VmConfig; result: T }> {
+  const vms = (await browserVms()).slice(0, 3);
+  if (!vms.length) throw new Error("no machine with room to run a browser right now");
+  const errors: string[] = [];
+  for (const vm of vms) {
+    try {
+      return { vm, result: await fn(vm) };
+    } catch (e) {
+      errors.push(`${vm.name}: ${(e as Error).message.slice(0, 300)}`);
+    }
+  }
+  throw new Error(`the browser failed on every machine tried (${errors.join("; ")})`);
 }
 
 const fullUrl = (u: string) => (u.startsWith("/go/") ? `${siteUrl()}${u}` : u.trim());
@@ -2114,9 +2138,9 @@ async function captureTool(call: ToolCall, input: OperatorInput, emit: (e: Opera
 }
 
 async function doCapture(call: ToolCall, input: OperatorInput, emit: (e: OperatorEvent) => void, url: string, openUrl: string, openPages: string[]): Promise<{ ok: boolean; output: string }> {
-  const vm = await browserVm();
-  if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
-  let cap = await captureSite(vm, openUrl, openPages);
+  const got = await onBrowser((m) => captureSite(m, openUrl, openPages));
+  const vm = got.vm;
+  let cap = got.result;
   // a template viewer (Wix, Webflow, ThemeForest…) shows the real site inside one big frame: capture that site instead
   const frame = (cap.spec?.frames as { src: string; share: number }[] | undefined)?.[0];
   let framed = "";
@@ -2214,10 +2238,8 @@ async function compareTool(call: ToolCall, input: OperatorInput, emit: (e: Opera
 }
 
 async function doCompare(call: ToolCall, input: OperatorInput, emit: (e: OperatorEvent) => void, openOriginal: string, openClone: string, clone: string): Promise<{ ok: boolean; output: string }> {
-  const vm = await browserVm();
-  if (!vm) return { ok: false, output: "no machine with room to run a browser right now" };
   // private clones open with their own token link (the browser on the machine isn't signed in to the dashboard)
-  const r = await compareSites(vm, openOriginal, openClone);
+  const { vm, result: r } = await onBrowser((m) => compareSites(m, openOriginal, openClone));
   r.meta = r.meta?.map((m) => ({ ...m, url: hideToken(m.url) }));
   const bands = (r.bands ?? []).map((b) => Buffer.from(b, "base64"));
   if (!bands.length) return { ok: false, output: `couldn't compare: ${r.fatal || JSON.stringify(r.meta ?? {})}` };
@@ -2384,7 +2406,9 @@ async function traced(call: ToolCall, run: () => Promise<{ ok: boolean; output: 
   } catch (e) {
     recordSpan({ name: toolTag(call), input: call.function.arguments, startTime: t0, error: (e as Error).message, metadata: { tool: call.function.name } });
     recordToolResult({ tool: toolTag(call), label: label(), args: call.function.arguments, ok: false, crashed: true, output: (e as Error).message });
-    throw e;
+    // a Stop still ends the run; any other crash is an ordinary failed action the model can work around
+    if ((e as Error).name === "AbortError") throw e;
+    return { ok: false, output: `${call.function.name} failed: ${(e as Error).message}. Try again differently (another machine, smaller input) or another approach.` };
   }
   recordSpan({ name: toolTag(call), input: call.function.arguments, output: r.output, startTime: t0, error: r.ok ? undefined : r.output.slice(0, 300), metadata: { tool: call.function.name } });
   // the failure log keeps every failed action (with its arguments) so stuck spots can be found and fixed
